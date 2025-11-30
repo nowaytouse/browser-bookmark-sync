@@ -1,0 +1,150 @@
+[
+  {
+    "name": "work-internal",
+    "folder_name": "公司内部",
+    "folder_name_en": "Company Internal",
+    "url_patterns": ["internal.", "intranet.", "corp."],
+    "domain_patterns": ["mycompany.com", "company-internal.net"],
+    "path_patterns": ["/internal", "/employee"],
+    "title_patterns": ["内部", "公司", "internal"],
+    "priority": 110,
+    "description": "Company internal tools and resources"
+  },
+  {
+    "name": "project-management",
+    "folder_name": "项目管理",
+    "folder_name_en": "Project Management",
+    "url_patterns": ["jira", "confluence", "trello", "asana", "notion"],
+    "domain_patterns": [
+      "atlassian.com",
+      "trello.com",
+      "asana.com",
+      "notion.so",
+      "monday.com",
+      "clickup.com",
+      "basecamp.com"
+    ],
+    "path_patterns": ["/projects", "/boards", "/tasks"],
+    "title_patterns": ["项目", "任务", "project", "task", "sprint"],
+    "priority": 95,
+    "description": "Project management and collaboration tools"
+  },
+  {
+    "name": "communication",
+    "folder_name": "即时通讯",
+    "folder_name_en": "Instant Messaging",
+    "url_patterns": [],
+    "domain_patterns": [
+      "slack.com",
+      "teams.microsoft.com",
+      "zoom.us",
+      "meet.google.com",
+      "webex.com",
+      "dingtalk.com",
+      "feishu.cn",
+      "lark.suite.com"
+    ],
+    "path_patterns": ["/chat", "/meeting", "/call"],
+    "title_patterns": ["会议", "聊天", "meeting", "chat"],
+    "priority": 92,
+    "description": "Chat and video conferencing tools"
+  },
+  {
+    "name": "reading",
+    "folder_name": "稍后阅读",
+    "folder_name_en": "Read Later",
+    "url_patterns": ["pocket.", "instapaper.", "readwise."],
+    "domain_patterns": [
+      "getpocket.com",
+      "instapaper.com",
+      "readwise.io",
+      "omnivore.app",
+      "matter.md"
+    ],
+    "path_patterns": [],
+    "title_patterns": ["稍后", "read later", "saved"],
+    "priority": 88,
+    "description": "Read-it-later services and saved articles"
+  },
+  {
+    "name": "crypto",
+    "folder_name": "加密货币",
+    "folder_name_en": "Cryptocurrency",
+    "url_patterns": ["crypto", "defi", "nft", "web3"],
+    "domain_patterns": [
+      "coinbase.com",
+      "binance.com",
+      "kraken.com",
+      "metamask.io",
+      "uniswap.org",
+      "opensea.io",
+      "etherscan.io",
+      "coingecko.com",
+      "coinmarketcap.com"
+    ],
+    "path_patterns": ["/wallet", "/trade", "/swap"],
+    "title_patterns": ["币", "钱包", "crypto", "wallet", "blockchain"],
+    "priority": 48,
+    "description": "Cryptocurrency exchanges, wallets, and DeFi platforms"
+  },
+  {
+    "name": "productivity",
+    "folder_name": "效率工具",
+    "folder_name_en": "Productivity",
+    "url_patterns": [],
+    "domain_patterns": [
+      "todoist.com",
+      "ticktick.com",
+      "evernote.com",
+      "onenote.com",
+      "bear.app",
+      "obsidian.md",
+      "roamresearch.com",
+      "logseq.com",
+      "craft.do"
+    ],
+    "path_patterns": ["/notes", "/todos"],
+    "title_patterns": ["笔记", "待办", "notes", "todo"],
+    "priority": 42,
+    "description": "Note-taking and task management apps"
+  },
+  {
+    "name": "travel",
+    "folder_name": "旅行出行",
+    "folder_name_en": "Travel",
+    "url_patterns": ["flight", "hotel", "booking", "travel"],
+    "domain_patterns": [
+      "booking.com",
+      "airbnb.com",
+      "expedia.com",
+      "tripadvisor.com",
+      "ctrip.com",
+      "qunar.com",
+      "fliggy.com",
+      "skyscanner.com",
+      "kayak.com"
+    ],
+    "path_patterns": ["/flights", "/hotels", "/trips"],
+    "title_patterns": ["机票", "酒店", "旅行", "flight", "hotel", "trip"],
+    "priority": 38,
+    "description": "Travel booking and planning services"
+  },
+  {
+    "name": "food-delivery",
+    "folder_name": "外卖点餐",
+    "folder_name_en": "Food Delivery",
+    "url_patterns": ["food", "delivery", "order"],
+    "domain_patterns": [
+      "doordash.com",
+      "ubereats.com",
+      "grubhub.com",
+      "meituan.com",
+      "ele.me",
+      "deliveroo.com"
+    ],
+    "path_patterns": ["/order", "/menu"],
+    "title_patterns": ["外卖", "点餐", "delivery", "order food"],
+    "priority": 22,
+    "description": "Food delivery and restaurant ordering"
+  }
+]

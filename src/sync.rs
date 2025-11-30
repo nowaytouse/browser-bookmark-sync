@@ -1512,6 +1512,712 @@ struct CleanupStats {
     empty_folders_removed: usize,
 }
 
+/// Rule-based bookmark classification engine
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ClassificationRule {
+    /// Rule name/identifier
+    pub name: String,
+    /// Target folder name (Chinese)
+    pub folder_name: String,
+    /// Target folder name (English, for display)
+    pub folder_name_en: String,
+    /// URL patterns to match (case-insensitive)
+    pub url_patterns: Vec<String>,
+    /// Domain patterns to match
+    pub domain_patterns: Vec<String>,
+    /// Path patterns to match
+    pub path_patterns: Vec<String>,
+    /// Title patterns to match
+    pub title_patterns: Vec<String>,
+    /// Rule priority (higher = matched first)
+    pub priority: i32,
+    /// Rule description
+    pub description: String,
+}
+
+impl ClassificationRule {
+    fn new(
+        name: &str,
+        folder_name: &str,
+        folder_name_en: &str,
+        url_patterns: Vec<&str>,
+        domain_patterns: Vec<&str>,
+        path_patterns: Vec<&str>,
+        title_patterns: Vec<&str>,
+        priority: i32,
+        description: &str,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            folder_name: folder_name.to_string(),
+            folder_name_en: folder_name_en.to_string(),
+            url_patterns: url_patterns.iter().map(|s| s.to_string()).collect(),
+            domain_patterns: domain_patterns.iter().map(|s| s.to_string()).collect(),
+            path_patterns: path_patterns.iter().map(|s| s.to_string()).collect(),
+            title_patterns: title_patterns.iter().map(|s| s.to_string()).collect(),
+            priority,
+            description: description.to_string(),
+        }
+    }
+    
+    /// Check if a bookmark matches this rule
+    fn matches(&self, url: &str, title: &str) -> bool {
+        let url_lower = url.to_lowercase();
+        let title_lower = title.to_lowercase();
+        
+        // Extract domain and path from URL
+        let (domain, path) = Self::parse_url_parts(&url_lower);
+        
+        // Check URL patterns
+        for pattern in &self.url_patterns {
+            if url_lower.contains(&pattern.to_lowercase()) {
+                return true;
+            }
+        }
+        
+        // Check domain patterns
+        for pattern in &self.domain_patterns {
+            if domain.contains(&pattern.to_lowercase()) {
+                return true;
+            }
+        }
+        
+        // Check path patterns
+        for pattern in &self.path_patterns {
+            if path.contains(&pattern.to_lowercase()) {
+                return true;
+            }
+        }
+        
+        // Check title patterns
+        for pattern in &self.title_patterns {
+            if title_lower.contains(&pattern.to_lowercase()) {
+                return true;
+            }
+        }
+        
+        false
+    }
+    
+    fn parse_url_parts(url: &str) -> (String, String) {
+        let without_protocol = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        
+        if let Some(slash_pos) = without_protocol.find('/') {
+            let domain = without_protocol[..slash_pos].to_string();
+            let path = without_protocol[slash_pos..].to_string();
+            (domain, path)
+        } else {
+            (without_protocol.to_string(), String::new())
+        }
+    }
+}
+
+/// Built-in classification rules
+pub fn get_builtin_rules() -> Vec<ClassificationRule> {
+    vec![
+        // 1. Login/Authentication pages
+        ClassificationRule::new(
+            "login",
+            "登录入口",
+            "Login Portals",
+            vec!["login", "signin", "sign-in", "sign_in", "auth", "sso", "oauth", "accounts."],
+            vec!["login.", "auth.", "sso.", "id.", "account.", "accounts."],
+            vec!["/login", "/signin", "/sign-in", "/auth", "/sso", "/oauth", "/account/login"],
+            vec!["登录", "登入", "sign in", "log in"],
+            100,
+            "Login and authentication pages"
+        ),
+        
+        // 2. Social Media
+        ClassificationRule::new(
+            "social",
+            "社交媒体",
+            "Social Media",
+            vec![],
+            vec![
+                "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com",
+                "weibo.com", "weixin.qq.com", "douyin.com", "tiktok.com", "reddit.com",
+                "discord.com", "telegram.org", "whatsapp.com", "snapchat.com",
+                "pinterest.com", "tumblr.com", "mastodon.", "threads.net"
+            ],
+            vec![],
+            vec![],
+            90,
+            "Social media platforms"
+        ),
+        
+        // 3. Video/Streaming
+        ClassificationRule::new(
+            "video",
+            "视频流媒体",
+            "Video & Streaming",
+            vec![],
+            vec![
+                "youtube.com", "youtu.be", "bilibili.com", "netflix.com", "hulu.com",
+                "disneyplus.com", "primevideo.com", "twitch.tv", "vimeo.com",
+                "iqiyi.com", "youku.com", "v.qq.com", "mgtv.com", "tv.sohu.com"
+            ],
+            vec!["/video", "/watch", "/play"],
+            vec![],
+            85,
+            "Video and streaming platforms"
+        ),
+        
+        // 4. Development Tools
+        ClassificationRule::new(
+            "dev",
+            "开发工具",
+            "Development Tools",
+            vec![],
+            vec![
+                "github.com", "gitlab.com", "bitbucket.org", "stackoverflow.com",
+                "codepen.io", "jsfiddle.net", "codesandbox.io", "replit.com",
+                "npmjs.com", "crates.io", "pypi.org", "rubygems.org",
+                "hub.docker.com", "vercel.com", "netlify.com", "heroku.com",
+                "aws.amazon.com", "console.cloud.google.com", "portal.azure.com",
+                "developer.mozilla.org", "devdocs.io", "docs.rs"
+            ],
+            vec!["/api/", "/docs/", "/documentation", "/developer", "/sdk"],
+            vec!["api 文档", "api doc", "developer", "开发者"],
+            80,
+            "Development and programming tools"
+        ),
+        
+        // 5. Shopping/E-commerce
+        ClassificationRule::new(
+            "shopping",
+            "购物网站",
+            "Shopping",
+            vec!["cart", "checkout", "shop.", "store."],
+            vec![
+                "amazon.", "ebay.com", "aliexpress.com", "taobao.com", "tmall.com",
+                "jd.com", "pinduoduo.com", "shopify.com", "etsy.com", "walmart.com",
+                "target.com", "bestbuy.com", "newegg.com"
+            ],
+            vec!["/cart", "/checkout", "/shop", "/product", "/item"],
+            vec!["购物", "商城", "店铺", "shop", "store"],
+            75,
+            "E-commerce and shopping sites"
+        ),
+        
+        // 6. News/Media
+        ClassificationRule::new(
+            "news",
+            "新闻资讯",
+            "News & Media",
+            vec![],
+            vec![
+                "news.google.com", "cnn.com", "bbc.com", "reuters.com", "nytimes.com",
+                "theguardian.com", "wsj.com", "bloomberg.com", "cnbc.com",
+                "sina.com.cn", "163.com", "sohu.com", "qq.com/news", "ifeng.com",
+                "thepaper.cn", "36kr.com", "huxiu.com"
+            ],
+            vec!["/news", "/article", "/story"],
+            vec!["新闻", "资讯", "news", "breaking"],
+            70,
+            "News and media sites"
+        ),
+        
+        // 7. Documentation/Reference
+        ClassificationRule::new(
+            "docs",
+            "文档参考",
+            "Documentation",
+            vec!["docs.", "documentation.", "wiki.", "manual."],
+            vec![
+                "wikipedia.org", "wikimedia.org", "readthedocs.io", "gitbook.io"
+            ],
+            vec!["/docs", "/wiki", "/manual", "/guide", "/tutorial", "/reference", "/help"],
+            vec!["文档", "手册", "教程", "指南", "documentation", "manual", "guide"],
+            65,
+            "Documentation and reference materials"
+        ),
+        
+        // 8. Cloud Storage
+        ClassificationRule::new(
+            "cloud",
+            "云存储",
+            "Cloud Storage",
+            vec![],
+            vec![
+                "drive.google.com", "dropbox.com", "onedrive.live.com", "box.com",
+                "icloud.com", "pan.baidu.com", "weiyun.com", "115.com", "mega.nz"
+            ],
+            vec!["/drive", "/files", "/storage"],
+            vec!["云盘", "网盘", "cloud drive"],
+            60,
+            "Cloud storage services"
+        ),
+        
+        // 9. Email/Communication
+        ClassificationRule::new(
+            "email",
+            "邮箱通讯",
+            "Email & Communication",
+            vec!["mail.", "webmail."],
+            vec![
+                "mail.google.com", "outlook.live.com", "mail.yahoo.com",
+                "mail.163.com", "mail.qq.com", "mail.sina.com",
+                "protonmail.com", "tutanota.com", "zoho.com/mail"
+            ],
+            vec!["/mail", "/inbox", "/email"],
+            vec!["邮箱", "邮件", "email", "inbox"],
+            55,
+            "Email and communication services"
+        ),
+        
+        // 10. Finance/Banking
+        ClassificationRule::new(
+            "finance",
+            "金融理财",
+            "Finance & Banking",
+            vec!["bank.", "banking.", "invest.", "trade."],
+            vec![
+                "paypal.com", "stripe.com", "wise.com", "venmo.com",
+                "chase.com", "wellsfargo.com", "bankofamerica.com",
+                "icbc.com.cn", "ccb.com", "boc.cn", "abchina.com",
+                "alipay.com", "pay.weixin.qq.com"
+            ],
+            vec!["/banking", "/account", "/finance", "/invest", "/trade"],
+            vec!["银行", "理财", "投资", "支付", "banking", "payment"],
+            50,
+            "Finance and banking services"
+        ),
+        
+        // 11. AI/Tools
+        ClassificationRule::new(
+            "ai",
+            "AI工具",
+            "AI Tools",
+            vec!["ai.", "gpt", "llm", "chat."],
+            vec![
+                "chat.openai.com", "openai.com", "anthropic.com", "claude.ai",
+                "bard.google.com", "gemini.google.com", "copilot.microsoft.com",
+                "midjourney.com", "stability.ai", "huggingface.co",
+                "perplexity.ai", "poe.com", "character.ai"
+            ],
+            vec!["/chat", "/ai", "/generate"],
+            vec!["chatgpt", "ai助手", "人工智能", "机器学习"],
+            45,
+            "AI and machine learning tools"
+        ),
+        
+        // 12. Design/Creative
+        ClassificationRule::new(
+            "design",
+            "设计创意",
+            "Design & Creative",
+            vec![],
+            vec![
+                "figma.com", "sketch.com", "canva.com", "adobe.com",
+                "dribbble.com", "behance.net", "unsplash.com", "pexels.com",
+                "pixabay.com", "freepik.com", "icons8.com"
+            ],
+            vec!["/design", "/creative", "/art", "/photo"],
+            vec!["设计", "创意", "素材", "图片", "design", "creative"],
+            40,
+            "Design and creative tools"
+        ),
+        
+        // 13. Education/Learning
+        ClassificationRule::new(
+            "education",
+            "教育学习",
+            "Education & Learning",
+            vec!["learn.", "course.", "edu.", "study."],
+            vec![
+                "coursera.org", "udemy.com", "edx.org", "khanacademy.org",
+                "duolingo.com", "codecademy.com", "udacity.com",
+                "mooc.cn", "xuetangx.com", "icourse163.org"
+            ],
+            vec!["/course", "/learn", "/tutorial", "/lesson"],
+            vec!["课程", "学习", "教程", "培训", "course", "learn", "tutorial"],
+            35,
+            "Education and learning platforms"
+        ),
+        
+        // 14. Music/Audio
+        ClassificationRule::new(
+            "music",
+            "音乐音频",
+            "Music & Audio",
+            vec![],
+            vec![
+                "spotify.com", "music.apple.com", "soundcloud.com",
+                "music.163.com", "y.qq.com", "kugou.com", "kuwo.cn",
+                "podcasts.apple.com", "podcasts.google.com"
+            ],
+            vec!["/music", "/audio", "/podcast", "/playlist"],
+            vec!["音乐", "播客", "music", "podcast", "playlist"],
+            30,
+            "Music and audio platforms"
+        ),
+        
+        // 15. Gaming
+        ClassificationRule::new(
+            "gaming",
+            "游戏娱乐",
+            "Gaming",
+            vec!["game.", "games."],
+            vec![
+                "store.steampowered.com", "epicgames.com", "gog.com",
+                "playstation.com", "xbox.com", "nintendo.com",
+                "itch.io", "roblox.com", "minecraft.net"
+            ],
+            vec!["/game", "/games", "/play"],
+            vec!["游戏", "game", "gaming", "play"],
+            25,
+            "Gaming platforms and game-related sites"
+        ),
+        
+        // 16. Forums/Communities
+        ClassificationRule::new(
+            "forum",
+            "论坛社区",
+            "Forums & Communities",
+            vec!["forum.", "bbs.", "community."],
+            vec![
+                "reddit.com", "quora.com", "zhihu.com", "tieba.baidu.com",
+                "v2ex.com", "segmentfault.com", "juejin.cn"
+            ],
+            vec!["/forum", "/community", "/discuss", "/topic"],
+            vec!["论坛", "社区", "讨论", "forum", "community", "discuss"],
+            20,
+            "Forums and online communities"
+        ),
+        
+        // 17. Dashboard/Admin
+        ClassificationRule::new(
+            "admin",
+            "管理后台",
+            "Admin & Dashboard",
+            vec!["admin.", "dashboard.", "console.", "manage.", "panel."],
+            vec![],
+            vec!["/admin", "/dashboard", "/console", "/manage", "/backend", "/cms"],
+            vec!["管理", "后台", "控制台", "admin", "dashboard", "manage"],
+            15,
+            "Admin panels and dashboards"
+        ),
+        
+        // 18. API/Services
+        ClassificationRule::new(
+            "api",
+            "API服务",
+            "API & Services",
+            vec!["api.", "gateway.", "service."],
+            vec![],
+            vec!["/api/", "/v1/", "/v2/", "/graphql", "/rest"],
+            vec!["api", "接口", "服务"],
+            10,
+            "API endpoints and web services"
+        ),
+    ]
+}
+
+/// Classification statistics
+#[derive(Default)]
+struct ClassificationStats {
+    total_processed: usize,
+    total_classified: usize,
+    by_category: HashMap<String, usize>,
+    unclassified: usize,
+}
+
+impl SyncEngine {
+    /// Print built-in classification rules
+    pub fn print_builtin_rules() {
+        let rules = get_builtin_rules();
+        
+        println!("\n🧠 Built-in Classification Rules");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        
+        for rule in &rules {
+            println!("📁 {} / {}", rule.folder_name, rule.folder_name_en);
+            println!("   Priority: {} | Rule: {}", rule.priority, rule.name);
+            println!("   {}", rule.description);
+            
+            if !rule.domain_patterns.is_empty() {
+                let domains: Vec<_> = rule.domain_patterns.iter().take(5).collect();
+                let more = if rule.domain_patterns.len() > 5 { 
+                    format!(" (+{} more)", rule.domain_patterns.len() - 5) 
+                } else { 
+                    String::new() 
+                };
+                println!("   Domains: {}{}", domains.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "), more);
+            }
+            
+            if !rule.url_patterns.is_empty() {
+                println!("   URL patterns: {}", rule.url_patterns.join(", "));
+            }
+            
+            if !rule.path_patterns.is_empty() {
+                let paths: Vec<_> = rule.path_patterns.iter().take(5).collect();
+                println!("   Path patterns: {}", paths.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+            }
+            
+            println!();
+        }
+        
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("Total: {} rules\n", rules.len());
+        println!("💡 Tip: Use --rules-file to load custom rules from a JSON file.");
+        println!("   Example JSON format:");
+        println!("   {{");
+        println!("     \"name\": \"custom\",");
+        println!("     \"folder_name\": \"自定义\",");
+        println!("     \"folder_name_en\": \"Custom\",");
+        println!("     \"url_patterns\": [\"pattern1\", \"pattern2\"],");
+        println!("     \"domain_patterns\": [\"example.com\"],");
+        println!("     \"path_patterns\": [\"/custom\"],");
+        println!("     \"title_patterns\": [\"custom\"],");
+        println!("     \"priority\": 100,");
+        println!("     \"description\": \"Custom rule description\"");
+        println!("   }}\n");
+    }
+    
+    /// Smart organize bookmarks using rule engine
+    pub async fn smart_organize(
+        &mut self,
+        browser_names: Option<&str>,
+        rules_file: Option<&str>,
+        uncategorized_only: bool,
+        show_stats: bool,
+        dry_run: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        info!("🧠 Starting smart bookmark organization");
+        
+        // Load rules
+        let mut rules = get_builtin_rules();
+        
+        // Load custom rules if provided
+        if let Some(file_path) = rules_file {
+            info!("📂 Loading custom rules from: {}", file_path);
+            let content = std::fs::read_to_string(file_path)
+                .context("Failed to read rules file")?;
+            let custom_rules: Vec<ClassificationRule> = serde_json::from_str(&content)
+                .context("Failed to parse rules file")?;
+            info!("✅ Loaded {} custom rules", custom_rules.len());
+            rules.extend(custom_rules);
+        }
+        
+        // Sort rules by priority (higher first)
+        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        
+        info!("📋 Loaded {} classification rules", rules.len());
+        
+        // Determine target browsers
+        let target_adapters: Vec<_> = if let Some(names) = browser_names {
+            let browser_list: Vec<String> = names
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .collect();
+            
+            self.adapters.iter()
+                .filter(|a| {
+                    let name = a.browser_type().name().to_lowercase();
+                    browser_list.iter().any(|b| name.contains(b))
+                })
+                .collect()
+        } else {
+            self.adapters.iter().collect()
+        };
+        
+        if target_adapters.is_empty() {
+            anyhow::bail!("No browsers found for organization");
+        }
+        
+        info!("🎯 Target browsers:");
+        for adapter in &target_adapters {
+            info!("  - {}", adapter.browser_type().name());
+        }
+        
+        // Process each browser
+        for adapter in &target_adapters {
+            let browser_name = adapter.browser_type().name();
+            
+            match adapter.read_bookmarks() {
+                Ok(mut bookmarks) => {
+                    info!("\n📊 {} : Processing...", browser_name);
+                    
+                    let mut stats = ClassificationStats::default();
+                    
+                    // Collect bookmarks to classify
+                    let mut to_classify: Vec<Bookmark> = Vec::new();
+                    if uncategorized_only {
+                        // Only collect bookmarks at root level (not in folders)
+                        Self::collect_root_bookmarks(&mut bookmarks, &mut to_classify);
+                    } else {
+                        // Collect all non-folder bookmarks from entire tree
+                        Self::collect_all_bookmarks_for_classification(&mut bookmarks, &mut to_classify);
+                    }
+                    
+                    stats.total_processed = to_classify.len();
+                    info!("  📖 Found {} bookmarks to classify", to_classify.len());
+                    
+                    // Classify bookmarks
+                    let mut classified: HashMap<String, Vec<Bookmark>> = HashMap::new();
+                    let mut unclassified: Vec<Bookmark> = Vec::new();
+                    
+                    for bookmark in to_classify {
+                        let url = bookmark.url.as_ref().map(|s| s.as_str()).unwrap_or("");
+                        let title = &bookmark.title;
+                        
+                        let mut matched = false;
+                        for rule in &rules {
+                            if rule.matches(url, title) {
+                                if verbose {
+                                    debug!("  ✓ '{}' -> {} (rule: {})", title, rule.folder_name, rule.name);
+                                }
+                                classified
+                                    .entry(rule.folder_name.clone())
+                                    .or_insert_with(Vec::new)
+                                    .push(bookmark.clone());
+                                *stats.by_category.entry(rule.folder_name.clone()).or_insert(0) += 1;
+                                matched = true;
+                                break;
+                            }
+                        }
+                        
+                        if !matched {
+                            unclassified.push(bookmark);
+                            stats.unclassified += 1;
+                        }
+                    }
+                    
+                    stats.total_classified = stats.total_processed - stats.unclassified;
+                    
+                    // Create/update folders for classified bookmarks
+                    for (folder_name, items) in &classified {
+                        let existing_folder = bookmarks.iter_mut()
+                            .find(|b| b.folder && b.title == *folder_name);
+                        
+                        if let Some(folder) = existing_folder {
+                            folder.children.extend(items.clone());
+                        } else {
+                            let new_folder = Bookmark {
+                                id: format!("smart-folder-{}", chrono::Utc::now().timestamp_millis()),
+                                title: folder_name.clone(),
+                                url: None,
+                                folder: true,
+                                children: items.clone(),
+                                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                                date_modified: Some(chrono::Utc::now().timestamp_millis()),
+                            };
+                            bookmarks.push(new_folder);
+                        }
+                        
+                        info!("  📁 {} : {} bookmarks", folder_name, items.len());
+                    }
+                    
+                    if !unclassified.is_empty() {
+                        info!("  ❓ Unclassified: {} bookmarks", unclassified.len());
+                    }
+                    
+                    // Show statistics if requested
+                    if show_stats {
+                        println!("\n📊 Classification Statistics for {}:", browser_name);
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        println!("  Total processed:  {}", stats.total_processed);
+                        println!("  Total classified: {} ({:.1}%)", 
+                            stats.total_classified,
+                            if stats.total_processed > 0 { 
+                                stats.total_classified as f64 / stats.total_processed as f64 * 100.0 
+                            } else { 0.0 }
+                        );
+                        println!("  Unclassified:     {}", stats.unclassified);
+                        println!("\n  By category:");
+                        
+                        let mut categories: Vec<_> = stats.by_category.iter().collect();
+                        categories.sort_by(|a, b| b.1.cmp(a.1));
+                        for (category, count) in categories {
+                            println!("    📁 {} : {}", category, count);
+                        }
+                        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    }
+                    
+                    if dry_run {
+                        info!("  🏃 Dry run - would classify {} bookmarks into {} folders", 
+                              stats.total_classified, classified.len());
+                    } else if stats.total_classified > 0 {
+                        // Backup first
+                        if let Ok(backup_path) = adapter.backup_bookmarks() {
+                            info!("  💾 Backup created: {:?}", backup_path);
+                        }
+                        
+                        // Write organized bookmarks
+                        match adapter.write_bookmarks(&bookmarks) {
+                            Ok(_) => {
+                                info!("  ✅ Organization complete");
+                            }
+                            Err(e) => {
+                                error!("  ❌ Failed to write organized bookmarks: {}", e);
+                            }
+                        }
+                    } else {
+                        info!("  ✨ No bookmarks to classify");
+                    }
+                }
+                Err(e) => {
+                    error!("  ❌ Failed to read bookmarks from {}: {}", browser_name, e);
+                }
+            }
+        }
+        
+        info!("\n✅ Smart organization complete!");
+        Ok(())
+    }
+    
+    /// Collect bookmarks at root level only (not in folders)
+    fn collect_root_bookmarks(bookmarks: &mut Vec<Bookmark>, collected: &mut Vec<Bookmark>) {
+        let mut indices_to_remove = Vec::new();
+        
+        for (i, bookmark) in bookmarks.iter().enumerate() {
+            if !bookmark.folder {
+                collected.push(bookmark.clone());
+                indices_to_remove.push(i);
+            }
+        }
+        
+        for &i in indices_to_remove.iter().rev() {
+            bookmarks.remove(i);
+        }
+    }
+    
+    /// Collect all bookmarks from entire tree for classification
+    fn collect_all_bookmarks_for_classification(bookmarks: &mut Vec<Bookmark>, collected: &mut Vec<Bookmark>) {
+        // Protected folder names that should not be reorganized
+        let protected_folders = [
+            "登录入口", "社交媒体", "视频流媒体", "开发工具", "购物网站",
+            "新闻资讯", "文档参考", "云存储", "邮箱通讯", "金融理财",
+            "AI工具", "设计创意", "教育学习", "音乐音频", "游戏娱乐",
+            "论坛社区", "管理后台", "API服务", "网站主页"
+        ];
+        
+        // First pass: recursively process children (skip protected folders)
+        for bookmark in bookmarks.iter_mut() {
+            if bookmark.folder && !protected_folders.contains(&bookmark.title.as_str()) {
+                Self::collect_all_bookmarks_for_classification(&mut bookmark.children, collected);
+            }
+        }
+        
+        // Second pass: collect non-folder bookmarks at current level
+        let mut indices_to_remove = Vec::new();
+        for (i, bookmark) in bookmarks.iter().enumerate() {
+            if !bookmark.folder {
+                collected.push(bookmark.clone());
+                indices_to_remove.push(i);
+            }
+        }
+        
+        for &i in indices_to_remove.iter().rev() {
+            bookmarks.remove(i);
+        }
+    }
+}
+
 fn parse_safari_html(html: &str) -> Result<Vec<Bookmark>> {
     use scraper::{Html, Selector};
     
@@ -1709,5 +2415,132 @@ mod tests {
         let stats = CleanupStats::default();
         assert_eq!(stats.duplicates_removed, 0);
         assert_eq!(stats.empty_folders_removed, 0);
+    }
+
+    #[test]
+    fn test_classification_rule_matches_url_pattern() {
+        let rule = ClassificationRule::new(
+            "login",
+            "登录入口",
+            "Login",
+            vec!["login", "signin"],
+            vec![],
+            vec![],
+            vec![],
+            100,
+            "Login pages"
+        );
+        
+        assert!(rule.matches("https://example.com/login", "Example"));
+        assert!(rule.matches("https://signin.example.com", "Example"));
+        assert!(!rule.matches("https://example.com/home", "Example"));
+    }
+
+    #[test]
+    fn test_classification_rule_matches_domain_pattern() {
+        let rule = ClassificationRule::new(
+            "social",
+            "社交媒体",
+            "Social",
+            vec![],
+            vec!["twitter.com", "facebook.com"],
+            vec![],
+            vec![],
+            90,
+            "Social media"
+        );
+        
+        assert!(rule.matches("https://twitter.com/user", "Twitter"));
+        assert!(rule.matches("https://facebook.com/page", "Facebook"));
+        assert!(!rule.matches("https://example.com", "Example"));
+    }
+
+    #[test]
+    fn test_classification_rule_matches_path_pattern() {
+        let rule = ClassificationRule::new(
+            "admin",
+            "管理后台",
+            "Admin",
+            vec![],
+            vec![],
+            vec!["/admin", "/dashboard"],
+            vec![],
+            80,
+            "Admin pages"
+        );
+        
+        assert!(rule.matches("https://example.com/admin/users", "Admin Panel"));
+        assert!(rule.matches("https://example.com/dashboard", "Dashboard"));
+        assert!(!rule.matches("https://example.com/home", "Home"));
+    }
+
+    #[test]
+    fn test_classification_rule_matches_title_pattern() {
+        let rule = ClassificationRule::new(
+            "docs",
+            "文档参考",
+            "Docs",
+            vec![],
+            vec![],
+            vec![],
+            vec!["文档", "documentation"],
+            70,
+            "Documentation"
+        );
+        
+        assert!(rule.matches("https://example.com", "API 文档"));
+        assert!(rule.matches("https://example.com", "Documentation Guide"));
+        assert!(!rule.matches("https://example.com", "Home Page"));
+    }
+
+    #[test]
+    fn test_classification_rule_case_insensitive() {
+        let rule = ClassificationRule::new(
+            "test",
+            "测试",
+            "Test",
+            vec!["LOGIN"],
+            vec!["GITHUB.COM"],
+            vec![],
+            vec![],
+            100,
+            "Test"
+        );
+        
+        assert!(rule.matches("https://example.com/login", "Test"));
+        assert!(rule.matches("https://github.com/repo", "Test"));
+    }
+
+    #[test]
+    fn test_get_builtin_rules() {
+        let rules = get_builtin_rules();
+        
+        assert!(rules.len() >= 18);
+        
+        let login_rule = rules.iter().find(|r| r.name == "login");
+        assert!(login_rule.is_some());
+        assert_eq!(login_rule.unwrap().folder_name, "登录入口");
+        
+        let social_rule = rules.iter().find(|r| r.name == "social");
+        assert!(social_rule.is_some());
+    }
+
+    #[test]
+    fn test_classification_stats_default() {
+        let stats = ClassificationStats::default();
+        assert_eq!(stats.total_processed, 0);
+        assert_eq!(stats.total_classified, 0);
+        assert_eq!(stats.unclassified, 0);
+        assert!(stats.by_category.is_empty());
+    }
+
+    #[test]
+    fn test_rule_priority_order() {
+        let mut rules = get_builtin_rules();
+        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        
+        // Login should have highest priority (100)
+        assert_eq!(rules[0].name, "login");
+        assert_eq!(rules[0].priority, 100);
     }
 }
