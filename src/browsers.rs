@@ -33,7 +33,7 @@ impl BrowserType {
     }
 }
 
-pub trait BrowserAdapter {
+pub trait BrowserAdapter: Send + Sync {
     fn browser_type(&self) -> BrowserType;
     fn detect_bookmark_path(&self) -> Result<PathBuf>;
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>>;
@@ -42,7 +42,7 @@ pub trait BrowserAdapter {
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool>;
 }
 
-pub fn get_all_adapters() -> Vec<Box<dyn BrowserAdapter>> {
+pub fn get_all_adapters() -> Vec<Box<dyn BrowserAdapter + Send + Sync>> {
     vec![
         Box::new(WaterfoxAdapter),
         Box::new(SafariAdapter),
@@ -96,14 +96,12 @@ impl BrowserAdapter for WaterfoxAdapter {
 
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
         let path = self.detect_bookmark_path()?;
-        // TODO: Implement SQLite reading for Firefox-based browsers
-        warn!("Waterfox bookmark reading not yet implemented");
-        Ok(vec![])
+        read_firefox_bookmarks(&path)
     }
 
-    fn write_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<()> {
-        warn!("Waterfox bookmark writing not yet implemented");
-        Ok(())
+    fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+        let path = self.detect_bookmark_path()?;
+        write_firefox_bookmarks(&path, bookmarks)
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
@@ -174,7 +172,8 @@ impl BrowserAdapter for SafariAdapter {
             
             // Convert to Safari plist format
             let plist_value = bookmarks_to_safari_plist(bookmarks)?;
-            let data = plist::to_bytes_xml(&plist_value)?;
+            let mut data = Vec::new();
+            plist::to_writer_xml(&mut data, &plist_value)?;
             std::fs::write(&path, data)?;
             
             debug!("Wrote {} bookmarks to Safari", bookmarks.len());
@@ -327,14 +326,12 @@ impl BrowserAdapter for NightlyAdapter {
 
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
         let path = self.detect_bookmark_path()?;
-        // TODO: Implement SQLite reading for Firefox-based browsers
-        warn!("Nightly bookmark reading not yet implemented");
-        Ok(vec![])
+        read_firefox_bookmarks(&path)
     }
 
-    fn write_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<()> {
-        warn!("Nightly bookmark writing not yet implemented");
-        Ok(())
+    fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+        let path = self.detect_bookmark_path()?;
+        write_firefox_bookmarks(&path, bookmarks)
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
@@ -407,4 +404,96 @@ fn bookmarks_to_chromium_json(bookmarks: &[Bookmark]) -> Result<serde_json::Valu
             }
         }
     }))
+}
+
+// Firefox SQLite helper functions
+fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>> {
+    use rusqlite::Connection;
+    
+    let conn = Connection::open(db_path)?;
+    let mut bookmarks = Vec::new();
+    
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.title, p.url, b.dateAdded, b.lastModified, b.type
+         FROM moz_bookmarks b
+         LEFT JOIN moz_places p ON b.fk = p.id
+         WHERE b.type IN (1, 2)
+         ORDER BY b.position"
+    )?;
+    
+    let bookmark_iter = stmt.query_map([], |row| {
+        let bookmark_type: i32 = row.get(5)?;
+        Ok(Bookmark {
+            id: row.get::<_, i64>(0)?.to_string(),
+            title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            url: row.get::<_, Option<String>>(2)?,
+            folder: bookmark_type == 2,
+            children: vec![],
+            date_added: row.get::<_, Option<i64>>(3)?,
+            date_modified: row.get::<_, Option<i64>>(4)?,
+        })
+    })?;
+    
+    for bookmark in bookmark_iter {
+        bookmarks.push(bookmark?);
+    }
+    
+    debug!("Read {} bookmarks from Firefox database", bookmarks.len());
+    Ok(bookmarks)
+}
+
+fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) -> Result<()> {
+    use rusqlite::Connection;
+    
+    let conn = Connection::open(db_path)?;
+    
+    // Start transaction
+    conn.execute("BEGIN TRANSACTION", [])?;
+    
+    // Clear existing bookmarks (except special folders)
+    conn.execute(
+        "DELETE FROM moz_bookmarks WHERE type = 1 AND parent NOT IN (1, 2, 3, 4)",
+        [],
+    )?;
+    
+    // Insert new bookmarks
+    for bookmark in bookmarks {
+        if bookmark.folder {
+            continue; // Skip folders for now
+        }
+        
+        if let Some(url) = &bookmark.url {
+            // First, ensure the URL exists in moz_places
+            conn.execute(
+                "INSERT OR IGNORE INTO moz_places (url, title, rev_host, hidden, typed, frecency)
+                 VALUES (?1, ?2, '', 0, 0, -1)",
+                [url, &bookmark.title],
+            )?;
+            
+            // Get the place_id
+            let place_id: i64 = conn.query_row(
+                "SELECT id FROM moz_places WHERE url = ?1",
+                [url],
+                |row| row.get(0),
+            )?;
+            
+            // Insert bookmark
+            conn.execute(
+                "INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified)
+                 VALUES (1, ?1, 3, 0, ?2, ?3, ?4)",
+                rusqlite::params![
+                    place_id,
+                    &bookmark.title,
+                    bookmark.date_added.unwrap_or(0),
+                    bookmark.date_modified.unwrap_or(0),
+                ],
+            )?;
+        }
+    }
+    
+    // Commit transaction
+    conn.execute("COMMIT", [])?;
+    
+    debug!("Wrote {} bookmarks to Firefox database", bookmarks.len());
+    Ok(())
 }

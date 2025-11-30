@@ -19,7 +19,7 @@ impl SchedulerConfig {
 }
 
 pub async fn start_scheduler(config: SchedulerConfig) -> Result<()> {
-    let scheduler = JobScheduler::new().await?;
+    let mut scheduler = JobScheduler::new().await?;
     
     info!("⏰ Scheduler initialized with cron: {}", config.cron_expression);
     

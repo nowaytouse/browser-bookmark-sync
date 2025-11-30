@@ -7,7 +7,7 @@ use crate::browsers::{Bookmark, BrowserAdapter, BrowserType, get_all_adapters};
 use crate::validator::ValidationReport;
 
 pub struct SyncEngine {
-    adapters: Vec<Box<dyn BrowserAdapter>>,
+    adapters: Vec<Box<dyn BrowserAdapter + Send + Sync>>,
 }
 
 impl SyncEngine {
