@@ -183,7 +183,11 @@ impl SyncEngine {
         
         // Deduplicate bookmarks by URL within the tree structure
         let before_count = Self::count_all_bookmarks(&merged);
-        Self::deduplicate_bookmarks_tree(&mut merged);
+        
+        // Global deduplication - track all URLs across entire tree
+        let mut seen_urls: HashSet<String> = HashSet::new();
+        Self::deduplicate_bookmarks_global(&mut merged, &mut seen_urls);
+        
         let after_count = Self::count_all_bookmarks(&merged);
         
         if before_count != after_count {
@@ -194,33 +198,51 @@ impl SyncEngine {
         Ok(merged)
     }
     
-    /// Recursively deduplicate bookmarks within the tree structure
-    fn deduplicate_bookmarks_tree(bookmarks: &mut Vec<Bookmark>) {
-        let mut seen_urls: HashSet<String> = HashSet::new();
-        
-        // First pass: collect all URLs and deduplicate at current level
+    /// Recursively deduplicate bookmarks across the ENTIRE tree (global deduplication)
+    fn deduplicate_bookmarks_global(bookmarks: &mut Vec<Bookmark>, seen_urls: &mut HashSet<String>) {
+        // Remove duplicates at current level
         bookmarks.retain(|b| {
             if b.folder {
                 true // Keep all folders
             } else if let Some(ref url) = b.url {
-                let normalized = url.trim().to_lowercase();
+                // Normalize URL for comparison
+                let normalized = Self::normalize_url(url);
                 if seen_urls.contains(&normalized) {
-                    false // Remove duplicate
+                    false // Remove duplicate - URL already seen elsewhere in tree
                 } else {
                     seen_urls.insert(normalized);
                     true
                 }
             } else {
-                true // Keep bookmarks without URL (shouldn't happen)
+                true
             }
         });
         
-        // Second pass: recursively deduplicate children of folders
+        // Recursively process children (using same seen_urls set for global dedup)
         for bookmark in bookmarks.iter_mut() {
             if bookmark.folder && !bookmark.children.is_empty() {
-                Self::deduplicate_bookmarks_tree(&mut bookmark.children);
+                Self::deduplicate_bookmarks_global(&mut bookmark.children, seen_urls);
             }
         }
+    }
+    
+    /// Normalize URL for deduplication comparison
+    fn normalize_url(url: &str) -> String {
+        let mut normalized = url.trim().to_lowercase();
+        // Remove trailing slash
+        if normalized.ends_with('/') {
+            normalized.pop();
+        }
+        // Remove common tracking parameters
+        if let Some(pos) = normalized.find('?') {
+            // Keep URL without query params for basic dedup
+            // More aggressive: normalized.truncate(pos);
+        }
+        // Remove fragment
+        if let Some(pos) = normalized.find('#') {
+            normalized.truncate(pos);
+        }
+        normalized
     }
     
     fn count_all_folders(bookmarks: &[Bookmark]) -> usize {
