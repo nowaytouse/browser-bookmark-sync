@@ -55,105 +55,112 @@ fn test_validate_command() {
 }
 
 #[test]
-fn test_migrate_dry_run() {
-    let (_success, stdout, stderr) = run_cli(&["migrate", "--dry-run"]);
+fn test_sync_dry_run() {
+    let (_success, stdout, stderr) = run_cli(&["sync", "--dry-run"]);
 
-    // Should identify hub browsers
+    // Should show full sync (bookmarks + history + cookies)
+    let combined = format!("{}{}", stdout, stderr);
     assert!(
-        stderr.contains("Hub") || stdout.contains("Hub"),
-        "Should identify hub browsers"
+        combined.contains("bookmarks") || combined.contains("Merged"),
+        "Should show bookmark sync"
     );
-
-    // Should show dry run summary
     assert!(
-        stderr.contains("Dry run") || stdout.contains("Dry run"),
+        combined.contains("history") || combined.contains("History"),
+        "Should show history sync"
+    );
+    assert!(
+        combined.contains("cookies") || combined.contains("Cookies"),
+        "Should show cookies sync"
+    );
+    assert!(
+        combined.contains("Dry run") || combined.contains("dry run"),
         "Should indicate dry run mode"
     );
 
-    println!("✅ migrate --dry-run works");
+    println!("✅ sync --dry-run works (full sync: bookmarks + history + cookies)");
 }
 
 #[test]
-fn test_migrate_with_history_dry_run() {
-    let (_success, stdout, stderr) = run_cli(&["migrate", "--history", "--dry-run"]);
+fn test_sync_history_dry_run() {
+    let (_success, stdout, stderr) = run_cli(&["sync-history", "--dry-run"]);
 
-    // Should show history sync
+    // Should sync ALL history (no --days option)
+    let combined = format!("{}{}", stdout, stderr);
     assert!(
-        stderr.contains("history") || stdout.contains("history"),
+        combined.contains("history") || combined.contains("History"),
         "Should mention history synchronization"
     );
-
-    // Should show merged result
     assert!(
-        stderr.contains("Merged") || stderr.contains("items") || stdout.contains("Merged") || stdout.contains("items"),
+        combined.contains("Merged") || combined.contains("unique"),
         "Should show merge results"
     );
 
-    println!("✅ migrate --history --dry-run works");
+    println!("✅ sync-history --dry-run works (syncs ALL history)");
 }
 
 #[test]
-fn test_migrate_with_clear_others_dry_run() {
-    let (_success, stdout, stderr) = run_cli(&["migrate", "--clear-others", "--dry-run"]);
+fn test_sync_with_custom_browsers() {
+    let (_success, stdout, stderr) = run_cli(&[
+        "sync",
+        "--browsers",
+        "waterfox,brave-nightly",
+        "--dry-run",
+    ]);
 
-    // Should show non-hub browsers will be cleared
+    let combined = format!("{}{}", stdout, stderr);
+    // Should identify hub browsers
     assert!(
-        stderr.contains("cleared") || stderr.contains("Non-hub") || 
-        stdout.contains("cleared") || stdout.contains("Non-hub"),
+        combined.contains("Hub") || combined.contains("hub") || combined.contains("waterfox"),
+        "Should identify hub browsers"
+    );
+
+    println!("✅ sync --browsers works");
+}
+
+#[test]
+fn test_sync_clear_others_dry_run() {
+    let (_success, stdout, stderr) = run_cli(&["sync", "--clear-others", "--dry-run"]);
+
+    let combined = format!("{}{}", stdout, stderr);
+    // Should show that non-hub browsers will be cleared
+    assert!(
+        combined.contains("Non-hub") || combined.contains("clear") || combined.contains("CLEARED"),
         "Should indicate non-hub browsers will be cleared"
     );
 
-    println!("✅ migrate --clear-others --dry-run works");
+    println!("✅ sync --clear-others --dry-run works");
 }
 
 #[test]
 fn test_help_commands() {
-    // Test main help - help goes to stdout
+    // Test main help
     let (_, stdout, stderr) = run_cli(&["--help"]);
     let combined = format!("{}{}", stdout, stderr);
     assert!(
-        combined.contains("migrate") || combined.contains("Commands"),
+        combined.contains("sync") && combined.contains("validate"),
         "Help should list available commands"
     );
 
-    // Test subcommand help
-    let (_, stdout, stderr) = run_cli(&["migrate", "--help"]);
+    // Test sync help - should show full sync description
+    let (_, stdout, stderr) = run_cli(&["sync", "--help"]);
     let combined = format!("{}{}", stdout, stderr);
     assert!(
-        combined.contains("browsers") || combined.contains("hub") || combined.contains("Hub"),
-        "migrate help should show options"
+        combined.contains("bookmarks") || combined.contains("history") || combined.contains("Full"),
+        "sync help should mention full sync"
     );
 
     println!("✅ help commands work");
 }
 
 #[test]
-fn test_full_migration_dry_run() {
-    // Test full migration with all options
-    let (_success, stdout, stderr) = run_cli(&[
-        "migrate",
-        "--browsers", "waterfox,brave-nightly",
-        "--history",
-        "--clear-others",
-        "--dry-run",
-        "--verbose"
-    ]);
+fn test_sync_cookies_dry_run() {
+    let (_success, stdout, stderr) = run_cli(&["sync-cookies", "--dry-run"]);
 
     let combined = format!("{}{}", stdout, stderr);
-    
-    // Should show hub browsers
-    assert!(combined.contains("waterfox") || combined.contains("Waterfox"), 
-        "Should mention Waterfox");
-    assert!(combined.contains("brave") || combined.contains("Brave"), 
-        "Should mention Brave");
-    
-    // Should show data statistics
-    assert!(combined.contains("URLs") || combined.contains("bookmarks"), 
-        "Should show bookmark statistics");
-    
-    // Should complete successfully
-    assert!(combined.contains("Migration complete") || combined.contains("Summary"), 
-        "Should complete migration");
+    assert!(
+        combined.contains("cookies") || combined.contains("Cookies"),
+        "Should mention cookies synchronization"
+    );
 
-    println!("✅ full migration dry-run works");
+    println!("✅ sync-cookies --dry-run works");
 }
