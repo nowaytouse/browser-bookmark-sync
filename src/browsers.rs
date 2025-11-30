@@ -132,37 +132,38 @@ impl BrowserAdapter for WaterfoxAdapter {
     }
 
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
-        // Read from ALL profiles and merge
+        // Only read from default profile (first one with valid data)
         let profiles = self.detect_all_profiles()?;
-        let mut all_bookmarks = Vec::new();
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
+        for profile_path in profiles.iter() {
             match read_firefox_bookmarks(profile_path) {
-                Ok(bookmarks) => {
-                    info!("✅ Waterfox Profile {}: {} bookmarks", idx + 1, bookmarks.len());
-                    all_bookmarks.extend(bookmarks);
+                Ok(bookmarks) if !bookmarks.is_empty() => {
+                    let count = bookmarks.len();
+                    info!("✅ Waterfox (Default): {} bookmarks", count);
+                    return Ok(bookmarks);
                 }
-                Err(e) => {
-                    warn!("⚠️  Failed to read Waterfox profile {}: {}", idx + 1, e);
-                }
+                Ok(_) => continue, // Empty profile, try next
+                Err(_) => continue, // Failed, try next
             }
         }
         
-        info!("📊 Total Waterfox bookmarks from {} profiles: {}", profiles.len(), all_bookmarks.len());
-        Ok(all_bookmarks)
+        Ok(Vec::new())
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
-        // Write to ALL profiles
+        // Only write to default profile (first valid one)
+        // Note: detect_all_profiles returns paths to places.sqlite files
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            match write_firefox_bookmarks(profile_path, bookmarks) {
-                Ok(_) => {
-                    info!("✅ Wrote {} bookmarks to Waterfox profile {}", bookmarks.len(), idx + 1);
-                }
-                Err(e) => {
-                    warn!("⚠️  Failed to write to Waterfox profile {}: {}", idx + 1, e);
-                }
+        let default_profile = profiles.iter()
+            .find(|p| p.exists())
+            .ok_or_else(|| anyhow::anyhow!("No valid Waterfox profile found"))?;
+        
+        match write_firefox_bookmarks(default_profile, bookmarks) {
+            Ok(_) => {
+                info!("✅ Wrote {} bookmarks to Waterfox (Default)", bookmarks.len());
+            }
+            Err(e) => {
+                warn!("⚠️  Failed to write to Waterfox: {}", e);
             }
         }
         Ok(())
@@ -184,36 +185,33 @@ impl BrowserAdapter for WaterfoxAdapter {
     }
     
     fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        // Only read from default profile (first valid one) for performance
         let profiles = self.detect_all_profiles()?;
-        let mut all_history = Vec::new();
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
+        for profile_path in profiles.iter() {
             match read_firefox_history(profile_path, days) {
-                Ok(history) => {
-                    info!("✅ Waterfox Profile {}: {} history items", idx + 1, history.len());
-                    all_history.extend(history);
+                Ok(history) if !history.is_empty() => {
+                    info!("✅ Waterfox (Default): {} history items", history.len());
+                    return Ok(history);
                 }
-                Err(e) => {
-                    warn!("⚠️  Failed to read Waterfox history from profile {}: {}", idx + 1, e);
-                }
+                Ok(_) => continue,
+                Err(_) => continue,
             }
         }
         
-        info!("📊 Total Waterfox history from {} profiles: {}", profiles.len(), all_history.len());
-        Ok(all_history)
+        Ok(Vec::new())
     }
     
     fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+        // Only write to default profile
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            match write_firefox_history(profile_path, items) {
-                Ok(_) => {
-                    info!("✅ Wrote {} history items to Waterfox profile {}", items.len(), idx + 1);
-                }
-                Err(e) => {
-                    warn!("⚠️  Failed to write history to Waterfox profile {}: {}", idx + 1, e);
-                }
-            }
+        let default_profile = profiles.iter()
+            .find(|p| p.exists())
+            .ok_or_else(|| anyhow::anyhow!("No valid Waterfox profile found"))?;
+        
+        match write_firefox_history(default_profile, items) {
+            Ok(_) => info!("✅ Wrote {} history items to Waterfox (Default)", items.len()),
+            Err(e) => warn!("⚠️  Failed to write history to Waterfox: {}", e),
         }
         Ok(())
     }
@@ -223,35 +221,34 @@ impl BrowserAdapter for WaterfoxAdapter {
     }
     
     fn read_cookies(&self) -> Result<Vec<Cookie>> {
+        // Only read from default profile for performance
         let profiles = self.detect_all_profiles()?;
-        let mut all_cookies = Vec::new();
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            // cookies.sqlite is in the same directory as places.sqlite
+        for profile_path in profiles.iter() {
             let cookies_path = profile_path.parent()
                 .ok_or_else(|| anyhow::anyhow!("Invalid profile path"))?
                 .join("cookies.sqlite");
             
             if cookies_path.exists() {
                 match read_firefox_cookies(&cookies_path) {
-                    Ok(cookies) => {
-                        info!("✅ Waterfox Profile {}: {} cookies", idx + 1, cookies.len());
-                        all_cookies.extend(cookies);
+                    Ok(cookies) if !cookies.is_empty() => {
+                        info!("✅ Waterfox (Default): {} cookies", cookies.len());
+                        return Ok(cookies);
                     }
-                    Err(e) => {
-                        warn!("⚠️  Failed to read Waterfox cookies from profile {}: {}", idx + 1, e);
-                    }
+                    Ok(_) => continue,
+                    Err(_) => continue,
                 }
             }
         }
         
-        info!("📊 Total Waterfox cookies from {} profiles: {}", profiles.len(), all_cookies.len());
-        Ok(all_cookies)
+        Ok(Vec::new())
     }
     
     fn write_cookies(&self, cookies: &[Cookie]) -> Result<()> {
+        // Only write to default profile
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
+        
+        for profile_path in profiles.iter() {
             let cookies_path = profile_path.parent()
                 .ok_or_else(|| anyhow::anyhow!("Invalid profile path"))?
                 .join("cookies.sqlite");
@@ -259,11 +256,10 @@ impl BrowserAdapter for WaterfoxAdapter {
             if cookies_path.exists() {
                 match write_firefox_cookies(&cookies_path, cookies) {
                     Ok(_) => {
-                        info!("✅ Wrote {} cookies to Waterfox profile {}", cookies.len(), idx + 1);
+                        info!("✅ Wrote {} cookies to Waterfox (Default)", cookies.len());
+                        return Ok(());
                     }
-                    Err(e) => {
-                        warn!("⚠️  Failed to write cookies to Waterfox profile {}: {}", idx + 1, e);
-                    }
+                    Err(e) => warn!("⚠️  Failed to write cookies to Waterfox: {}", e),
                 }
             }
         }
@@ -560,44 +556,39 @@ impl BrowserAdapter for BraveAdapter {
     }
 
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        // Only read from Default profile
         let profiles = self.detect_all_profiles()?;
-        let mut all_bookmarks = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let bookmarks_path = profile_path.join("Bookmarks");
-            if bookmarks_path.exists() {
-                match std::fs::read_to_string(&bookmarks_path) {
-                    Ok(data) => {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                            if let Ok(bookmarks) = parse_chromium_bookmarks(&json) {
-                                let count = count_bookmarks(&bookmarks);
-                                info!("✅ Brave Profile {}: {} bookmarks ({} top-level)", idx + 1, count, bookmarks.len());
-                                all_bookmarks.extend(bookmarks);
-                            }
-                        }
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Brave profile {}: {}", idx + 1, e),
-                }
-            }
+        let bookmarks_path = default_profile.join("Bookmarks");
+        if !bookmarks_path.exists() {
+            return Ok(Vec::new());
         }
         
-        let total = count_bookmarks(&all_bookmarks);
-        info!("📊 Total Brave bookmarks from {} profiles: {}", profiles.len(), total);
-        Ok(all_bookmarks)
+        let data = std::fs::read_to_string(&bookmarks_path)?;
+        let json: serde_json::Value = serde_json::from_str(&data)?;
+        let bookmarks = parse_chromium_bookmarks(&json)?;
+        
+        let count = count_bookmarks(&bookmarks);
+        info!("✅ Brave (Default): {} bookmarks", count);
+        Ok(bookmarks)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave profiles found"))?;
+        
         let json = bookmarks_to_chromium_json(bookmarks)?;
         let data = serde_json::to_string_pretty(&json)?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let bookmarks_path = profile_path.join("Bookmarks");
-            match std::fs::write(&bookmarks_path, &data) {
-                Ok(_) => info!("✅ Wrote {} bookmarks to Brave profile {}", bookmarks.len(), idx + 1),
-                Err(e) => warn!("⚠️  Failed to write to Brave profile {}: {}", idx + 1, e),
-            }
-        }
+        let bookmarks_path = default_profile.join("Bookmarks");
+        std::fs::write(&bookmarks_path, &data)?;
+        
+        let total = count_bookmarks(bookmarks);
+        info!("✅ Wrote {} bookmarks to Brave (Default)", total);
         Ok(())
     }
 
@@ -625,35 +616,36 @@ impl BrowserAdapter for BraveAdapter {
     }
     
     fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        // Only read from Default profile for performance
         let profiles = self.detect_all_profiles()?;
-        let mut all_history = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let history_path = profile_path.join("History");
-            if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-                match read_chromium_history(&history_path, days) {
-                    Ok(history) => {
-                        info!("✅ Brave Profile {}: {} history items", idx + 1, history.len());
-                        all_history.extend(history);
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Brave history from profile {}: {}", idx + 1, e),
+        let history_path = default_profile.join("History");
+        if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+            match read_chromium_history(&history_path, days) {
+                Ok(history) => {
+                    info!("✅ Brave (Default): {} history items", history.len());
+                    return Ok(history);
                 }
+                Err(e) => warn!("⚠️  Failed to read Brave history: {}", e),
             }
         }
         
-        info!("📊 Total Brave history from {} profiles: {}", profiles.len(), all_history.len());
-        Ok(all_history)
+        Ok(Vec::new())
     }
     
     fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let history_path = profile_path.join("History");
-            if history_path.exists() {
-                match write_chromium_history(&history_path, items) {
-                    Ok(_) => info!("✅ Wrote {} history items to Brave profile {}", items.len(), idx + 1),
-                    Err(e) => warn!("⚠️  Failed to write history to Brave profile {}: {}", idx + 1, e),
-                }
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave profiles found"))?;
+        
+        let history_path = default_profile.join("History");
+        if history_path.exists() {
+            match write_chromium_history(&history_path, items) {
+                Ok(_) => info!("✅ Wrote {} history items to Brave (Default)", items.len()),
+                Err(e) => warn!("⚠️  Failed to write history to Brave: {}", e),
             }
         }
         Ok(())
@@ -664,35 +656,36 @@ impl BrowserAdapter for BraveAdapter {
     }
     
     fn read_cookies(&self) -> Result<Vec<Cookie>> {
+        // Only read from Default profile for performance
         let profiles = self.detect_all_profiles()?;
-        let mut all_cookies = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let cookies_path = profile_path.join("Cookies");
-            if cookies_path.exists() {
-                match read_chromium_cookies(&cookies_path) {
-                    Ok(cookies) => {
-                        info!("✅ Brave Profile {}: {} cookies", idx + 1, cookies.len());
-                        all_cookies.extend(cookies);
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Brave cookies from profile {}: {}", idx + 1, e),
+        let cookies_path = default_profile.join("Cookies");
+        if cookies_path.exists() {
+            match read_chromium_cookies(&cookies_path) {
+                Ok(cookies) => {
+                    info!("✅ Brave (Default): {} cookies", cookies.len());
+                    return Ok(cookies);
                 }
+                Err(e) => warn!("⚠️  Failed to read Brave cookies: {}", e),
             }
         }
         
-        info!("📊 Total Brave cookies from {} profiles: {}", profiles.len(), all_cookies.len());
-        Ok(all_cookies)
+        Ok(Vec::new())
     }
     
     fn write_cookies(&self, cookies: &[Cookie]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let cookies_path = profile_path.join("Cookies");
-            if cookies_path.exists() {
-                match write_chromium_cookies(&cookies_path, cookies) {
-                    Ok(_) => info!("✅ Wrote {} cookies to Brave profile {}", cookies.len(), idx + 1),
-                    Err(e) => warn!("⚠️  Failed to write cookies to Brave profile {}: {}", idx + 1, e),
-                }
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave profiles found"))?;
+        
+        let cookies_path = default_profile.join("Cookies");
+        if cookies_path.exists() {
+            match write_chromium_cookies(&cookies_path, cookies) {
+                Ok(_) => info!("✅ Wrote {} cookies to Brave (Default)", cookies.len()),
+                Err(e) => warn!("⚠️  Failed to write cookies to Brave: {}", e),
             }
         }
         Ok(())
@@ -722,45 +715,39 @@ impl BrowserAdapter for BraveNightlyAdapter {
     }
 
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        // Only read from Default profile to avoid data duplication
         let profiles = self.detect_all_profiles()?;
-        let mut all_bookmarks = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave Nightly profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let bookmarks_path = profile_path.join("Bookmarks");
-            if bookmarks_path.exists() {
-                match std::fs::read_to_string(&bookmarks_path) {
-                    Ok(data) => {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                            if let Ok(bookmarks) = parse_chromium_bookmarks(&json) {
-                                let count = count_bookmarks(&bookmarks);
-                                info!("✅ Brave Nightly Profile {}: {} bookmarks ({} top-level)", idx + 1, count, bookmarks.len());
-                                all_bookmarks.extend(bookmarks);
-                            }
-                        }
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Brave Nightly profile {}: {}", idx + 1, e),
-                }
-            }
+        let bookmarks_path = default_profile.join("Bookmarks");
+        if !bookmarks_path.exists() {
+            return Ok(Vec::new());
         }
         
-        let total = count_bookmarks(&all_bookmarks);
-        info!("📊 Total Brave Nightly bookmarks from {} profiles: {}", profiles.len(), total);
-        Ok(all_bookmarks)
+        let data = std::fs::read_to_string(&bookmarks_path)?;
+        let json: serde_json::Value = serde_json::from_str(&data)?;
+        let bookmarks = parse_chromium_bookmarks(&json)?;
+        
+        let count = count_bookmarks(&bookmarks);
+        info!("✅ Brave Nightly (Default): {} bookmarks", count);
+        Ok(bookmarks)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave Nightly profiles found"))?;
+        
         let json = bookmarks_to_chromium_json(bookmarks)?;
         let data = serde_json::to_string_pretty(&json)?;
         
+        let bookmarks_path = default_profile.join("Bookmarks");
+        std::fs::write(&bookmarks_path, &data)?;
+        
         let total = count_bookmarks(bookmarks);
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let bookmarks_path = profile_path.join("Bookmarks");
-            match std::fs::write(&bookmarks_path, &data) {
-                Ok(_) => info!("✅ Wrote {} bookmarks to Brave Nightly profile {}", total, idx + 1),
-                Err(e) => warn!("⚠️  Failed to write to Brave Nightly profile {}: {}", idx + 1, e),
-            }
-        }
+        info!("✅ Wrote {} bookmarks to Brave Nightly (Default)", total);
         Ok(())
     }
 
@@ -788,35 +775,36 @@ impl BrowserAdapter for BraveNightlyAdapter {
     }
     
     fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        // Only read from Default profile for performance
         let profiles = self.detect_all_profiles()?;
-        let mut all_history = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave Nightly profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let history_path = profile_path.join("History");
-            if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-                match read_chromium_history(&history_path, days) {
-                    Ok(history) => {
-                        info!("✅ Brave Nightly Profile {}: {} history items", idx + 1, history.len());
-                        all_history.extend(history);
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Brave Nightly history from profile {}: {}", idx + 1, e),
+        let history_path = default_profile.join("History");
+        if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+            match read_chromium_history(&history_path, days) {
+                Ok(history) => {
+                    info!("✅ Brave Nightly (Default): {} history items", history.len());
+                    return Ok(history);
                 }
+                Err(e) => warn!("⚠️  Failed to read Brave Nightly history: {}", e),
             }
         }
         
-        info!("📊 Total Brave Nightly history from {} profiles: {}", profiles.len(), all_history.len());
-        Ok(all_history)
+        Ok(Vec::new())
     }
     
     fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let history_path = profile_path.join("History");
-            if history_path.exists() {
-                match write_chromium_history(&history_path, items) {
-                    Ok(_) => info!("✅ Wrote {} history items to Brave Nightly profile {}", items.len(), idx + 1),
-                    Err(e) => warn!("⚠️  Failed to write history to Brave Nightly profile {}: {}", idx + 1, e),
-                }
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave Nightly profiles found"))?;
+        
+        let history_path = default_profile.join("History");
+        if history_path.exists() {
+            match write_chromium_history(&history_path, items) {
+                Ok(_) => info!("✅ Wrote {} history items to Brave Nightly (Default)", items.len()),
+                Err(e) => warn!("⚠️  Failed to write history to Brave Nightly: {}", e),
             }
         }
         Ok(())
@@ -827,35 +815,36 @@ impl BrowserAdapter for BraveNightlyAdapter {
     }
     
     fn read_cookies(&self) -> Result<Vec<Cookie>> {
+        // Only read from Default profile for performance
         let profiles = self.detect_all_profiles()?;
-        let mut all_cookies = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave Nightly profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let cookies_path = profile_path.join("Cookies");
-            if cookies_path.exists() {
-                match read_chromium_cookies(&cookies_path) {
-                    Ok(cookies) => {
-                        info!("✅ Brave Nightly Profile {}: {} cookies", idx + 1, cookies.len());
-                        all_cookies.extend(cookies);
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Brave Nightly cookies from profile {}: {}", idx + 1, e),
+        let cookies_path = default_profile.join("Cookies");
+        if cookies_path.exists() {
+            match read_chromium_cookies(&cookies_path) {
+                Ok(cookies) => {
+                    info!("✅ Brave Nightly (Default): {} cookies", cookies.len());
+                    return Ok(cookies);
                 }
+                Err(e) => warn!("⚠️  Failed to read Brave Nightly cookies: {}", e),
             }
         }
         
-        info!("📊 Total Brave Nightly cookies from {} profiles: {}", profiles.len(), all_cookies.len());
-        Ok(all_cookies)
+        Ok(Vec::new())
     }
     
     fn write_cookies(&self, cookies: &[Cookie]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let cookies_path = profile_path.join("Cookies");
-            if cookies_path.exists() {
-                match write_chromium_cookies(&cookies_path, cookies) {
-                    Ok(_) => info!("✅ Wrote {} cookies to Brave Nightly profile {}", cookies.len(), idx + 1),
-                    Err(e) => warn!("⚠️  Failed to write cookies to Brave Nightly profile {}: {}", idx + 1, e),
-                }
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Brave Nightly profiles found"))?;
+        
+        let cookies_path = default_profile.join("Cookies");
+        if cookies_path.exists() {
+            match write_chromium_cookies(&cookies_path, cookies) {
+                Ok(_) => info!("✅ Wrote {} cookies to Brave Nightly (Default)", cookies.len()),
+                Err(e) => warn!("⚠️  Failed to write cookies to Brave Nightly: {}", e),
             }
         }
         Ok(())
@@ -885,45 +874,39 @@ impl BrowserAdapter for ChromeAdapter {
     }
 
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        // Only read from Default profile
         let profiles = self.detect_all_profiles()?;
-        let mut all_bookmarks = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let bookmarks_path = profile_path.join("Bookmarks");
-            if bookmarks_path.exists() {
-                match std::fs::read_to_string(&bookmarks_path) {
-                    Ok(data) => {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                            if let Ok(bookmarks) = parse_chromium_bookmarks(&json) {
-                                let count = count_bookmarks(&bookmarks);
-                                info!("✅ Chrome Profile {}: {} bookmarks ({} top-level)", idx + 1, count, bookmarks.len());
-                                all_bookmarks.extend(bookmarks);
-                            }
-                        }
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Chrome profile {}: {}", idx + 1, e),
-                }
-            }
+        let bookmarks_path = default_profile.join("Bookmarks");
+        if !bookmarks_path.exists() {
+            return Ok(Vec::new());
         }
         
-        let total = count_bookmarks(&all_bookmarks);
-        info!("📊 Total Chrome bookmarks from {} profiles: {}", profiles.len(), total);
-        Ok(all_bookmarks)
+        let data = std::fs::read_to_string(&bookmarks_path)?;
+        let json: serde_json::Value = serde_json::from_str(&data)?;
+        let bookmarks = parse_chromium_bookmarks(&json)?;
+        
+        let count = count_bookmarks(&bookmarks);
+        info!("✅ Chrome (Default): {} bookmarks", count);
+        Ok(bookmarks)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
+        
         let json = bookmarks_to_chromium_json(bookmarks)?;
         let data = serde_json::to_string_pretty(&json)?;
         
+        let bookmarks_path = default_profile.join("Bookmarks");
+        std::fs::write(&bookmarks_path, &data)?;
+        
         let total = count_bookmarks(bookmarks);
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let bookmarks_path = profile_path.join("Bookmarks");
-            match std::fs::write(&bookmarks_path, &data) {
-                Ok(_) => info!("✅ Wrote {} bookmarks to Chrome profile {}", total, idx + 1),
-                Err(e) => warn!("⚠️  Failed to write to Chrome profile {}: {}", idx + 1, e),
-            }
-        }
+        info!("✅ Wrote {} bookmarks to Chrome (Default)", total);
         Ok(())
     }
 
@@ -951,35 +934,36 @@ impl BrowserAdapter for ChromeAdapter {
     }
     
     fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        // Only read from Default profile for performance
         let profiles = self.detect_all_profiles()?;
-        let mut all_history = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let history_path = profile_path.join("History");
-            if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-                match read_chromium_history(&history_path, days) {
-                    Ok(history) => {
-                        info!("✅ Chrome Profile {}: {} history items", idx + 1, history.len());
-                        all_history.extend(history);
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Chrome history from profile {}: {}", idx + 1, e),
+        let history_path = default_profile.join("History");
+        if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+            match read_chromium_history(&history_path, days) {
+                Ok(history) => {
+                    info!("✅ Chrome (Default): {} history items", history.len());
+                    return Ok(history);
                 }
+                Err(e) => warn!("⚠️  Failed to read Chrome history: {}", e),
             }
         }
         
-        info!("📊 Total Chrome history from {} profiles: {}", profiles.len(), all_history.len());
-        Ok(all_history)
+        Ok(Vec::new())
     }
     
     fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let history_path = profile_path.join("History");
-            if history_path.exists() {
-                match write_chromium_history(&history_path, items) {
-                    Ok(_) => info!("✅ Wrote {} history items to Chrome profile {}", items.len(), idx + 1),
-                    Err(e) => warn!("⚠️  Failed to write history to Chrome profile {}: {}", idx + 1, e),
-                }
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
+        
+        let history_path = default_profile.join("History");
+        if history_path.exists() {
+            match write_chromium_history(&history_path, items) {
+                Ok(_) => info!("✅ Wrote {} history items to Chrome (Default)", items.len()),
+                Err(e) => warn!("⚠️  Failed to write history to Chrome: {}", e),
             }
         }
         Ok(())
@@ -990,35 +974,36 @@ impl BrowserAdapter for ChromeAdapter {
     }
     
     fn read_cookies(&self) -> Result<Vec<Cookie>> {
+        // Only read from Default profile for performance
         let profiles = self.detect_all_profiles()?;
-        let mut all_cookies = Vec::new();
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
         
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let cookies_path = profile_path.join("Cookies");
-            if cookies_path.exists() {
-                match read_chromium_cookies(&cookies_path) {
-                    Ok(cookies) => {
-                        info!("✅ Chrome Profile {}: {} cookies", idx + 1, cookies.len());
-                        all_cookies.extend(cookies);
-                    }
-                    Err(e) => warn!("⚠️  Failed to read Chrome cookies from profile {}: {}", idx + 1, e),
+        let cookies_path = default_profile.join("Cookies");
+        if cookies_path.exists() {
+            match read_chromium_cookies(&cookies_path) {
+                Ok(cookies) => {
+                    info!("✅ Chrome (Default): {} cookies", cookies.len());
+                    return Ok(cookies);
                 }
+                Err(e) => warn!("⚠️  Failed to read Chrome cookies: {}", e),
             }
         }
         
-        info!("📊 Total Chrome cookies from {} profiles: {}", profiles.len(), all_cookies.len());
-        Ok(all_cookies)
+        Ok(Vec::new())
     }
     
     fn write_cookies(&self, cookies: &[Cookie]) -> Result<()> {
+        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        for (idx, profile_path) in profiles.iter().enumerate() {
-            let cookies_path = profile_path.join("Cookies");
-            if cookies_path.exists() {
-                match write_chromium_cookies(&cookies_path, cookies) {
-                    Ok(_) => info!("✅ Wrote {} cookies to Chrome profile {}", cookies.len(), idx + 1),
-                    Err(e) => warn!("⚠️  Failed to write cookies to Chrome profile {}: {}", idx + 1, e),
-                }
+        let default_profile = profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
+        
+        let cookies_path = default_profile.join("Cookies");
+        if cookies_path.exists() {
+            match write_chromium_cookies(&cookies_path, cookies) {
+                Ok(_) => info!("✅ Wrote {} cookies to Chrome (Default)", cookies.len()),
+                Err(e) => warn!("⚠️  Failed to write cookies to Chrome: {}", e),
             }
         }
         Ok(())
