@@ -89,6 +89,17 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    
+    /// Synchronize cookies across browsers
+    SyncCookies {
+        /// Dry run - show what would be synced without making changes
+        #[arg(short, long)]
+        dry_run: bool,
+        
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
 }
 
 #[tokio::main]
@@ -149,6 +160,13 @@ async fn main() -> Result<()> {
             let mut engine = SyncEngine::new()?;
             engine.sync_reading_list(dry_run, verbose).await?;
             info!("✅ Reading list synchronization complete!");
+        }
+        
+        Commands::SyncCookies { dry_run, verbose } => {
+            info!("🍪 Starting cookies synchronization...");
+            let mut engine = SyncEngine::new()?;
+            engine.sync_cookies(dry_run, verbose).await?;
+            info!("✅ Cookies synchronization complete!");
         }
     }
 

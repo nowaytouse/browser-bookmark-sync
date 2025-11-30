@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use tracing::{info, warn, error, debug};
 use sha2::{Sha256, Digest};
 
-use crate::browsers::{Bookmark, BrowserAdapter, BrowserType, get_all_adapters, HistoryItem, ReadingListItem};
+use crate::browsers::{Bookmark, BrowserAdapter, BrowserType, get_all_adapters, HistoryItem, ReadingListItem, Cookie};
 use crate::validator::ValidationReport;
 
 pub struct SyncEngine {
@@ -429,6 +429,94 @@ impl SyncEngine {
         merged.sort_by(|a, b| {
             b.date_added.unwrap_or(0).cmp(&a.date_added.unwrap_or(0))
         });
+
+        Ok(merged)
+    }
+    
+    pub async fn sync_cookies(&mut self, dry_run: bool, verbose: bool) -> Result<()> {
+        info!("🍪 Starting cookies synchronization");
+        
+        info!("📖 Phase 1: Reading cookies from all browsers");
+        let mut browser_cookies = HashMap::new();
+        
+        for adapter in &self.adapters {
+            if !adapter.supports_cookies() {
+                debug!("{} does not support cookies sync", adapter.browser_type().name());
+                continue;
+            }
+            
+            let browser_type = adapter.browser_type();
+            match adapter.read_cookies() {
+                Ok(cookies) => {
+                    info!("✅ Read {} cookies from {}", cookies.len(), browser_type.name());
+                    browser_cookies.insert(browser_type, cookies);
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to read cookies from {}: {}", browser_type.name(), e);
+                }
+            }
+        }
+        
+        if browser_cookies.is_empty() {
+            warn!("⚠️  No cookies could be read from any browser");
+            return Ok(());
+        }
+        
+        info!("🔄 Phase 2: Merging cookies");
+        let merged = self.merge_cookies(&browser_cookies, verbose)?;
+        info!("📊 Merged result: {} unique cookies", merged.len());
+        
+        if dry_run {
+            info!("🏃 Dry run mode - no changes will be made");
+            return Ok(());
+        }
+        
+        info!("✍️  Phase 3: Writing merged cookies");
+        for adapter in &self.adapters {
+            if !adapter.supports_cookies() {
+                continue;
+            }
+            
+            let browser_type = adapter.browser_type();
+            match adapter.write_cookies(&merged) {
+                Ok(_) => {
+                    info!("✅ Wrote cookies to {}", browser_type.name());
+                }
+                Err(e) => {
+                    error!("❌ Failed to write cookies to {}: {}", browser_type.name(), e);
+                }
+            }
+        }
+        
+        info!("✅ Cookies synchronization complete");
+        Ok(())
+    }
+    
+    fn merge_cookies(
+        &self,
+        browser_cookies: &HashMap<BrowserType, Vec<Cookie>>,
+        verbose: bool,
+    ) -> Result<Vec<Cookie>> {
+        let mut merged = Vec::new();
+        let mut seen_keys = HashSet::new();
+
+        for (browser, cookies) in browser_cookies {
+            if verbose {
+                debug!("Processing {} cookies from {}", cookies.len(), browser.name());
+            }
+
+            for cookie in cookies {
+                let key = format!("{}|{}|{}", cookie.host, cookie.name, cookie.path);
+                let key_hash = self.hash_url(&key);
+                if seen_keys.insert(key_hash) {
+                    merged.push(cookie.clone());
+                } else if verbose {
+                    debug!("Skipping duplicate cookie: {}:{}", cookie.host, cookie.name);
+                }
+            }
+        }
+
+        merged.sort_by(|a, b| a.host.cmp(&b.host));
 
         Ok(merged)
     }

@@ -92,6 +92,17 @@ pub trait BrowserAdapter: Send + Sync {
     fn write_history(&self, _items: &[HistoryItem]) -> Result<()> {
         Ok(())
     }
+    
+    // Cookies support
+    fn supports_cookies(&self) -> bool {
+        false
+    }
+    fn read_cookies(&self) -> Result<Vec<Cookie>> {
+        Ok(vec![])
+    }
+    fn write_cookies(&self, _cookies: &[Cookie]) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub fn get_all_adapters() -> Vec<Box<dyn BrowserAdapter + Send + Sync>> {
@@ -201,6 +212,58 @@ impl BrowserAdapter for WaterfoxAdapter {
                 }
                 Err(e) => {
                     warn!("⚠️  Failed to write history to Waterfox profile {}: {}", idx + 1, e);
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    fn supports_cookies(&self) -> bool {
+        true
+    }
+    
+    fn read_cookies(&self) -> Result<Vec<Cookie>> {
+        let profiles = self.detect_all_profiles()?;
+        let mut all_cookies = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            // cookies.sqlite is in the same directory as places.sqlite
+            let cookies_path = profile_path.parent()
+                .ok_or_else(|| anyhow::anyhow!("Invalid profile path"))?
+                .join("cookies.sqlite");
+            
+            if cookies_path.exists() {
+                match read_firefox_cookies(&cookies_path) {
+                    Ok(cookies) => {
+                        info!("✅ Waterfox Profile {}: {} cookies", idx + 1, cookies.len());
+                        all_cookies.extend(cookies);
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Failed to read Waterfox cookies from profile {}: {}", idx + 1, e);
+                    }
+                }
+            }
+        }
+        
+        info!("📊 Total Waterfox cookies from {} profiles: {}", profiles.len(), all_cookies.len());
+        Ok(all_cookies)
+    }
+    
+    fn write_cookies(&self, cookies: &[Cookie]) -> Result<()> {
+        let profiles = self.detect_all_profiles()?;
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            let cookies_path = profile_path.parent()
+                .ok_or_else(|| anyhow::anyhow!("Invalid profile path"))?
+                .join("cookies.sqlite");
+            
+            if cookies_path.exists() {
+                match write_firefox_cookies(&cookies_path, cookies) {
+                    Ok(_) => {
+                        info!("✅ Wrote {} cookies to Waterfox profile {}", cookies.len(), idx + 1);
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Failed to write cookies to Waterfox profile {}: {}", idx + 1, e);
+                    }
                 }
             }
         }
@@ -699,6 +762,76 @@ impl BrowserAdapter for ChromeAdapter {
             }
         }
         Ok(true)
+    }
+    
+    fn supports_history(&self) -> bool {
+        true
+    }
+    
+    fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let history_path = PathBuf::from(format!(
+                "{}/Library/Application Support/Google/Chrome/Default/History",
+                home
+            ));
+            
+            if !history_path.exists() {
+                anyhow::bail!("Chrome history file not found");
+            }
+            
+            read_chromium_history(&history_path, days)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Chrome detection not implemented for this platform")
+        }
+    }
+    
+    fn supports_cookies(&self) -> bool {
+        true
+    }
+    
+    fn read_cookies(&self) -> Result<Vec<Cookie>> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let cookies_path = PathBuf::from(format!(
+                "{}/Library/Application Support/Google/Chrome/Default/Cookies",
+                home
+            ));
+            
+            if !cookies_path.exists() {
+                anyhow::bail!("Chrome cookies file not found");
+            }
+            
+            read_chromium_cookies(&cookies_path)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Chrome detection not implemented for this platform")
+        }
+    }
+    
+    fn write_cookies(&self, cookies: &[Cookie]) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let cookies_path = PathBuf::from(format!(
+                "{}/Library/Application Support/Google/Chrome/Default/Cookies",
+                home
+            ));
+            
+            write_chromium_cookies(&cookies_path, cookies)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Chrome detection not implemented for this platform")
+        }
     }
 }
 
@@ -1310,5 +1443,137 @@ fn write_safari_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Res
     conn.execute("COMMIT", [])?;
     
     debug!("Wrote {} history items to Safari database", items.len());
+    Ok(())
+}
+
+// Firefox/Waterfox cookies helper functions
+fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
+    use rusqlite::{Connection, OpenFlags};
+    
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    )?;
+    
+    let mut cookies = Vec::new();
+    
+    let mut stmt = conn.prepare(
+        "SELECT host, name, value, path, expiry, isSecure, isHttpOnly
+         FROM moz_cookies
+         ORDER BY host"
+    )?;
+    
+    let cookie_iter = stmt.query_map([], |row| {
+        Ok(Cookie {
+            host: row.get(0)?,
+            name: row.get(1)?,
+            value: row.get(2)?,
+            path: row.get(3)?,
+            expiry: row.get(4)?,
+            is_secure: row.get::<_, i32>(5)? == 1,
+            is_http_only: row.get::<_, i32>(6)? == 1,
+        })
+    })?;
+    
+    for cookie in cookie_iter {
+        cookies.push(cookie?);
+    }
+    
+    debug!("Read {} cookies from Firefox database", cookies.len());
+    Ok(cookies)
+}
+
+fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
+    use rusqlite::Connection;
+    
+    let conn = Connection::open(db_path)?;
+    
+    conn.execute("BEGIN TRANSACTION", [])?;
+    
+    for cookie in cookies {
+        conn.execute(
+            "INSERT OR REPLACE INTO moz_cookies (host, name, value, path, expiry, isSecure, isHttpOnly, sameSite, rawSameSite, schemeMap)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0)",
+            rusqlite::params![
+                &cookie.host,
+                &cookie.name,
+                &cookie.value,
+                &cookie.path,
+                cookie.expiry.unwrap_or(0),
+                if cookie.is_secure { 1 } else { 0 },
+                if cookie.is_http_only { 1 } else { 0 },
+            ],
+        )?;
+    }
+    
+    conn.execute("COMMIT", [])?;
+    
+    debug!("Wrote {} cookies to Firefox database", cookies.len());
+    Ok(())
+}
+
+// Chromium cookies helper functions
+fn read_chromium_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
+    use rusqlite::{Connection, OpenFlags};
+    
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    )?;
+    
+    let mut cookies = Vec::new();
+    
+    let mut stmt = conn.prepare(
+        "SELECT host_key, name, value, path, expires_utc, is_secure, is_httponly
+         FROM cookies
+         ORDER BY host_key"
+    )?;
+    
+    let cookie_iter = stmt.query_map([], |row| {
+        Ok(Cookie {
+            host: row.get(0)?,
+            name: row.get(1)?,
+            value: row.get(2)?,
+            path: row.get(3)?,
+            expiry: row.get(4)?,
+            is_secure: row.get::<_, i32>(5)? == 1,
+            is_http_only: row.get::<_, i32>(6)? == 1,
+        })
+    })?;
+    
+    for cookie in cookie_iter {
+        cookies.push(cookie?);
+    }
+    
+    debug!("Read {} cookies from Chromium database", cookies.len());
+    Ok(cookies)
+}
+
+fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
+    use rusqlite::Connection;
+    
+    let conn = Connection::open(db_path)?;
+    
+    conn.execute("BEGIN TRANSACTION", [])?;
+    
+    for cookie in cookies {
+        conn.execute(
+            "INSERT OR REPLACE INTO cookies (host_key, name, value, path, expires_utc, is_secure, is_httponly, creation_utc, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, is_same_party)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 1, 1, 1, 0, 0, -1, 0)",
+            rusqlite::params![
+                &cookie.host,
+                &cookie.name,
+                &cookie.value,
+                &cookie.path,
+                cookie.expiry.unwrap_or(0),
+                if cookie.is_secure { 1 } else { 0 },
+                if cookie.is_http_only { 1 } else { 0 },
+            ],
+        )?;
+    }
+    
+    conn.execute("COMMIT", [])?;
+    
+    debug!("Wrote {} cookies to Chromium database", cookies.len());
     Ok(())
 }
