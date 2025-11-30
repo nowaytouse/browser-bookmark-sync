@@ -110,13 +110,41 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "Test 5: Deduplication Performance Analysis"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Extract numbers from full sync test
-BEFORE=$(grep "Read.*bookmarks from" /tmp/browser-sync-test-full.txt | grep -oE "[0-9]+" | paste -sd+ | bc)
-AFTER=$(grep "Merged result:" /tmp/browser-sync-test-full.txt | grep -oE "[0-9]+" | head -1)
-REMOVED=$(grep -E "removed.*duplicates" /tmp/browser-sync-test-full.txt | grep -oE "[0-9]+" | paste -sd+ | bc)
+# Extract numbers from full sync test - use Python for reliable parsing
+STATS=$(python3 << 'PYEOF'
+import re
 
-if [ ! -z "$BEFORE" ] && [ ! -z "$AFTER" ] && [ ! -z "$REMOVED" ]; then
-    REDUCTION=$(echo "scale=1; ($REMOVED / $BEFORE) * 100" | bc)
+try:
+    with open('/tmp/browser-sync-test-full.txt', 'r') as f:
+        content = f.read()
+    
+    # Find "structure: X URLs" lines to get input count
+    structure_matches = re.findall(r'structure: (\d+) URLs', content)
+    before = sum(int(x) for x in structure_matches) if structure_matches else 0
+    
+    # Find "Merged bookmarks: X URLs" to get output count
+    merged_match = re.search(r'Merged bookmarks: (\d+) URLs', content)
+    after = int(merged_match.group(1)) if merged_match else 0
+    
+    # Find "removed X duplicates"
+    removed_matches = re.findall(r'removed (\d+) duplicates', content)
+    removed = sum(int(x) for x in removed_matches) if removed_matches else 0
+    
+    # Calculate reduction
+    reduction = (removed / before * 100) if before > 0 else 0
+    
+    print(f"{before}|{after}|{removed}|{reduction:.1f}")
+except Exception as e:
+    print("0|0|0|0.0")
+PYEOF
+)
+
+BEFORE=$(echo "$STATS" | cut -d'|' -f1)
+AFTER=$(echo "$STATS" | cut -d'|' -f2)
+REMOVED=$(echo "$STATS" | cut -d'|' -f3)
+REDUCTION=$(echo "$STATS" | cut -d'|' -f4)
+
+if [ "$BEFORE" != "0" ] && [ "$AFTER" != "0" ]; then
     echo "📊 Deduplication Metrics:"
     echo "   Input bookmarks:  $BEFORE"
     echo "   Output bookmarks: $AFTER"
