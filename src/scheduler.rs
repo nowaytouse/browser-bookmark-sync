@@ -2,7 +2,7 @@ use anyhow::Result;
 use tokio_cron_scheduler::{JobScheduler, Job};
 use tracing::{info, error};
 
-use crate::sync::SyncEngine;
+use crate::sync::{SyncEngine, SyncMode};
 
 pub struct SchedulerConfig {
     pub cron_expression: String,
@@ -30,10 +30,15 @@ pub async fn start_scheduler(config: SchedulerConfig) -> Result<()> {
             
             match SyncEngine::new() {
                 Ok(mut engine) => {
-                    if let Err(e) = engine.sync(false, false).await {
-                        error!("❌ Scheduled sync failed: {}", e);
-                    } else {
-                        info!("✅ Scheduled sync completed successfully");
+                    // Use incremental mode for scheduled syncs
+                    match engine.sync(SyncMode::Incremental, false, false).await {
+                        Ok(stats) => {
+                            info!("✅ Scheduled sync completed: {} bookmarks synced, {} duplicates removed", 
+                                stats.bookmarks_synced, stats.duplicates_removed);
+                        }
+                        Err(e) => {
+                            error!("❌ Scheduled sync failed: {}", e);
+                        }
                     }
                 }
                 Err(e) => {

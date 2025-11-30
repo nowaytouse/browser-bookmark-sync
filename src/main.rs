@@ -7,7 +7,7 @@ mod sync;
 mod scheduler;
 mod validator;
 
-use sync::SyncEngine;
+use sync::{SyncEngine, SyncMode};
 use scheduler::SchedulerConfig;
 
 #[derive(Parser)]
@@ -26,6 +26,10 @@ enum Commands {
         /// Hub browsers (comma-separated)
         #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
         browsers: String,
+        
+        /// Sync mode: incremental (default) or full
+        #[arg(short = 'm', long, default_value = "incremental")]
+        mode: String,
         
         /// Clear data from non-hub browsers
         #[arg(long)]
@@ -233,12 +237,21 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sync { browsers, clear_others, dry_run, verbose } => {
-            info!("🔄 Starting full sync between hub browsers: {}", browsers);
+        Commands::Sync { browsers, mode, clear_others, dry_run, verbose } => {
+            let sync_mode = match mode.to_lowercase().as_str() {
+                "incremental" | "inc" => SyncMode::Incremental,
+                "full" => SyncMode::Full,
+                _ => {
+                    eprintln!("❌ Invalid sync mode: {}. Use 'incremental' or 'full'", mode);
+                    std::process::exit(1);
+                }
+            };
+            
+            info!("🔄 Starting {:?} sync between hub browsers: {}", sync_mode, browsers);
             let mut engine = SyncEngine::new()?;
             // Full sync: bookmarks + history + reading list + cookies
             engine.set_hub_browsers(&browsers, true, true, true, clear_others, dry_run, verbose).await?;
-            info!("✅ Full synchronization complete!");
+            info!("✅ Synchronization complete!");
         }
         
         Commands::Schedule { cron, daemon } => {

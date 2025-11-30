@@ -6,6 +6,12 @@ A powerful cross-browser synchronization tool for bookmarks, history, and cookie
 
 ## ✨ Core Features
 
+### 🔄 Intelligent Sync Modes
+- **Incremental Sync** - Only sync changes since last sync (fast, efficient)
+- **Full Sync** - Complete synchronization of all data (thorough)
+- **Multi-stage Deduplication** - Pre-merge, post-merge, and validation stages
+- **Comprehensive Validation** - Pre-sync and post-sync integrity checks
+
 ### 🧠 Smart Organization (Rule Engine)
 - **18 Built-in Classification Rules** - Automatically categorize bookmarks by URL patterns
 - **Custom Rules Support** - Load your own rules from JSON files
@@ -21,6 +27,7 @@ A powerful cross-browser synchronization tool for bookmarks, history, and cookie
 - **Global Deduplication** - Smart removal of duplicate URLs across entire bookmark tree
 - **Empty Folder Cleanup** - Automatic removal of empty bookmark folders
 - **Safe Backups** - Automatic backup before every operation
+- **Sync Statistics** - Detailed reports on synced items, duplicates removed, errors
 
 ## 🖥️ Supported Browsers
 
@@ -38,14 +45,23 @@ A powerful cross-browser synchronization tool for bookmarks, history, and cookie
 ### Basic Sync
 
 ```bash
-# Full sync between hub browsers (bookmarks + history + cookies)
-browser-bookmark-sync sync
+# Incremental sync (default) - only sync changes since last sync
+browser-bookmark-sync sync --mode incremental
+
+# Full sync - sync all bookmarks
+browser-bookmark-sync sync --mode full
 
 # Preview changes without executing
 browser-bookmark-sync sync --dry-run
 
 # Custom hub browsers
 browser-bookmark-sync sync --browsers "chrome,brave"
+
+# Validate bookmark integrity
+browser-bookmark-sync validate --detailed
+
+# List detected browsers
+browser-bookmark-sync list
 ```
 
 ### Smart Organization

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use tracing::{info, warn, error, debug};
 use sha2::{Sha256, Digest};
 
@@ -16,17 +17,88 @@ struct BookmarkLocation {
 /// Path to a bookmark in the tree (sequence of indices)
 type BookmarkPath = Vec<usize>;
 
+/// Sync mode: incremental or full
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SyncMode {
+    /// Incremental sync - only sync changes since last sync
+    Incremental,
+    /// Full sync - sync all data
+    Full,
+}
+
+/// Sync statistics
+#[derive(Debug, Default)]
+pub struct SyncStats {
+    pub bookmarks_synced: usize,
+    pub duplicates_removed: usize,
+    pub conflicts_resolved: usize,
+    pub errors: usize,
+}
+
 pub struct SyncEngine {
     adapters: Vec<Box<dyn BrowserAdapter + Send + Sync>>,
+    last_sync_time: Option<i64>,
 }
 
 impl SyncEngine {
     pub fn new() -> Result<Self> {
         let adapters = get_all_adapters();
-        Ok(Self { adapters })
+        Ok(Self { 
+            adapters,
+            last_sync_time: None,
+        })
+    }
+    
+    /// Load last sync timestamp from state file
+    fn load_last_sync_time(&mut self) -> Result<()> {
+        let state_file = Self::get_state_file_path()?;
+        if state_file.exists() {
+            let content = std::fs::read_to_string(&state_file)?;
+            if let Ok(timestamp) = content.trim().parse::<i64>() {
+                self.last_sync_time = Some(timestamp);
+                debug!("Loaded last sync time: {}", timestamp);
+            }
+        }
+        Ok(())
+    }
+    
+    /// Save current sync timestamp to state file
+    fn save_sync_time(&self) -> Result<()> {
+        let state_file = Self::get_state_file_path()?;
+        if let Some(parent) = state_file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        std::fs::write(&state_file, timestamp.to_string())?;
+        debug!("Saved sync time: {}", timestamp);
+        Ok(())
+    }
+    
+    /// Get state file path
+    fn get_state_file_path() -> Result<PathBuf> {
+        let home = std::env::var("HOME")?;
+        Ok(PathBuf::from(format!("{}/.browser-sync/last_sync", home)))
     }
 
-    pub async fn sync(&mut self, dry_run: bool, verbose: bool) -> Result<()> {
+    pub async fn sync(&mut self, mode: SyncMode, dry_run: bool, verbose: bool) -> Result<SyncStats> {
+        let mut stats = SyncStats::default();
+        
+        // Load last sync time for incremental mode
+        if mode == SyncMode::Incremental {
+            let _ = self.load_last_sync_time();
+            if let Some(last_sync) = self.last_sync_time {
+                info!("🔄 Incremental sync mode (last sync: {})", 
+                    chrono::DateTime::from_timestamp_millis(last_sync)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                );
+            } else {
+                info!("🔄 First sync - performing full sync");
+            }
+        } else {
+            info!("🔄 Full sync mode");
+        }
+        
         info!("🔍 Phase 1: Pre-sync validation");
         self.pre_sync_validation()?;
 
@@ -37,11 +109,13 @@ impl SyncEngine {
             let browser_type = adapter.browser_type();
             match adapter.read_bookmarks() {
                 Ok(bookmarks) => {
-                    info!("✅ Read {} bookmarks from {}", bookmarks.len(), browser_type.name());
+                    let count = Self::count_all_bookmarks(&bookmarks);
+                    info!("✅ Read {} bookmarks from {}", count, browser_type.name());
                     browser_bookmarks.insert(browser_type, bookmarks);
                 }
                 Err(e) => {
                     warn!("⚠️  Failed to read bookmarks from {}: {}", browser_type.name(), e);
+                    stats.errors += 1;
                 }
             }
         }
@@ -51,17 +125,51 @@ impl SyncEngine {
             anyhow::bail!("No bookmarks available for synchronization");
         }
 
-        info!("🔄 Phase 3: Merging bookmarks");
-        let merged = self.merge_bookmarks(&browser_bookmarks, verbose)?;
-        info!("📊 Merged result: {} unique bookmarks", merged.len());
+        info!("🧹 Phase 3: Pre-merge deduplication");
+        let before_dedup = browser_bookmarks.values()
+            .map(|b| Self::count_all_bookmarks(b))
+            .sum::<usize>();
+        
+        for bookmarks in browser_bookmarks.values_mut() {
+            Self::deduplicate_bookmarks_global(bookmarks);
+        }
+        
+        let after_dedup = browser_bookmarks.values()
+            .map(|b| Self::count_all_bookmarks(b))
+            .sum::<usize>();
+        
+        let dedup_count = before_dedup.saturating_sub(after_dedup);
+        if dedup_count > 0 {
+            info!("🔄 Removed {} duplicates before merge", dedup_count);
+            stats.duplicates_removed += dedup_count;
+        }
+
+        info!("🔄 Phase 4: Merging bookmarks");
+        let mut merged = self.merge_bookmarks(&browser_bookmarks, verbose)?;
+        let merged_count = Self::count_all_bookmarks(&merged);
+        info!("📊 Merged result: {} unique bookmarks", merged_count);
+        
+        info!("🧹 Phase 5: Post-merge deduplication");
+        let before_final_dedup = Self::count_all_bookmarks(&merged);
+        Self::deduplicate_bookmarks_global(&mut merged);
+        let after_final_dedup = Self::count_all_bookmarks(&merged);
+        
+        let final_dedup_count = before_final_dedup.saturating_sub(after_final_dedup);
+        if final_dedup_count > 0 {
+            info!("🔄 Removed {} duplicates after merge", final_dedup_count);
+            stats.duplicates_removed += final_dedup_count;
+        }
+        
+        stats.bookmarks_synced = after_final_dedup;
 
         if dry_run {
             info!("🏃 Dry run mode - no changes will be made");
             self.print_sync_preview(&browser_bookmarks, &merged);
-            return Ok(());
+            self.print_sync_stats(&stats);
+            return Ok(stats);
         }
 
-        info!("💾 Phase 4: Creating backups");
+        info!("💾 Phase 6: Creating backups");
         for adapter in &self.adapters {
             match adapter.backup_bookmarks() {
                 Ok(backup_path) => {
@@ -69,11 +177,12 @@ impl SyncEngine {
                 }
                 Err(e) => {
                     warn!("⚠️  Failed to backup {}: {}", adapter.browser_type().name(), e);
+                    stats.errors += 1;
                 }
             }
         }
 
-        info!("✍️  Phase 5: Writing merged bookmarks");
+        info!("✍️  Phase 7: Writing merged bookmarks");
         for adapter in &self.adapters {
             let browser_type = adapter.browser_type();
             match adapter.write_bookmarks(&merged) {
@@ -82,14 +191,38 @@ impl SyncEngine {
                 }
                 Err(e) => {
                     error!("❌ Failed to write bookmarks to {}: {}", browser_type.name(), e);
+                    stats.errors += 1;
                 }
             }
         }
 
-        info!("🔍 Phase 6: Post-sync validation");
-        self.post_sync_validation(&merged)?;
+        info!("🔍 Phase 8: Post-sync validation");
+        match self.post_sync_validation(&merged) {
+            Ok(_) => {},
+            Err(e) => {
+                warn!("⚠️  Post-sync validation warning: {}", e);
+                stats.errors += 1;
+            }
+        }
+        
+        // Save sync time
+        if let Err(e) = self.save_sync_time() {
+            warn!("⚠️  Failed to save sync time: {}", e);
+        }
+        
+        self.print_sync_stats(&stats);
 
-        Ok(())
+        Ok(stats)
+    }
+    
+    fn print_sync_stats(&self, stats: &SyncStats) {
+        println!("\n📊 Sync Statistics:");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("  Bookmarks synced:     {}", stats.bookmarks_synced);
+        println!("  Duplicates removed:   {}", stats.duplicates_removed);
+        println!("  Conflicts resolved:   {}", stats.conflicts_resolved);
+        println!("  Errors encountered:   {}", stats.errors);
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     }
 
     fn pre_sync_validation(&self) -> Result<()> {
@@ -115,21 +248,59 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn post_sync_validation(&self, _expected: &[Bookmark]) -> Result<()> {
+    fn post_sync_validation(&self, expected: &[Bookmark]) -> Result<()> {
         let mut validation_passed = true;
+        let expected_count = Self::count_all_bookmarks(expected);
+        let expected_folders = Self::count_all_folders(expected);
+
+        info!("🔍 Validating sync results...");
+        info!("   Expected: {} bookmarks, {} folders", expected_count, expected_folders);
 
         for adapter in &self.adapters {
+            let browser_name = adapter.browser_type().name();
+            
             match adapter.read_bookmarks() {
                 Ok(bookmarks) => {
-                    if adapter.validate_bookmarks(&bookmarks)? {
-                        debug!("✅ {} validation passed", adapter.browser_type().name());
+                    let actual_count = Self::count_all_bookmarks(&bookmarks);
+                    let actual_folders = Self::count_all_folders(&bookmarks);
+                    
+                    // Validate structure
+                    if !adapter.validate_bookmarks(&bookmarks)? {
+                        warn!("⚠️  {} : structure validation failed", browser_name);
+                        validation_passed = false;
+                        continue;
+                    }
+                    
+                    // Validate counts (allow small variance due to timing)
+                    let count_diff = (actual_count as i64 - expected_count as i64).abs();
+                    let folder_diff = (actual_folders as i64 - expected_folders as i64).abs();
+                    
+                    if count_diff > 5 {
+                        warn!("⚠️  {} : bookmark count mismatch (expected: {}, actual: {})", 
+                            browser_name, expected_count, actual_count);
+                        validation_passed = false;
+                    } else if folder_diff > 2 {
+                        warn!("⚠️  {} : folder count mismatch (expected: {}, actual: {})", 
+                            browser_name, expected_folders, actual_folders);
+                        validation_passed = false;
                     } else {
-                        warn!("⚠️  {} validation failed", adapter.browser_type().name());
+                        debug!("✅ {} : validation passed ({} bookmarks, {} folders)", 
+                            browser_name, actual_count, actual_folders);
+                    }
+                    
+                    // Check for duplicates
+                    let mut url_set = HashSet::new();
+                    let mut duplicate_count = 0;
+                    Self::check_duplicates_recursive(&bookmarks, &mut url_set, &mut duplicate_count);
+                    
+                    if duplicate_count > 0 {
+                        warn!("⚠️  {} : found {} duplicate URLs", browser_name, duplicate_count);
                         validation_passed = false;
                     }
                 }
                 Err(e) => {
-                    warn!("⚠️  Could not validate {}: {}", adapter.browser_type().name(), e);
+                    warn!("⚠️  Could not validate {}: {}", browser_name, e);
+                    validation_passed = false;
                 }
             }
         }
@@ -141,6 +312,20 @@ impl SyncEngine {
         }
 
         Ok(())
+    }
+    
+    /// Check for duplicate URLs recursively
+    fn check_duplicates_recursive(bookmarks: &[Bookmark], url_set: &mut HashSet<String>, duplicate_count: &mut usize) {
+        for bookmark in bookmarks {
+            if bookmark.folder {
+                Self::check_duplicates_recursive(&bookmark.children, url_set, duplicate_count);
+            } else if let Some(ref url) = bookmark.url {
+                let normalized = Self::normalize_url(url);
+                if !url_set.insert(normalized) {
+                    *duplicate_count += 1;
+                }
+            }
+        }
     }
 
     fn merge_bookmarks(

@@ -4,6 +4,106 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed - 2024-11-30 (Update 4)
+
+#### 🔧 主页整理功能修复
+- **问题**: `organize` 命令在每个子文件夹都创建"网站主页"文件夹，而不是统一收集到根目录
+- **修复**: 重写 `organize_homepages_recursive` 为 `collect_homepages_recursive`，先递归收集所有主页书签，再统一放到根目录的"网站主页"文件夹
+- **效果**: Brave Nightly 成功整理 12,676 个主页书签到根目录
+
+**修复前**: 每个子文件夹可能创建自己的"网站主页"文件夹
+**修复后**: 所有主页统一收集到根级别的"网站主页"文件夹
+
+### Added - 2024-11-30 (Update 3)
+
+#### 📁 场景文件夹同步功能
+- **新命令**: `sync-scenario` - 同步指定书签文件夹场景到多个浏览器
+- **灵活路径**: 支持多层级路径（如 `"工作/项目"`, `"个人/财务"`）
+- **智能合并**: 自动合并多个浏览器的同名场景文件夹
+- **自动去重**: 场景文件夹内容自动去重
+- **创建功能**: 如果目标浏览器不存在该文件夹，自动创建
+
+**使用示例**:
+```bash
+# 同步工作项目文件夹
+browser-bookmark-sync sync-scenario \
+  --scenario-path "工作/项目" \
+  --browsers "chrome,firefox"
+
+# 预览模式
+browser-bookmark-sync sync-scenario \
+  -p "个人/财务" \
+  -b "waterfox,brave-nightly" \
+  --dry-run
+```
+
+**技术实现**:
+- `find_folder_by_path()` - 路径解析和文件夹查找
+- `merge_scenario_folders()` - 智能合并和去重
+- `replace_folder_by_path()` - 替换或创建文件夹
+- 递归处理，支持任意深度的文件夹层级
+
+#### 🧹 智能清理功能
+- **新命令**: `cleanup` - 清理重复书签和空收藏夹文件夹
+- **去重选项**: `--remove-duplicates` 删除重复书签
+- **空文件夹清理**: `--remove-empty-folders` 删除空文件夹
+- **可选目标**: 可指定特定浏览器或全部浏览器
+- **统计报告**: 详细报告删除的重复数和空文件夹数
+
+**使用示例**:
+```bash
+# 完整清理（推荐）
+browser-bookmark-sync cleanup \
+  --remove-duplicates \
+  --remove-empty-folders
+
+# 仅清理特定浏览器
+browser-bookmark-sync cleanup \
+  --browsers "chrome,firefox" \
+  --remove-duplicates
+
+# 预览清理结果
+browser-bookmark-sync cleanup \
+  --remove-duplicates \
+  --remove-empty-folders \
+  --dry-run
+```
+
+**测试结果**:
+```
+✅ Waterfox: 41,661 bookmarks → 23,513 bookmarks
+   🔄 Removed 18,148 duplicate bookmarks (43.5%)
+   🗑️  Removed 515 empty folders (26.6%)
+
+✅ Brave Nightly: 41,333 bookmarks → 23,513 bookmarks
+   🔄 Removed 17,820 duplicate bookmarks (43.1%)
+   🗑️  Removed 515 empty folders (26.6%)
+```
+
+**技术实现**:
+- `remove_empty_folders()` - 递归删除空文件夹
+- `CleanupStats` - 统计清理结果
+- 自底向上清理策略，确保父文件夹的子文件夹先被清理
+- 与现有 `deduplicate_bookmarks_global()` 集成
+
+#### 📖 文档增强
+- **README_CN.md**: 新增功能说明、命令参考、使用示例
+- **QUICK_REFERENCE.md**: 快速参考指南，包含所有场景和故障排除
+- **test-production.sh**: 实战测试脚本，包含深度备份和分步验证
+- **walkthrough.md**: 完整实现总结和性能分析
+
+#### 🔧 代码质量
+- ✅ 零编译警告
+- ✅ 零编译错误
+- ✅ 完整的 dry-run 支持
+- ✅ 详细的日志输出
+- ✅ 自动备份机制
+
+#### 性能优化
+- **去重性能**: 41,000+ 书签处理 < 0.5 秒
+- **空文件夹检测**: O(n) 时间复杂度
+- **内存效率**: HashSet 去重，O(1) 查找
+
 ### Added - 2024-11-30 (Update 2)
 
 #### 🎉 Safari 历史记录支持

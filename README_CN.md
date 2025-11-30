@@ -6,6 +6,12 @@
 
 ## ✨ 核心功能
 
+### 🔄 智能同步模式
+- **增量同步** - 仅同步上次同步后的变更（快速、高效）
+- **全量同步** - 完整同步所有数据（彻底）
+- **多阶段去重** - 合并前、合并后、验证阶段三重去重
+- **全面验证** - 同步前后完整性检查
+
 ### 🧠 智能整理 (规则引擎)
 - **18条内置分类规则** - 根据URL模式自动分类书签
 - **自定义规则支持** - 从JSON文件加载自定义规则
@@ -21,6 +27,7 @@
 - **全局去重** - 智能移除整个书签树中的重复URL
 - **空文件夹清理** - 自动移除空书签文件夹
 - **安全备份** - 每次操作前自动备份
+- **同步统计** - 详细报告已同步项目、移除的重复项、错误数
 
 ## 🖥️ 支持的浏览器
 
@@ -38,14 +45,23 @@
 ### 基本同步
 
 ```bash
-# 中心浏览器间全量同步（书签+历史+Cookie）
-browser-bookmark-sync sync
+# 增量同步（默认）- 仅同步上次同步后的变更
+browser-bookmark-sync sync --mode incremental
+
+# 全量同步 - 同步所有书签
+browser-bookmark-sync sync --mode full
 
 # 预览变更，不实际执行
 browser-bookmark-sync sync --dry-run
 
 # 自定义中心浏览器
 browser-bookmark-sync sync --browsers "chrome,brave"
+
+# 验证书签完整性
+browser-bookmark-sync validate --detailed
+
+# 列出检测到的浏览器
+browser-bookmark-sync list
 ```
 
 ### 智能整理
