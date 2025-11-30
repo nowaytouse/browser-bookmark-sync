@@ -142,7 +142,8 @@ impl BrowserAdapter for WaterfoxAdapter {
         for profile_path in profiles.iter() {
             match read_firefox_bookmarks(profile_path) {
                 Ok(bookmarks) if !bookmarks.is_empty() => {
-                    let count = bookmarks.len();
+                    // 🔧 FIX: Use recursive count, not just top-level count
+                    let count = count_bookmarks(&bookmarks);
                     info!("✅ Waterfox (Default): {} bookmarks", count);
                     return Ok(bookmarks);
                 }
