@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tracing::{debug, warn};
+use tracing::{debug, warn, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bookmark {
@@ -12,6 +12,32 @@ pub struct Bookmark {
     pub children: Vec<Bookmark>,
     pub date_added: Option<i64>,
     pub date_modified: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cookie {
+    pub host: String,
+    pub name: String,
+    pub value: String,
+    pub path: String,
+    pub expiry: Option<i64>,
+    pub is_secure: bool,
+    pub is_http_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadingListItem {
+    pub url: String,
+    pub title: String,
+    pub date_added: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryItem {
+    pub url: String,
+    pub title: Option<String>,
+    pub visit_count: i32,
+    pub last_visit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,48 +92,47 @@ impl BrowserAdapter for WaterfoxAdapter {
     }
 
     fn detect_bookmark_path(&self) -> Result<PathBuf> {
-        #[cfg(target_os = "macos")]
-        {
-            let home = std::env::var("HOME")?;
-            let path = PathBuf::from(format!(
-                "{}/Library/Application Support/Waterfox/Profiles",
-                home
-            ));
-            
-            if !path.exists() {
-                anyhow::bail!("Waterfox profile directory not found");
-            }
-            
-            // Find the default profile
-            for entry in std::fs::read_dir(&path)? {
-                let entry = entry?;
-                let profile_path = entry.path();
-                if profile_path.is_dir() {
-                    let bookmarks_path = profile_path.join("places.sqlite");
-                    if bookmarks_path.exists() {
-                        debug!("Found Waterfox bookmarks at: {:?}", bookmarks_path);
-                        return Ok(bookmarks_path);
-                    }
-                }
-            }
-            
-            anyhow::bail!("Waterfox bookmarks file not found")
-        }
-        
-        #[cfg(not(target_os = "macos"))]
-        {
-            anyhow::bail!("Waterfox detection not implemented for this platform")
-        }
+        let profiles = self.detect_all_profiles()?;
+        Ok(profiles.first()
+            .ok_or_else(|| anyhow::anyhow!("No Waterfox profiles found"))?
+            .clone())
     }
 
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
-        let path = self.detect_bookmark_path()?;
-        read_firefox_bookmarks(&path)
+        // Read from ALL profiles and merge
+        let profiles = self.detect_all_profiles()?;
+        let mut all_bookmarks = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            match read_firefox_bookmarks(profile_path) {
+                Ok(bookmarks) => {
+                    info!("✅ Waterfox Profile {}: {} bookmarks", idx + 1, bookmarks.len());
+                    all_bookmarks.extend(bookmarks);
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to read Waterfox profile {}: {}", idx + 1, e);
+                }
+            }
+        }
+        
+        info!("📊 Total Waterfox bookmarks from {} profiles: {}", profiles.len(), all_bookmarks.len());
+        Ok(all_bookmarks)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
-        let path = self.detect_bookmark_path()?;
-        write_firefox_bookmarks(&path, bookmarks)
+        // Write to ALL profiles
+        let profiles = self.detect_all_profiles()?;
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            match write_firefox_bookmarks(profile_path, bookmarks) {
+                Ok(_) => {
+                    info!("✅ Wrote {} bookmarks to Waterfox profile {}", bookmarks.len(), idx + 1);
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to write to Waterfox profile {}: {}", idx + 1, e);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
@@ -119,6 +144,47 @@ impl BrowserAdapter for WaterfoxAdapter {
 
     fn validate_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<bool> {
         Ok(true)
+    }
+}
+
+impl WaterfoxAdapter {
+    fn detect_all_profiles(&self) -> Result<Vec<PathBuf>> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let profiles_dir = PathBuf::from(format!(
+                "{}/Library/Application Support/Waterfox/Profiles",
+                home
+            ));
+            
+            if !profiles_dir.exists() {
+                anyhow::bail!("Waterfox profile directory not found");
+            }
+            
+            let mut profiles = Vec::new();
+            for entry in std::fs::read_dir(&profiles_dir)? {
+                let entry = entry?;
+                let profile_path = entry.path();
+                if profile_path.is_dir() {
+                    let bookmarks_path = profile_path.join("places.sqlite");
+                    if bookmarks_path.exists() {
+                        profiles.push(bookmarks_path);
+                    }
+                }
+            }
+            
+            if profiles.is_empty() {
+                anyhow::bail!("No Waterfox profiles with bookmarks found");
+            }
+            
+            info!("🔍 Found {} Waterfox profile(s)", profiles.len());
+            Ok(profiles)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Waterfox detection not implemented for this platform")
+        }
     }
 }
 
@@ -569,9 +635,13 @@ fn bookmarks_to_chromium_json(bookmarks: &[Bookmark]) -> Result<serde_json::Valu
 
 // Firefox SQLite helper functions
 fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>> {
-    use rusqlite::Connection;
+    use rusqlite::{Connection, OpenFlags};
     
-    let conn = Connection::open(db_path)?;
+    // Use read-only mode to avoid locking issues
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    )?;
     let mut bookmarks = Vec::new();
     
     let mut stmt = conn.prepare(
