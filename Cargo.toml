@@ -35,6 +35,10 @@ tokio-cron-scheduler = "0.10"
 # SQLite for Firefox-based browsers
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# HTML parsing for Safari export
+scraper = "0.20"
+html5ever = "0.27"
+
 # macOS specific
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1.6"

@@ -52,6 +52,17 @@ enum Commands {
     
     /// List all detected browsers and their bookmark locations
     List,
+    
+    /// Import bookmarks from Safari HTML export
+    ImportSafari {
+        /// Path to Safari HTML export file
+        #[arg(short, long)]
+        file: String,
+        
+        /// Target browser to import into
+        #[arg(short, long, default_value = "all")]
+        target: String,
+    },
 }
 
 #[tokio::main]
@@ -91,6 +102,13 @@ async fn main() -> Result<()> {
             info!("📋 Listing detected browsers...");
             let engine = SyncEngine::new()?;
             engine.list_browsers()?;
+        }
+        
+        Commands::ImportSafari { file, target } => {
+            info!("📥 Importing Safari bookmarks from: {}", file);
+            let mut engine = SyncEngine::new()?;
+            engine.import_safari_html(&file, &target).await?;
+            info!("✅ Import complete!");
         }
     }
 

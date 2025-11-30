@@ -245,4 +245,67 @@ impl SyncEngine {
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
         Ok(())
     }
+    
+    pub async fn import_safari_html(&mut self, html_path: &str, target: &str) -> Result<()> {
+        info!("📖 Reading Safari HTML export...");
+        
+        let html_content = std::fs::read_to_string(html_path)
+            .context("Failed to read HTML file")?;
+        
+        let bookmarks = parse_safari_html(&html_content)?;
+        info!("✅ Parsed {} bookmarks from HTML", bookmarks.len());
+        
+        if target == "all" {
+            info!("📝 Writing to all browsers...");
+            for adapter in &self.adapters {
+                let browser_type = adapter.browser_type();
+                match adapter.write_bookmarks(&bookmarks) {
+                    Ok(_) => info!("✅ Wrote to {}", browser_type.name()),
+                    Err(e) => error!("❌ Failed to write to {}: {}", browser_type.name(), e),
+                }
+            }
+        } else {
+            info!("📝 Writing to {}...", target);
+            // Find specific browser
+            for adapter in &self.adapters {
+                if adapter.browser_type().name().to_lowercase().contains(&target.to_lowercase()) {
+                    adapter.write_bookmarks(&bookmarks)?;
+                    info!("✅ Wrote to {}", adapter.browser_type().name());
+                    break;
+                }
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+fn parse_safari_html(html: &str) -> Result<Vec<Bookmark>> {
+    use scraper::{Html, Selector};
+    
+    let document = Html::parse_document(html);
+    let link_selector = Selector::parse("a").unwrap();
+    
+    let mut bookmarks = Vec::new();
+    let mut id_counter = 1;
+    
+    for element in document.select(&link_selector) {
+        if let Some(url) = element.value().attr("href") {
+            let title = element.text().collect::<String>();
+            
+            bookmarks.push(Bookmark {
+                id: format!("imported-{}", id_counter),
+                title: title.trim().to_string(),
+                url: Some(url.to_string()),
+                folder: false,
+                children: vec![],
+                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                date_modified: Some(chrono::Utc::now().timestamp_millis()),
+            });
+            
+            id_counter += 1;
+        }
+    }
+    
+    Ok(bookmarks)
 }
