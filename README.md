@@ -108,20 +108,35 @@ browser-bookmark-sync sync [OPTIONS]
 Options:
   -b, --browsers <BROWSERS>  Hub browsers [default: waterfox,brave-nightly]
       --clear-others         Clear data from non-hub browsers
+      --all-profiles         Read from all browser profiles (slower, may have duplicates)
   -d, --dry-run              Preview without making changes
   -v, --verbose              Detailed output
+```
+
+### Performance
+
+By default, only the **Default profile** is read from each browser for optimal performance. Use `--all-profiles` to read from all profiles when needed:
+
+```bash
+# Fast mode (default) - reads only Default profile
+browser-bookmark-sync sync --dry-run
+# ~1.1s for 41,661 bookmarks
+
+# All profiles mode - reads all browser profiles
+browser-bookmark-sync sync-history --all-profiles --dry-run
+# Slower but includes data from all profiles
 ```
 
 ## 📊 Verified Results
 
 ```
-Test Suite: 6/6 passed ✅
+Test Suite: 8/8 passed ✅
 
 Sync Statistics:
 ├── Bookmarks: 41,661 URLs, 1,936 folders
-├── History: 30,301 unique items (deduplicated from 104,748)
-├── Cookies: 925 unique (deduplicated from 14,095)
-└── Space Saved: 156MB (92% reduction)
+├── History: 30,301 unique items
+├── Cookies: 925 unique
+└── Performance: ~1.1s (release build)
 ```
 
 ## 🔧 Installation

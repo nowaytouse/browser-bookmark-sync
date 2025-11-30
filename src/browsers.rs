@@ -89,6 +89,10 @@ pub trait BrowserAdapter: Send + Sync {
     fn read_history(&self, _days: Option<i32>) -> Result<Vec<HistoryItem>> {
         Ok(vec![])
     }
+    /// Read history from all profiles (slower, may have duplicates)
+    fn read_history_all_profiles(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        self.read_history(days) // Default: same as read_history
+    }
     fn write_history(&self, _items: &[HistoryItem]) -> Result<()> {
         Ok(())
     }
@@ -99,6 +103,10 @@ pub trait BrowserAdapter: Send + Sync {
     }
     fn read_cookies(&self) -> Result<Vec<Cookie>> {
         Ok(vec![])
+    }
+    /// Read cookies from all profiles (slower, may have duplicates)
+    fn read_cookies_all_profiles(&self) -> Result<Vec<Cookie>> {
+        self.read_cookies() // Default: same as read_cookies
     }
     fn write_cookies(&self, _cookies: &[Cookie]) -> Result<()> {
         Ok(())
@@ -690,6 +698,48 @@ impl BrowserAdapter for BraveAdapter {
         }
         Ok(())
     }
+    
+    fn read_history_all_profiles(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        let profiles = self.detect_all_profiles()?;
+        let mut all_history = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            let history_path = profile_path.join("History");
+            if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                match read_chromium_history(&history_path, days) {
+                    Ok(history) => {
+                        info!("✅ Brave Profile {}: {} history items", idx + 1, history.len());
+                        all_history.extend(history);
+                    }
+                    Err(e) => warn!("⚠️  Failed to read Brave history from profile {}: {}", idx + 1, e),
+                }
+            }
+        }
+        
+        info!("📊 Total Brave history from {} profiles: {}", profiles.len(), all_history.len());
+        Ok(all_history)
+    }
+    
+    fn read_cookies_all_profiles(&self) -> Result<Vec<Cookie>> {
+        let profiles = self.detect_all_profiles()?;
+        let mut all_cookies = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            let cookies_path = profile_path.join("Cookies");
+            if cookies_path.exists() {
+                match read_chromium_cookies(&cookies_path) {
+                    Ok(cookies) => {
+                        info!("✅ Brave Profile {}: {} cookies", idx + 1, cookies.len());
+                        all_cookies.extend(cookies);
+                    }
+                    Err(e) => warn!("⚠️  Failed to read Brave cookies from profile {}: {}", idx + 1, e),
+                }
+            }
+        }
+        
+        info!("📊 Total Brave cookies from {} profiles: {}", profiles.len(), all_cookies.len());
+        Ok(all_cookies)
+    }
 }
 
 // Brave Nightly Adapter
@@ -849,6 +899,48 @@ impl BrowserAdapter for BraveNightlyAdapter {
         }
         Ok(())
     }
+    
+    fn read_history_all_profiles(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        let profiles = self.detect_all_profiles()?;
+        let mut all_history = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            let history_path = profile_path.join("History");
+            if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                match read_chromium_history(&history_path, days) {
+                    Ok(history) => {
+                        info!("✅ Brave Nightly Profile {}: {} history items", idx + 1, history.len());
+                        all_history.extend(history);
+                    }
+                    Err(e) => warn!("⚠️  Failed to read Brave Nightly history from profile {}: {}", idx + 1, e),
+                }
+            }
+        }
+        
+        info!("📊 Total Brave Nightly history from {} profiles: {}", profiles.len(), all_history.len());
+        Ok(all_history)
+    }
+    
+    fn read_cookies_all_profiles(&self) -> Result<Vec<Cookie>> {
+        let profiles = self.detect_all_profiles()?;
+        let mut all_cookies = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            let cookies_path = profile_path.join("Cookies");
+            if cookies_path.exists() {
+                match read_chromium_cookies(&cookies_path) {
+                    Ok(cookies) => {
+                        info!("✅ Brave Nightly Profile {}: {} cookies", idx + 1, cookies.len());
+                        all_cookies.extend(cookies);
+                    }
+                    Err(e) => warn!("⚠️  Failed to read Brave Nightly cookies from profile {}: {}", idx + 1, e),
+                }
+            }
+        }
+        
+        info!("📊 Total Brave Nightly cookies from {} profiles: {}", profiles.len(), all_cookies.len());
+        Ok(all_cookies)
+    }
 }
 
 // Chrome Adapter
@@ -1007,6 +1099,48 @@ impl BrowserAdapter for ChromeAdapter {
             }
         }
         Ok(())
+    }
+    
+    fn read_history_all_profiles(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        let profiles = self.detect_all_profiles()?;
+        let mut all_history = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            let history_path = profile_path.join("History");
+            if history_path.exists() && history_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                match read_chromium_history(&history_path, days) {
+                    Ok(history) => {
+                        info!("✅ Chrome Profile {}: {} history items", idx + 1, history.len());
+                        all_history.extend(history);
+                    }
+                    Err(e) => warn!("⚠️  Failed to read Chrome history from profile {}: {}", idx + 1, e),
+                }
+            }
+        }
+        
+        info!("📊 Total Chrome history from {} profiles: {}", profiles.len(), all_history.len());
+        Ok(all_history)
+    }
+    
+    fn read_cookies_all_profiles(&self) -> Result<Vec<Cookie>> {
+        let profiles = self.detect_all_profiles()?;
+        let mut all_cookies = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            let cookies_path = profile_path.join("Cookies");
+            if cookies_path.exists() {
+                match read_chromium_cookies(&cookies_path) {
+                    Ok(cookies) => {
+                        info!("✅ Chrome Profile {}: {} cookies", idx + 1, cookies.len());
+                        all_cookies.extend(cookies);
+                    }
+                    Err(e) => warn!("⚠️  Failed to read Chrome cookies from profile {}: {}", idx + 1, e),
+                }
+            }
+        }
+        
+        info!("📊 Total Chrome cookies from {} profiles: {}", profiles.len(), all_cookies.len());
+        Ok(all_cookies)
     }
 }
 

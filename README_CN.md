@@ -108,20 +108,35 @@ browser-bookmark-sync sync [选项]
 选项:
   -b, --browsers <浏览器>    中枢浏览器 [默认: waterfox,brave-nightly]
       --clear-others         清空非中枢浏览器数据
+      --all-profiles         读取所有浏览器配置文件（较慢，可能有重复）
   -d, --dry-run              预览模式，不实际执行
   -v, --verbose              详细输出
+```
+
+### 性能优化
+
+默认只读取每个浏览器的 **Default 配置文件**，以获得最佳性能。需要时可使用 `--all-profiles` 读取所有配置文件：
+
+```bash
+# 快速模式（默认）- 仅读取 Default 配置文件
+browser-bookmark-sync sync --dry-run
+# 41,661 书签约 1.1 秒
+
+# 全配置文件模式 - 读取所有浏览器配置文件
+browser-bookmark-sync sync-history --all-profiles --dry-run
+# 较慢但包含所有配置文件的数据
 ```
 
 ## 📊 验证结果
 
 ```
-测试套件: 6/6 通过 ✅
+测试套件: 8/8 通过 ✅
 
 同步统计:
 ├── 书签: 41,661 URLs, 1,936 文件夹
-├── 历史: 30,301 条（从 104,748 条去重）
-├── Cookies: 925 条（从 14,095 条去重）
-└── 节省空间: 156MB (减少 92%)
+├── 历史: 30,301 条
+├── Cookies: 925 条
+└── 性能: ~1.1 秒 (release 构建)
 ```
 
 ## 🔧 安装
