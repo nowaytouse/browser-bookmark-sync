@@ -19,7 +19,9 @@ pub enum BrowserType {
     Waterfox,
     Safari,
     Brave,
-    Nightly,
+    BraveNightly,
+    Chrome,
+    FirefoxNightly,
 }
 
 impl BrowserType {
@@ -28,7 +30,9 @@ impl BrowserType {
             BrowserType::Waterfox => "Waterfox",
             BrowserType::Safari => "Safari",
             BrowserType::Brave => "Brave",
-            BrowserType::Nightly => "Firefox Nightly",
+            BrowserType::BraveNightly => "Brave Nightly",
+            BrowserType::Chrome => "Chrome",
+            BrowserType::FirefoxNightly => "Firefox Nightly",
         }
     }
 }
@@ -47,7 +51,9 @@ pub fn get_all_adapters() -> Vec<Box<dyn BrowserAdapter + Send + Sync>> {
         Box::new(WaterfoxAdapter),
         Box::new(SafariAdapter),
         Box::new(BraveAdapter),
-        Box::new(NightlyAdapter),
+        Box::new(BraveNightlyAdapter),
+        Box::new(ChromeAdapter),
+        Box::new(FirefoxNightlyAdapter),
     ]
 }
 
@@ -281,12 +287,158 @@ impl BrowserAdapter for BraveAdapter {
     }
 }
 
-// Nightly Adapter
-pub struct NightlyAdapter;
+// Brave Nightly Adapter
+pub struct BraveNightlyAdapter;
 
-impl BrowserAdapter for NightlyAdapter {
+impl BrowserAdapter for BraveNightlyAdapter {
     fn browser_type(&self) -> BrowserType {
-        BrowserType::Nightly
+        BrowserType::BraveNightly
+    }
+
+    fn detect_bookmark_path(&self) -> Result<PathBuf> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let path = PathBuf::from(format!(
+                "{}/Library/Application Support/BraveSoftware/Brave-Browser-Nightly/Default/Bookmarks",
+                home
+            ));
+            
+            if !path.exists() {
+                anyhow::bail!("Brave Nightly bookmarks file not found");
+            }
+            
+            debug!("Found Brave Nightly bookmarks at: {:?}", path);
+            Ok(path)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Brave Nightly detection not implemented for this platform")
+        }
+    }
+
+    fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let path = self.detect_bookmark_path()?;
+        let data = std::fs::read_to_string(&path)?;
+        let json: serde_json::Value = serde_json::from_str(&data)?;
+        
+        let bookmarks = parse_chromium_bookmarks(&json)?;
+        debug!("Read {} bookmarks from Brave Nightly", bookmarks.len());
+        Ok(bookmarks)
+    }
+
+    fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+        let path = self.detect_bookmark_path()?;
+        self.backup_bookmarks()?;
+        
+        let json = bookmarks_to_chromium_json(bookmarks)?;
+        let data = serde_json::to_string_pretty(&json)?;
+        std::fs::write(&path, data)?;
+        
+        debug!("Wrote {} bookmarks to Brave Nightly", bookmarks.len());
+        Ok(())
+    }
+
+    fn backup_bookmarks(&self) -> Result<PathBuf> {
+        let source = self.detect_bookmark_path()?;
+        let backup_path = source.with_extension("json.backup");
+        std::fs::copy(&source, &backup_path)?;
+        Ok(backup_path)
+    }
+
+    fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool> {
+        for bookmark in bookmarks {
+            if bookmark.folder && bookmark.url.is_some() {
+                return Ok(false);
+            }
+            if !bookmark.folder && bookmark.url.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+// Chrome Adapter
+pub struct ChromeAdapter;
+
+impl BrowserAdapter for ChromeAdapter {
+    fn browser_type(&self) -> BrowserType {
+        BrowserType::Chrome
+    }
+
+    fn detect_bookmark_path(&self) -> Result<PathBuf> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let path = PathBuf::from(format!(
+                "{}/Library/Application Support/Google/Chrome/Default/Bookmarks",
+                home
+            ));
+            
+            if !path.exists() {
+                anyhow::bail!("Chrome bookmarks file not found");
+            }
+            
+            debug!("Found Chrome bookmarks at: {:?}", path);
+            Ok(path)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Chrome detection not implemented for this platform")
+        }
+    }
+
+    fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let path = self.detect_bookmark_path()?;
+        let data = std::fs::read_to_string(&path)?;
+        let json: serde_json::Value = serde_json::from_str(&data)?;
+        
+        let bookmarks = parse_chromium_bookmarks(&json)?;
+        debug!("Read {} bookmarks from Chrome", bookmarks.len());
+        Ok(bookmarks)
+    }
+
+    fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+        let path = self.detect_bookmark_path()?;
+        self.backup_bookmarks()?;
+        
+        let json = bookmarks_to_chromium_json(bookmarks)?;
+        let data = serde_json::to_string_pretty(&json)?;
+        std::fs::write(&path, data)?;
+        
+        debug!("Wrote {} bookmarks to Chrome", bookmarks.len());
+        Ok(())
+    }
+
+    fn backup_bookmarks(&self) -> Result<PathBuf> {
+        let source = self.detect_bookmark_path()?;
+        let backup_path = source.with_extension("json.backup");
+        std::fs::copy(&source, &backup_path)?;
+        Ok(backup_path)
+    }
+
+    fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool> {
+        for bookmark in bookmarks {
+            if bookmark.folder && bookmark.url.is_some() {
+                return Ok(false);
+            }
+            if !bookmark.folder && bookmark.url.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+// Firefox Nightly Adapter
+pub struct FirefoxNightlyAdapter;
+
+impl BrowserAdapter for FirefoxNightlyAdapter {
+    fn browser_type(&self) -> BrowserType {
+        BrowserType::FirefoxNightly
     }
 
     fn detect_bookmark_path(&self) -> Result<PathBuf> {
@@ -364,30 +516,39 @@ fn parse_chromium_bookmarks(json: &serde_json::Value) -> Result<Vec<Bookmark>> {
     let mut bookmarks = Vec::new();
     
     if let Some(roots) = json.get("roots") {
-        if let Some(bookmark_bar) = roots.get("bookmark_bar") {
-            parse_chromium_node(bookmark_bar, &mut bookmarks)?;
-        }
-        if let Some(other) = roots.get("other") {
-            parse_chromium_node(other, &mut bookmarks)?;
+        // Parse all root folders
+        for (_key, root) in roots.as_object().unwrap_or(&serde_json::Map::new()) {
+            parse_chromium_node_recursive(root, &mut bookmarks)?;
         }
     }
     
     Ok(bookmarks)
 }
 
-fn parse_chromium_node(node: &serde_json::Value, bookmarks: &mut Vec<Bookmark>) -> Result<()> {
+fn parse_chromium_node_recursive(node: &serde_json::Value, bookmarks: &mut Vec<Bookmark>) -> Result<()> {
     if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
         for child in children {
+            let is_folder = child.get("type").and_then(|v| v.as_str()) == Some("folder");
+            
             let bookmark = Bookmark {
                 id: child.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 title: child.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 url: child.get("url").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                folder: child.get("type").and_then(|v| v.as_str()) == Some("folder"),
+                folder: is_folder,
                 children: vec![],
                 date_added: child.get("date_added").and_then(|v| v.as_i64()),
                 date_modified: child.get("date_modified").and_then(|v| v.as_i64()),
             };
-            bookmarks.push(bookmark);
+            
+            // Only add actual bookmarks (URLs), not folders
+            if !is_folder && bookmark.url.is_some() {
+                bookmarks.push(bookmark);
+            }
+            
+            // Recursively parse children if it's a folder
+            if is_folder {
+                parse_chromium_node_recursive(child, bookmarks)?;
+            }
         }
     }
     
