@@ -213,7 +213,7 @@ cargo build --release
 - ✅ Firefox Nightly
 - ✅ Brave
 - ✅ Chrome
-- ❌ Safari（暂不支持）
+- ✅ Safari（6155条历史记录）
 
 ## 阅读列表同步
 

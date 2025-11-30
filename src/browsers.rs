@@ -398,6 +398,44 @@ impl BrowserAdapter for SafariAdapter {
             anyhow::bail!("Safari is only available on macOS")
         }
     }
+    
+    fn supports_history(&self) -> bool {
+        true
+    }
+    
+    fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let history_path = PathBuf::from(format!("{}/Library/Safari/History.db", home));
+            
+            if !history_path.exists() {
+                anyhow::bail!("Safari history database not found");
+            }
+            
+            read_safari_history(&history_path, days)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Safari is only available on macOS")
+        }
+    }
+    
+    fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let history_path = PathBuf::from(format!("{}/Library/Safari/History.db", home));
+            
+            write_safari_history(&history_path, items)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Safari is only available on macOS")
+        }
+    }
 }
 
 // Brave Adapter
@@ -1150,5 +1188,127 @@ fn write_chromium_history(db_path: &std::path::Path, items: &[HistoryItem]) -> R
     conn.execute("COMMIT", [])?;
     
     debug!("Wrote {} history items to Chromium database", items.len());
+    Ok(())
+}
+
+// Safari history helper functions
+fn read_safari_history(db_path: &std::path::Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+    use rusqlite::{Connection, OpenFlags};
+    
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    )?;
+    
+    let mut history = Vec::new();
+    
+    // Safari uses Core Data timestamp (seconds since 2001-01-01)
+    let cutoff_timestamp = if let Some(days) = days {
+        let now = chrono::Utc::now();
+        let cutoff = now - chrono::Duration::days(days as i64);
+        // Convert to Safari timestamp (seconds since 2001-01-01 00:00:00 UTC)
+        let safari_epoch = chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        let duration = cutoff.signed_duration_since(safari_epoch);
+        Some(duration.num_seconds() as f64)
+    } else {
+        None
+    };
+    
+    let query = if let Some(cutoff) = cutoff_timestamp {
+        format!(
+            "SELECT i.url, v.title, i.visit_count, MAX(v.visit_time) as last_visit
+             FROM history_items i
+             JOIN history_visits v ON i.id = v.history_item
+             WHERE v.visit_time > {}
+             GROUP BY i.id
+             ORDER BY last_visit DESC",
+            cutoff
+        )
+    } else {
+        "SELECT i.url, v.title, i.visit_count, MAX(v.visit_time) as last_visit
+         FROM history_items i
+         JOIN history_visits v ON i.id = v.history_item
+         GROUP BY i.id
+         ORDER BY last_visit DESC"
+            .to_string()
+    };
+    
+    let mut stmt = conn.prepare(&query)?;
+    let history_iter = stmt.query_map([], |row| {
+        // Convert Safari timestamp to Unix timestamp (milliseconds)
+        let safari_time: f64 = row.get(3)?;
+        let safari_epoch = chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        let unix_time = safari_epoch.timestamp_millis() + (safari_time * 1000.0) as i64;
+        
+        Ok(HistoryItem {
+            url: row.get(0)?,
+            title: row.get(1)?,
+            visit_count: row.get(2)?,
+            last_visit: Some(unix_time),
+        })
+    })?;
+    
+    for item in history_iter {
+        history.push(item?);
+    }
+    
+    debug!("Read {} history items from Safari database", history.len());
+    Ok(history)
+}
+
+fn write_safari_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Result<()> {
+    use rusqlite::Connection;
+    
+    let conn = Connection::open(db_path)?;
+    
+    // Start transaction
+    conn.execute("BEGIN TRANSACTION", [])?;
+    
+    // Insert history items
+    for item in items {
+        // First, ensure the URL exists in history_items
+        conn.execute(
+            "INSERT OR REPLACE INTO history_items (url, visit_count, domain_expansion, daily_visit_counts, weekly_visit_counts, should_recompute_derived_visit_counts, visit_count_score)
+             VALUES (?1, ?2, '', X'', NULL, 0, 0)",
+            rusqlite::params![&item.url, item.visit_count],
+        )?;
+        
+        // Get the history_item id
+        let item_id: i64 = conn.query_row(
+            "SELECT id FROM history_items WHERE url = ?1",
+            [&item.url],
+            |row| row.get(0),
+        )?;
+        
+        // Insert visit record
+        if let Some(last_visit) = item.last_visit {
+            // Convert Unix timestamp to Safari timestamp
+            let safari_epoch = chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc();
+            let safari_time = (last_visit - safari_epoch.timestamp_millis()) as f64 / 1000.0;
+            
+            conn.execute(
+                "INSERT OR IGNORE INTO history_visits (history_item, visit_time, title, load_successful, http_non_get, synthesized, origin, generation, attributes, score)
+                 VALUES (?1, ?2, ?3, 1, 0, 0, 0, 0, 0, 0)",
+                rusqlite::params![item_id, safari_time, &item.title],
+            )?;
+        }
+    }
+    
+    // Commit transaction
+    conn.execute("COMMIT", [])?;
+    
+    debug!("Wrote {} history items to Safari database", items.len());
     Ok(())
 }

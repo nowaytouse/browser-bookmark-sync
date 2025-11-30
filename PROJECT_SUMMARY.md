@@ -9,11 +9,11 @@
 ### ✅ 已实现功能
 
 1. **多浏览器支持**
-   - Safari (macOS) - 完整支持（书签 + 阅读列表）
+   - Safari (macOS) - 完整支持（书签 + 历史记录 6155条 + 阅读列表）
    - Brave (macOS) - 完整支持（书签 + 历史记录）
    - Brave Nightly (macOS) - 完整支持（书签 + 历史记录）
    - Chrome (macOS) - 完整支持（书签 + 历史记录）
-   - Waterfox (macOS) - 完整支持（书签 + 历史记录，多配置文件）
+   - Waterfox (macOS) - 完整支持（书签 + 历史记录 6276条，多配置文件）
    - Firefox Nightly (macOS) - 完整支持（书签 + 历史记录）
 
 2. **书签同步** ⭐
