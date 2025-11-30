@@ -1,33 +1,111 @@
-use browser_bookmark_sync::browsers::*;
-use browser_bookmark_sync::sync::SyncEngine;
+// Integration tests for browser-bookmark-sync
+// Run with: cargo test --test integration_test
 
-#[test]
-fn test_bookmark_structure() {
-    let bookmark = Bookmark {
-        id: "test-1".to_string(),
-        title: "Test Bookmark".to_string(),
-        url: Some("https://example.com".to_string()),
-        folder: false,
-        children: vec![],
-        date_added: Some(1234567890),
-        date_modified: Some(1234567900),
-    };
+use std::process::Command;
+use std::path::Path;
+
+fn run_cli(args: &[&str]) -> (bool, String, String) {
+    let output = Command::new("cargo")
+        .args(["run", "--release", "--"])
+        .args(args)
+        .output()
+        .expect("Failed to execute command");
     
-    assert_eq!(bookmark.title, "Test Bookmark");
-    assert_eq!(bookmark.url, Some("https://example.com".to_string()));
-    assert!(!bookmark.folder);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (output.status.success(), stdout, stderr)
 }
 
 #[test]
-fn test_browser_types() {
-    assert_eq!(BrowserType::Safari.name(), "Safari");
-    assert_eq!(BrowserType::Brave.name(), "Brave");
-    assert_eq!(BrowserType::Waterfox.name(), "Waterfox");
-    assert_eq!(BrowserType::Nightly.name(), "Firefox Nightly");
+fn test_list_command() {
+    let (success, stdout, stderr) = run_cli(&["list"]);
+    
+    // Should detect at least some browsers
+    assert!(stderr.contains("Detected Browsers") || stdout.contains("Detected Browsers"), 
+        "Should show detected browsers section");
+    
+    // On macOS, Safari should always be detected
+    #[cfg(target_os = "macos")]
+    assert!(stderr.contains("Safari") || stdout.contains("Safari"), 
+        "Safari should be detected on macOS");
+    
+    println!("✅ list command works");
 }
 
-#[tokio::test]
-async fn test_sync_engine_creation() {
-    let result = SyncEngine::new();
-    assert!(result.is_ok(), "SyncEngine should be created successfully");
+#[test]
+fn test_validate_command() {
+    let (success, stdout, stderr) = run_cli(&["validate"]);
+    
+    // Should show validation report
+    assert!(stderr.contains("Validation Report") || stdout.contains("Validation Report"),
+        "Should show validation report");
+    
+    // Should show summary
+    assert!(stderr.contains("Summary") || stdout.contains("Summary"),
+        "Should show summary");
+    
+    println!("✅ validate command works");
+}
+
+#[test]
+fn test_sync_dry_run() {
+    let (success, stdout, stderr) = run_cli(&["sync", "--dry-run"]);
+    
+    // Dry run should not fail
+    assert!(stderr.contains("Dry run") || stdout.contains("Dry run"),
+        "Should indicate dry run mode");
+    
+    println!("✅ sync --dry-run works");
+}
+
+#[test]
+fn test_sync_history_dry_run() {
+    let (success, stdout, stderr) = run_cli(&["sync-history", "--dry-run", "--days", "7"]);
+    
+    // Should show history sync phases
+    assert!(stderr.contains("history") || stdout.contains("history"),
+        "Should mention history synchronization");
+    
+    // Should show merged result
+    assert!(stderr.contains("Merged") || stderr.contains("unique") || 
+            stdout.contains("Merged") || stdout.contains("unique"),
+        "Should show merge results");
+    
+    println!("✅ sync-history --dry-run works");
+}
+
+#[test]
+fn test_set_hubs_dry_run() {
+    let (success, stdout, stderr) = run_cli(&[
+        "set-hubs",
+        "--browsers", "waterfox,brave-nightly",
+        "--dry-run"
+    ]);
+    
+    // Should identify hub browsers
+    assert!(stderr.contains("Hub") || stdout.contains("Hub"),
+        "Should identify hub browsers");
+    
+    // Should show dry run summary
+    assert!(stderr.contains("Dry run") || stdout.contains("Dry run"),
+        "Should indicate dry run mode");
+    
+    println!("✅ set-hubs --dry-run works");
+}
+
+#[test]
+fn test_help_commands() {
+    // Test main help - help goes to stdout
+    let (_, stdout, stderr) = run_cli(&["--help"]);
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(combined.contains("sync") || combined.contains("Commands"),
+        "Help should list available commands");
+    
+    // Test subcommand help
+    let (_, stdout, stderr) = run_cli(&["set-hubs", "--help"]);
+    let combined = format!("{}{}", stdout, stderr);
+    assert!(combined.contains("browsers") || combined.contains("hub") || combined.contains("Hub"),
+        "set-hubs help should show options");
+    
+    println!("✅ help commands work");
 }

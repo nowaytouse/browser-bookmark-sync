@@ -154,6 +154,28 @@ cp target/release/browser-bookmark-sync /usr/local/bin/
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+## 🧪 测试验证
+
+运行集成测试：
+```bash
+cargo test --test integration_test
+```
+
+测试覆盖：
+- ✅ `list` - 浏览器检测
+- ✅ `validate` - 数据完整性验证
+- ✅ `sync` - 书签同步
+- ✅ `sync-history` - 历史记录同步
+- ✅ `set-hubs` - 中枢浏览器设置
+
+详细功能报告见 [FUNCTIONALITY_REPORT.md](./FUNCTIONALITY_REPORT.md)
+
+## ⚠️ 已知限制
+
+1. **浏览器运行时** - 数据库可能被锁定，建议关闭浏览器后同步
+2. **Safari 阅读列表写入** - 仅支持读取，写入功能待完善
+3. **多 Profile** - 仅同步 Default Profile，避免重复
+
 ## 📜 License
 
 MIT License
