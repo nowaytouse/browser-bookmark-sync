@@ -125,13 +125,20 @@ impl SyncEngine {
             anyhow::bail!("No bookmarks available for synchronization");
         }
 
-        info!("🧹 Phase 3: Pre-merge deduplication");
+        info!("🧹 Phase 3: Pre-merge deduplication (smart selection)");
         let before_dedup = browser_bookmarks.values()
             .map(|b| Self::count_all_bookmarks(b))
             .sum::<usize>();
         
-        for bookmarks in browser_bookmarks.values_mut() {
+        // Smart deduplication for each browser (depth > date > root)
+        for (browser_type, bookmarks) in browser_bookmarks.iter_mut() {
+            let before = Self::count_all_bookmarks(bookmarks);
             Self::deduplicate_bookmarks_global(bookmarks);
+            let after = Self::count_all_bookmarks(bookmarks);
+            let removed = before.saturating_sub(after);
+            if removed > 0 && verbose {
+                debug!("  {} : removed {} duplicates", browser_type.name(), removed);
+            }
         }
         
         let after_dedup = browser_bookmarks.values()
@@ -140,7 +147,7 @@ impl SyncEngine {
         
         let dedup_count = before_dedup.saturating_sub(after_dedup);
         if dedup_count > 0 {
-            info!("🔄 Removed {} duplicates before merge", dedup_count);
+            info!("🔄 Pre-merge: removed {} duplicates (smart selection)", dedup_count);
             stats.duplicates_removed += dedup_count;
         }
 
@@ -149,18 +156,30 @@ impl SyncEngine {
         let merged_count = Self::count_all_bookmarks(&merged);
         info!("📊 Merged result: {} unique bookmarks", merged_count);
         
-        info!("🧹 Phase 5: Post-merge deduplication");
+        info!("🧹 Phase 5: Post-merge deduplication (final cleanup)");
         let before_final_dedup = Self::count_all_bookmarks(&merged);
         Self::deduplicate_bookmarks_global(&mut merged);
         let after_final_dedup = Self::count_all_bookmarks(&merged);
         
         let final_dedup_count = before_final_dedup.saturating_sub(after_final_dedup);
         if final_dedup_count > 0 {
-            info!("🔄 Removed {} duplicates after merge", final_dedup_count);
+            info!("🔄 Post-merge: removed {} duplicates (final cleanup)", final_dedup_count);
             stats.duplicates_removed += final_dedup_count;
         }
         
         stats.bookmarks_synced = after_final_dedup;
+        
+        // Performance summary
+        if verbose {
+            let total_reduction = before_dedup.saturating_sub(after_final_dedup);
+            let reduction_pct = if before_dedup > 0 {
+                total_reduction as f64 / before_dedup as f64 * 100.0
+            } else {
+                0.0
+            };
+            debug!("📊 Total reduction: {} → {} bookmarks ({:.1}% reduction)", 
+                before_dedup, after_final_dedup, reduction_pct);
+        }
 
         if dry_run {
             info!("🏃 Dry run mode - no changes will be made");
