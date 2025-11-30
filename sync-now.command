@@ -1,131 +1,121 @@
 #!/bin/bash
 # ============================================================
-# 🔄 Browser Sync - 一键同步脚本
-# 双击即可运行，同步 Brave Nightly ↔ Waterfox
+# 🔄 Browser Sync - One-Click Migration Script
+# Double-click to run: Migrate all data to Waterfox + Brave Nightly
 # ============================================================
 
 set -e
 
-# 颜色定义
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# 获取脚本所在目录
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BINARY="$SCRIPT_DIR/target/release/browser-bookmark-sync"
 BACKUP_DIR="$HOME/Desktop/browser_backup_$(date +%Y%m%d_%H%M%S)"
 
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║${NC}        🔄 ${GREEN}Browser Bookmark Sync${NC} - 一键同步工具           ${BLUE}║${NC}"
+echo -e "${BLUE}║${NC}        🔄 ${GREEN}Browser Data Migration${NC} - One-Click Tool          ${BLUE}║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# 检查二进制文件
+# Build if needed
 if [ ! -f "$BINARY" ]; then
-    echo -e "${YELLOW}⚠️  未找到编译好的程序，正在编译...${NC}"
+    echo -e "${YELLOW}⚠️  Binary not found, building...${NC}"
     cd "$SCRIPT_DIR"
     cargo build --release
-    echo -e "${GREEN}✅ 编译完成${NC}"
+    echo -e "${GREEN}✅ Build complete${NC}"
 fi
 
-# 检查浏览器是否运行
-check_browser_running() {
+# Check running browsers
+echo -e "${YELLOW}🔍 Checking browser status...${NC}"
+BROWSERS_RUNNING=""
+
+check_browser() {
     if pgrep -x "$1" > /dev/null 2>&1; then
-        return 0
+        BROWSERS_RUNNING="$BROWSERS_RUNNING $2"
     fi
-    return 1
 }
 
-echo -e "${YELLOW}🔍 检查浏览器状态...${NC}"
-
-BROWSERS_RUNNING=""
-if check_browser_running "Brave Browser"; then
-    BROWSERS_RUNNING="$BROWSERS_RUNNING Brave"
-fi
-if check_browser_running "Google Chrome"; then
-    BROWSERS_RUNNING="$BROWSERS_RUNNING Chrome"
-fi
-if check_browser_running "Waterfox"; then
-    BROWSERS_RUNNING="$BROWSERS_RUNNING Waterfox"
-fi
-if check_browser_running "Safari"; then
-    BROWSERS_RUNNING="$BROWSERS_RUNNING Safari"
-fi
+check_browser "Brave Browser Nightly" "Brave-Nightly"
+check_browser "Brave Browser" "Brave"
+check_browser "Google Chrome" "Chrome"
+check_browser "Waterfox" "Waterfox"
+check_browser "Safari" "Safari"
+check_browser "firefox" "Firefox"
 
 if [ -n "$BROWSERS_RUNNING" ]; then
-    echo -e "${YELLOW}⚠️  以下浏览器正在运行:${BROWSERS_RUNNING}${NC}"
-    echo -e "${YELLOW}   建议关闭浏览器后再同步，否则可能无法读取部分数据${NC}"
+    echo -e "${YELLOW}⚠️  Running browsers:${BROWSERS_RUNNING}${NC}"
+    echo -e "${YELLOW}   Close them for best results, or continue anyway.${NC}"
     echo ""
-    read -p "是否继续? (y/N) " -n 1 -r
+    read -p "Continue? (y/N) " -n 1 -r
     echo ""
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${RED}❌ 已取消${NC}"
+        echo -e "${RED}❌ Cancelled${NC}"
         exit 1
     fi
+else
+    echo -e "${GREEN}✅ No browsers running${NC}"
 fi
 
-# 创建备份目录
+# Create backup
 echo ""
-echo -e "${BLUE}💾 创建备份...${NC}"
+echo -e "${BLUE}💾 Creating backup...${NC}"
 mkdir -p "$BACKUP_DIR"
 
-# 备份中枢浏览器数据
+# Backup hub browsers
 if [ -f "$HOME/Library/Application Support/BraveSoftware/Brave-Browser-Nightly/Default/Bookmarks" ]; then
-    cp "$HOME/Library/Application Support/BraveSoftware/Brave-Browser-Nightly/Default/Bookmarks" "$BACKUP_DIR/BraveNightly_Bookmarks.json"
-    echo -e "  ${GREEN}✅${NC} Brave Nightly 书签已备份"
+    cp "$HOME/Library/Application Support/BraveSoftware/Brave-Browser-Nightly/Default/Bookmarks" "$BACKUP_DIR/BraveNightly_Bookmarks.json" 2>/dev/null
+    echo -e "  ${GREEN}✅${NC} Brave Nightly bookmarks backed up"
 fi
 
-if [ -f "$HOME/Library/Application Support/Waterfox/Profiles/"*".default-release/places.sqlite" ]; then
-    cp "$HOME/Library/Application Support/Waterfox/Profiles/"*".default-release/places.sqlite" "$BACKUP_DIR/Waterfox_places.sqlite" 2>/dev/null || true
-    echo -e "  ${GREEN}✅${NC} Waterfox 数据已备份"
-fi
+for profile in "$HOME/Library/Application Support/Waterfox/Profiles/"*".default-release"; do
+    if [ -f "$profile/places.sqlite" ]; then
+        cp "$profile/places.sqlite" "$BACKUP_DIR/Waterfox_places.sqlite" 2>/dev/null
+        echo -e "  ${GREEN}✅${NC} Waterfox data backed up"
+        break
+    fi
+done
 
-if [ -f "$HOME/Library/Safari/Bookmarks.plist" ]; then
-    cp "$HOME/Library/Safari/Bookmarks.plist" "$BACKUP_DIR/Safari_Bookmarks.plist" 2>/dev/null || true
-    echo -e "  ${GREEN}✅${NC} Safari 书签已备份"
-fi
+echo -e "  📁 Backup: $BACKUP_DIR"
 
-echo -e "  📁 备份位置: $BACKUP_DIR"
-
-# 执行同步
+# Run migration
 echo ""
-echo -e "${BLUE}🔄 开始同步...${NC}"
+echo -e "${BLUE}🔄 Starting migration...${NC}"
 echo ""
 
-# Step 1: 验证当前状态
-echo -e "${YELLOW}📊 Step 1: 验证当前状态${NC}"
-"$BINARY" validate 2>&1 | grep -E "(Bookmarks Read|URLs|folders|✅|❌)" | head -20
+# Step 1: Validate
+echo -e "${YELLOW}📊 Step 1: Validating current state${NC}"
+"$BINARY" validate 2>&1 | grep -E "(✅|❌|URLs|folders|bookmarks)" | head -10
 
-# Step 2: 设置中枢浏览器并同步
+# Step 2: Migrate
 echo ""
-echo -e "${YELLOW}🎯 Step 2: 同步到中枢浏览器 (Waterfox + Brave Nightly)${NC}"
-"$BINARY" set-hubs \
+echo -e "${YELLOW}🎯 Step 2: Migrating to hub browsers${NC}"
+"$BINARY" migrate \
     --browsers "waterfox,brave-nightly" \
-    --sync-history \
-    --sync-reading-list \
+    --history \
     --clear-others \
-    2>&1 | grep -E "(Hub|Merged|URLs|folders|items|CLEARED|✅|❌|📊|📚|📜|🎯|🗑️)" | head -30
+    2>&1 | grep -E "(Hub|Non-hub|Merged|URLs|folders|items|cleared|✅|❌|📊|📚|📜|🎯|🗑️)" | head -25
 
-# Step 3: 最终验证
+# Step 3: Verify
 echo ""
-echo -e "${YELLOW}🔍 Step 3: 验证同步结果${NC}"
-"$BINARY" validate 2>&1 | grep -E "(Bookmarks Read|URLs|folders|✅|❌|Summary)" | head -15
+echo -e "${YELLOW}🔍 Step 3: Verifying results${NC}"
+"$BINARY" validate 2>&1 | grep -E "(✅|❌|URLs|folders|Summary)" | head -10
 
-# 完成
+# Done
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║${NC}                    ✅ ${GREEN}同步完成!${NC}                           ${GREEN}║${NC}"
+echo -e "${GREEN}║${NC}                    ✅ ${GREEN}Migration Complete!${NC}                    ${GREEN}║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  📁 备份位置: ${BLUE}$BACKUP_DIR${NC}"
-echo -e "  🎯 中枢浏览器: ${GREEN}Waterfox${NC} + ${GREEN}Brave Nightly${NC}"
+echo -e "  📁 Backup: ${BLUE}$BACKUP_DIR${NC}"
+echo -e "  🎯 Hub browsers: ${GREEN}Waterfox${NC} + ${GREEN}Brave Nightly${NC}"
 echo ""
-echo -e "${YELLOW}提示: 重启浏览器以查看同步后的书签${NC}"
+echo -e "${YELLOW}Tip: Restart browsers to see migrated data${NC}"
 echo ""
 
-# 保持窗口打开
-read -p "按 Enter 键关闭..."
+read -p "Press Enter to close..."

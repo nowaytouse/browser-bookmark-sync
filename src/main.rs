@@ -12,7 +12,7 @@ use scheduler::SchedulerConfig;
 
 #[derive(Parser)]
 #[command(name = "browser-bookmark-sync")]
-#[command(about = "Reliable cross-browser bookmark synchronization tool", long_about = None)]
+#[command(about = "Reliable cross-browser bookmark synchronization tool with hub architecture", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -21,9 +21,31 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Perform a one-time sync across all browsers
-    Sync {
-        /// Dry run - show what would be synced without making changes
+    /// Migrate all browser data to hub browsers (recommended)
+    /// 
+    /// This is the main command. It will:
+    /// 1. Read bookmarks, history, and reading lists from ALL browsers
+    /// 2. Merge and deduplicate all data
+    /// 3. Write to hub browsers only
+    /// 4. Optionally clear non-hub browsers
+    Migrate {
+        /// Hub browsers (comma-separated, e.g., "waterfox,brave-nightly")
+        #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
+        browsers: String,
+        
+        /// Include history in migration (full history, no day limit)
+        #[arg(long, default_value = "true")]
+        history: bool,
+        
+        /// Include cookies in migration
+        #[arg(long)]
+        cookies: bool,
+        
+        /// Clear data from non-hub browsers after migration
+        #[arg(long)]
+        clear_others: bool,
+        
+        /// Dry run - show what would be done without making changes
         #[arg(short, long)]
         dry_run: bool,
         
@@ -63,74 +85,6 @@ enum Commands {
         #[arg(short, long, default_value = "all")]
         target: String,
     },
-    
-    /// Synchronize browsing history across browsers
-    SyncHistory {
-        /// Only sync history from last N days
-        #[arg(short, long)]
-        days: Option<i32>,
-        
-        /// Dry run - show what would be synced without making changes
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-        
-        /// Verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    
-    /// Synchronize reading lists across browsers
-    SyncReadingList {
-        /// Dry run - show what would be synced without making changes
-        #[arg(short, long)]
-        dry_run: bool,
-        
-        /// Verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    
-    /// Synchronize cookies across browsers
-    SyncCookies {
-        /// Dry run - show what would be synced without making changes
-        #[arg(short, long)]
-        dry_run: bool,
-        
-        /// Verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    
-    /// Set hub browsers and clean others (migrate data to hubs, then clear non-hubs)
-    SetHubs {
-        /// Hub browsers (comma-separated, e.g., "waterfox,brave-nightly")
-        #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
-        browsers: String,
-        
-        /// Sync history to hubs
-        #[arg(long)]
-        sync_history: bool,
-        
-        /// Sync reading list to hubs
-        #[arg(long)]
-        sync_reading_list: bool,
-        
-        /// Sync cookies to hubs
-        #[arg(long)]
-        sync_cookies: bool,
-        
-        /// Clear bookmarks from non-hub browsers after migration
-        #[arg(long)]
-        clear_others: bool,
-        
-        /// Dry run - show what would be done without making changes
-        #[arg(short, long)]
-        dry_run: bool,
-        
-        /// Verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
 }
 
 #[tokio::main]
@@ -146,11 +100,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sync { dry_run, verbose } => {
-            info!("🔄 Starting bookmark synchronization...");
+        Commands::Migrate { browsers, history, cookies, clear_others, dry_run, verbose } => {
+            info!("🎯 Migrating data to hub browsers: {}", browsers);
             let mut engine = SyncEngine::new()?;
-            engine.sync(dry_run, verbose).await?;
-            info!("✅ Synchronization complete!");
+            // Always sync reading list (it's part of bookmarks for most browsers)
+            engine.migrate_to_hubs(&browsers, history, cookies, clear_others, dry_run, verbose).await?;
+            info!("✅ Migration complete!");
         }
         
         Commands::Schedule { cron, daemon } => {
@@ -177,34 +132,6 @@ async fn main() -> Result<()> {
             let mut engine = SyncEngine::new()?;
             engine.import_safari_html(&file, &target).await?;
             info!("✅ Import complete!");
-        }
-        
-        Commands::SyncHistory { days, dry_run, verbose } => {
-            info!("📜 Starting history synchronization...");
-            let mut engine = SyncEngine::new()?;
-            engine.sync_history(days, dry_run, verbose).await?;
-            info!("✅ History synchronization complete!");
-        }
-        
-        Commands::SyncReadingList { dry_run, verbose } => {
-            info!("📚 Starting reading list synchronization...");
-            let mut engine = SyncEngine::new()?;
-            engine.sync_reading_list(dry_run, verbose).await?;
-            info!("✅ Reading list synchronization complete!");
-        }
-        
-        Commands::SyncCookies { dry_run, verbose } => {
-            info!("🍪 Starting cookies synchronization...");
-            let mut engine = SyncEngine::new()?;
-            engine.sync_cookies(dry_run, verbose).await?;
-            info!("✅ Cookies synchronization complete!");
-        }
-        
-        Commands::SetHubs { browsers, sync_history, sync_reading_list, sync_cookies, clear_others, dry_run, verbose } => {
-            info!("🎯 Setting hub browsers: {}", browsers);
-            let mut engine = SyncEngine::new()?;
-            engine.set_hub_browsers(&browsers, sync_history, sync_reading_list, sync_cookies, clear_others, dry_run, verbose).await?;
-            info!("✅ Hub configuration complete!");
         }
     }
 

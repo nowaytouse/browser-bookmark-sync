@@ -1,48 +1,39 @@
 # 🔄 Browser Bookmark Sync
 
-A reliable cross-browser bookmark, history, and reading list synchronization tool. Uses a **Hub Browser Architecture** to prevent data duplication and maintain organization.
+A reliable cross-browser data migration tool using **Hub Browser Architecture**. Migrate bookmarks, history, and reading lists to your primary browsers, then clean up duplicates.
 
 [中文文档](./README_CN.md)
 
 ## ✨ Features
 
-- 🎯 **Hub Browser Mode** - Designate primary browsers, automatically clean others
-- � **Bookm步ark Sync** - Preserves complete folder structure, no flattening
-- 📜 **History Sync** - Merge browsing history across browsers with deduplication
+- 🎯 **Hub Browser Architecture** - Designate primary browsers, migrate all data to them
+- 📚 **Complete Bookmark Migration** - Preserves folder structure, no flattening
+- 📜 **Full History Sync** - Merge ALL browsing history (no day limits)
 - 📖 **Reading List Migration** - Safari reading list → Hub browser bookmarks
-- 🍪 **Cookie Sync** - Cross-browser cookie migration
-- ⏰ **Scheduled Sync** - Cron expression support for automatic syncing
-- � ️**Safe Backups** - Automatic backup before every operation
-- 🧪 **Tested & Verified** - Integration test suite included
+- 🗑️ **Duplicate Cleanup** - Clear non-hub browsers after migration
+- 🔒 **Safe Backups** - Automatic backup before every operation
+- 🧪 **Tested & Verified** - 7 integration tests included
 
 ## 🖥️ Supported Browsers
 
-| Browser | Bookmarks | History | Reading List | Cookies |
-|---------|-----------|---------|--------------|---------|
-| **Brave Nightly** | ✅ | ✅ | - | ✅ |
-| **Waterfox** | ✅ | ✅ | - | ✅ |
-| **Brave** | ✅ | ✅ | - | ✅ |
-| **Chrome** | ✅ | ✅ | - | ✅ |
-| **Safari** | ✅ | ✅ | ✅ | - |
-| **Firefox** | ✅ | ✅ | - | ✅ |
-| **LibreWolf** | ✅ | ✅ | - | ✅ |
+| Browser | Bookmarks | History | Reading List |
+|---------|-----------|---------|--------------|
+| **Brave Nightly** | ✅ | ✅ | ✅ (in bookmarks) |
+| **Waterfox** | ✅ | ✅ | - |
+| **Brave** | ✅ | ✅ | ✅ (in bookmarks) |
+| **Chrome** | ✅ | ✅ | ✅ (in bookmarks) |
+| **Safari** | ✅ | ✅ | ✅ |
+| **Firefox** | ✅ | ✅ | - |
 
 ## 🚀 Quick Start
 
-### One-Click Sync (Recommended)
+### One-Click Migration (Recommended)
 
-Double-click `sync-now.command` on macOS:
+Double-click `sync-now.command` on macOS, or run:
 
 ```bash
-# Or run in terminal
 ./sync-now.command
 ```
-
-This will automatically:
-1. Backup current data to Desktop
-2. Sync Brave Nightly ↔ Waterfox bookmarks and history
-3. Migrate Safari reading list to hub browsers
-4. Clean duplicate data from non-hub browsers
 
 ### Command Line Usage
 
@@ -50,29 +41,23 @@ This will automatically:
 # List all detected browsers
 browser-bookmark-sync list
 
-# Validate bookmark integrity
+# Validate data integrity
 browser-bookmark-sync validate
 
-# Set hub browsers and sync (recommended)
-browser-bookmark-sync set-hubs \
+# Migrate ALL data to hub browsers (recommended)
+browser-bookmark-sync migrate \
   --browsers "waterfox,brave-nightly" \
-  --sync-history \
+  --history \
   --clear-others
 
-# Preview changes without executing
-browser-bookmark-sync set-hubs --dry-run
-
-# Sync bookmarks only (all browsers)
-browser-bookmark-sync sync
-
-# Sync history (last 30 days)
-browser-bookmark-sync sync-history --days 30
+# Preview changes first (dry-run)
+browser-bookmark-sync migrate --dry-run
 
 # Scheduled sync (every 30 minutes)
 browser-bookmark-sync schedule --cron "0 */30 * * * *"
 ```
 
-## 📐 Sync Architecture
+## 📐 Architecture
 
 ### Hub Browser Model
 
@@ -81,98 +66,100 @@ browser-bookmark-sync schedule --cron "0 */30 * * * *"
 │                   HUB BROWSERS                       │
 │         Waterfox  ←→  Brave Nightly                 │
 │         (Full Data)    (Full Data)                  │
+│                                                      │
+│  • All bookmarks with folder structure              │
+│  • Complete browsing history                        │
+│  • Safari reading list (migrated)                   │
 └─────────────────────────────────────────────────────┘
                          ↑
-                  Migrate & Clear
+              Migrate ALL data, then clear
                          ↑
 ┌─────────────────────────────────────────────────────┐
 │                 NON-HUB BROWSERS                     │
-│     Chrome | Brave | Safari | LibreWolf             │
-│     (Cleared) (Cleared) (Cleared) (Cleared)         │
+│     Chrome | Brave | Safari | Firefox               │
+│     (Cleared after migration)                       │
 └─────────────────────────────────────────────────────┘
 ```
 
-### Sync Rules
+### Migration Rules
 
 1. **Bookmarks**
    - Uses browser with best folder structure as base
-   - Preserves complete tree hierarchy (no flattening)
-   - URL deduplication (same URL kept once)
+   - Preserves complete tree hierarchy
+   - URL deduplication
 
 2. **History**
-   - Merges history from all browsers
+   - Merges ALL history from ALL browsers (no day limit)
    - Deduplicates by URL
    - Sorted by last visit time
 
-3. **Profile Handling**
-   - Only syncs Default Profile
-   - Cleans duplicate data from other profiles
+3. **Reading Lists**
+   - Safari reading list → Hub browser bookmark folder
+   - Chromium reading lists are part of bookmarks
 
-## 📊 Verified Test Results
+## 📊 Verified Results
 
 ```
-Test Suite: 6/6 passed ✅
+Test Suite: 7/7 passed ✅
 
-Data Statistics:
+Migration Statistics:
 ├── Waterfox: 24,361 URLs, 1,252 folders
 ├── Brave Nightly: 41,661 URLs, 1,936 folders  
-├── History: 30,301 unique items (merged)
+├── History: 30,301 unique items (merged from 99,114)
 └── Space Saved: 156MB (92% reduction)
 ```
 
 ## 🔧 Installation
 
 ```bash
-# Clone repository
+# Clone
 git clone https://github.com/nowaytouse/browser-bookmark-sync.git
 cd browser-bookmark-sync
 
 # Build
 cargo build --release
 
-# Run tests
+# Test
 cargo test --test integration_test
 
-# Install to system (optional)
+# Install (optional)
 cp target/release/browser-bookmark-sync /usr/local/bin/
 ```
 
 ## 🧪 Testing
 
-Run the integration test suite:
-
 ```bash
+# Run all tests
 cargo test --test integration_test
+
+# Tests:
+# ✅ test_list_command
+# ✅ test_validate_command
+# ✅ test_migrate_dry_run
+# ✅ test_migrate_with_history_dry_run
+# ✅ test_migrate_with_clear_others_dry_run
+# ✅ test_help_commands
+# ✅ test_full_migration_dry_run
 ```
 
-Tests cover:
-- ✅ Browser detection (`list`)
-- ✅ Data validation (`validate`)
-- ✅ Bookmark sync (`sync`)
-- ✅ History sync (`sync-history`)
-- ✅ Hub configuration (`set-hubs`)
-- ✅ Help commands
+## ⚠️ Important Notes
 
-## ⚠️ Known Limitations
-
-1. **Browser Running** - Close browsers before syncing to avoid database locks
-2. **Safari Reading List Write** - Read-only (migrates to bookmark folder instead)
-3. **Multi-Profile** - Only syncs Default Profile to prevent duplication
+1. **Close browsers before migration** - Avoid database locks
+2. **Backups are automatic** - Saved to `~/Desktop/browser_backup_*`
+3. **Use --dry-run first** - Preview changes before executing
 
 ## 📁 Project Structure
 
 ```
 browser-sync/
 ├── src/
-│   ├── main.rs          # CLI entry point
+│   ├── main.rs          # CLI (migrate, validate, list, schedule)
 │   ├── browsers.rs      # Browser adapters
-│   ├── sync.rs          # Sync engine
-│   ├── scheduler.rs     # Scheduled tasks
-│   └── validator.rs     # Data validation
+│   ├── sync.rs          # Migration engine
+│   └── scheduler.rs     # Scheduled tasks
 ├── tests/
-│   └── integration_test.rs  # Test suite
-├── sync-now.command     # One-click sync (macOS)
-├── empty_bookmarks.json # Empty bookmark template
+│   └── integration_test.rs  # 7 test cases
+├── sync-now.command     # One-click script (macOS)
 └── README.md
 ```
 

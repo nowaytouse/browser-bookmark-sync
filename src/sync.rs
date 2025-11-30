@@ -587,6 +587,26 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Migrate all browser data to hub browsers
+    /// This is the main migration function that:
+    /// 1. Reads ALL data from ALL browsers (bookmarks, history, cookies)
+    /// 2. Merges and deduplicates
+    /// 3. Writes to hub browsers only
+    /// 4. Optionally clears non-hub browsers
+    pub async fn migrate_to_hubs(
+        &mut self,
+        hub_names: &str,
+        sync_history: bool,
+        sync_cookies: bool,
+        clear_others: bool,
+        dry_run: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        // Reading list is always included (it's part of bookmarks for Chromium browsers)
+        let sync_reading_list = true;
+        self.set_hub_browsers(hub_names, sync_history, sync_reading_list, sync_cookies, clear_others, dry_run, verbose).await
+    }
+
     /// Set hub browsers - migrate all data to hubs and optionally clear non-hub browsers
     pub async fn set_hub_browsers(
         &mut self,
