@@ -171,7 +171,7 @@ impl SyncEngine {
         }
         
         // Use the best browser's bookmarks as base (preserving folder structure)
-        let merged = if let Some(browser) = best_browser {
+        let mut merged = if let Some(browser) = best_browser {
             let bookmarks = browser_bookmarks.get(&browser).cloned().unwrap_or_default();
             let url_count = Self::count_all_bookmarks(&bookmarks);
             let folder_count = Self::count_all_folders(&bookmarks);
@@ -181,7 +181,46 @@ impl SyncEngine {
             Vec::new()
         };
         
+        // Deduplicate bookmarks by URL within the tree structure
+        let before_count = Self::count_all_bookmarks(&merged);
+        Self::deduplicate_bookmarks_tree(&mut merged);
+        let after_count = Self::count_all_bookmarks(&merged);
+        
+        if before_count != after_count {
+            info!("🔄 Deduplicated: {} → {} URLs (removed {} duplicates)", 
+                before_count, after_count, before_count - after_count);
+        }
+        
         Ok(merged)
+    }
+    
+    /// Recursively deduplicate bookmarks within the tree structure
+    fn deduplicate_bookmarks_tree(bookmarks: &mut Vec<Bookmark>) {
+        let mut seen_urls: HashSet<String> = HashSet::new();
+        
+        // First pass: collect all URLs and deduplicate at current level
+        bookmarks.retain(|b| {
+            if b.folder {
+                true // Keep all folders
+            } else if let Some(ref url) = b.url {
+                let normalized = url.trim().to_lowercase();
+                if seen_urls.contains(&normalized) {
+                    false // Remove duplicate
+                } else {
+                    seen_urls.insert(normalized);
+                    true
+                }
+            } else {
+                true // Keep bookmarks without URL (shouldn't happen)
+            }
+        });
+        
+        // Second pass: recursively deduplicate children of folders
+        for bookmark in bookmarks.iter_mut() {
+            if bookmark.folder && !bookmark.children.is_empty() {
+                Self::deduplicate_bookmarks_tree(&mut bookmark.children);
+            }
+        }
     }
     
     fn count_all_folders(bookmarks: &[Bookmark]) -> usize {
