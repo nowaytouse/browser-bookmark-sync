@@ -138,34 +138,64 @@ impl SyncEngine {
         browser_bookmarks: &HashMap<BrowserType, Vec<Bookmark>>,
         verbose: bool,
     ) -> Result<Vec<Bookmark>> {
-        let mut merged = Vec::new();
-        let mut seen_urls = HashSet::new();
-
+        // Find the browser with the best folder structure (most folders + most bookmarks)
+        let mut best_browser: Option<BrowserType> = None;
+        let mut best_score = 0i64;
+        
         for (browser, bookmarks) in browser_bookmarks {
+            let url_count = Self::count_all_bookmarks(bookmarks);
+            let folder_count = Self::count_all_folders(bookmarks);
+            // Score: folders are worth 1000x more than URLs (prefer structure)
+            let score = (folder_count as i64 * 1000) + url_count as i64;
+            
             if verbose {
-                debug!("Processing {} bookmarks from {}", bookmarks.len(), browser.name());
+                debug!("Browser {} has {} bookmarks, {} folders (score: {})", 
+                    browser.name(), url_count, folder_count, score);
             }
-
-            for bookmark in bookmarks {
-                if bookmark.folder {
-                    // Always include folders
-                    merged.push(bookmark.clone());
-                } else if let Some(url) = &bookmark.url {
-                    // Deduplicate by URL
-                    let url_hash = self.hash_url(url);
-                    if seen_urls.insert(url_hash) {
-                        merged.push(bookmark.clone());
-                    } else if verbose {
-                        debug!("Skipping duplicate URL: {}", url);
-                    }
-                }
+            
+            info!("📊 {} structure: {} URLs, {} folders", browser.name(), url_count, folder_count);
+            
+            if score > best_score {
+                best_score = score;
+                best_browser = Some(*browser);
             }
         }
-
-        // Sort by title for consistency
-        merged.sort_by(|a, b| a.title.cmp(&b.title));
-
+        
+        // Use the best browser's bookmarks as base (preserving folder structure)
+        let merged = if let Some(browser) = best_browser {
+            let bookmarks = browser_bookmarks.get(&browser).cloned().unwrap_or_default();
+            let url_count = Self::count_all_bookmarks(&bookmarks);
+            let folder_count = Self::count_all_folders(&bookmarks);
+            info!("📚 Using {} as base ({} URLs, {} folders)", browser.name(), url_count, folder_count);
+            bookmarks
+        } else {
+            Vec::new()
+        };
+        
         Ok(merged)
+    }
+    
+    fn count_all_folders(bookmarks: &[Bookmark]) -> usize {
+        let mut count = 0;
+        for b in bookmarks {
+            if b.folder {
+                count += 1;
+                count += Self::count_all_folders(&b.children);
+            }
+        }
+        count
+    }
+    
+    fn count_all_bookmarks(bookmarks: &[Bookmark]) -> usize {
+        let mut count = 0;
+        for b in bookmarks {
+            if b.folder {
+                count += Self::count_all_bookmarks(&b.children);
+            } else {
+                count += 1;
+            }
+        }
+        count
     }
 
     fn hash_url(&self, url: &str) -> String {
@@ -183,11 +213,15 @@ impl SyncEngine {
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
         for (browser, bookmarks) in browser_bookmarks {
-            println!("  {} {} bookmarks", browser.name(), bookmarks.len());
+            let url_count = Self::count_all_bookmarks(bookmarks);
+            let folder_count = Self::count_all_folders(bookmarks);
+            println!("  {} {} URLs, {} folders", browser.name(), url_count, folder_count);
         }
         
+        let merged_urls = Self::count_all_bookmarks(merged);
+        let merged_folders = Self::count_all_folders(merged);
         println!("  ─────────────────────────────────────────");
-        println!("  Merged: {} unique bookmarks", merged.len());
+        println!("  Merged: {} URLs, {} folders", merged_urls, merged_folders);
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     }
 
@@ -549,6 +583,250 @@ impl SyncEngine {
                 }
             }
         }
+        
+        Ok(())
+    }
+
+    /// Set hub browsers - migrate all data to hubs and optionally clear non-hub browsers
+    pub async fn set_hub_browsers(
+        &mut self,
+        hub_names: &str,
+        sync_history: bool,
+        sync_reading_list: bool,
+        sync_cookies: bool,
+        clear_others: bool,
+        dry_run: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        // Parse hub browser names
+        let hub_list: Vec<String> = hub_names
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .collect();
+        
+        info!("🎯 Hub browsers: {:?}", hub_list);
+        
+        // Categorize adapters into hubs and non-hubs
+        let mut hub_adapters: Vec<&Box<dyn BrowserAdapter + Send + Sync>> = Vec::new();
+        let mut non_hub_adapters: Vec<&Box<dyn BrowserAdapter + Send + Sync>> = Vec::new();
+        
+        for adapter in &self.adapters {
+            let name = adapter.browser_type().name().to_lowercase();
+            let is_hub = hub_list.iter().any(|h| {
+                // Exact matching to avoid "brave" matching "brave nightly"
+                if h == "brave-nightly" || h == "brave nightly" {
+                    name.contains("brave") && name.contains("nightly")
+                } else if h == "brave" {
+                    name == "brave" // Exact match only
+                } else if h == "waterfox" {
+                    name.contains("waterfox")
+                } else if h == "chrome" {
+                    name == "chrome"
+                } else if h == "safari" {
+                    name == "safari"
+                } else {
+                    name.contains(h)
+                }
+            });
+            
+            if is_hub {
+                info!("  ✅ Hub: {}", adapter.browser_type().name());
+                hub_adapters.push(adapter);
+            } else {
+                info!("  📦 Non-hub: {}", adapter.browser_type().name());
+                non_hub_adapters.push(adapter);
+            }
+        }
+        
+        if hub_adapters.is_empty() {
+            anyhow::bail!("No hub browsers detected! Check browser names.");
+        }
+        
+        // Phase 1: Read all data from all browsers
+        info!("\n📖 Phase 1: Reading data from all browsers...");
+        
+        // Read bookmarks
+        let mut all_bookmarks: HashMap<BrowserType, Vec<Bookmark>> = HashMap::new();
+        for adapter in &self.adapters {
+            if let Ok(bookmarks) = adapter.read_bookmarks() {
+                let url_count = Self::count_all_bookmarks(&bookmarks);
+                let folder_count = Self::count_all_folders(&bookmarks);
+                info!("  {} : {} URLs, {} folders", adapter.browser_type().name(), url_count, folder_count);
+                all_bookmarks.insert(adapter.browser_type(), bookmarks);
+            }
+        }
+        
+        // Read history if requested
+        let mut all_history: HashMap<BrowserType, Vec<HistoryItem>> = HashMap::new();
+        if sync_history {
+            info!("\n📜 Reading history...");
+            for adapter in &self.adapters {
+                if adapter.supports_history() {
+                    if let Ok(history) = adapter.read_history(None) {
+                        info!("  {} : {} history items", adapter.browser_type().name(), history.len());
+                        all_history.insert(adapter.browser_type(), history);
+                    }
+                }
+            }
+        }
+        
+        // Read reading lists if requested
+        let mut all_reading_lists: HashMap<BrowserType, Vec<ReadingListItem>> = HashMap::new();
+        if sync_reading_list {
+            info!("\n📚 Reading reading lists...");
+            for adapter in &self.adapters {
+                if adapter.supports_reading_list() {
+                    if let Ok(items) = adapter.read_reading_list() {
+                        info!("  {} : {} reading list items", adapter.browser_type().name(), items.len());
+                        all_reading_lists.insert(adapter.browser_type(), items);
+                    }
+                }
+            }
+        }
+        
+        // Read cookies if requested
+        let mut all_cookies: HashMap<BrowserType, Vec<Cookie>> = HashMap::new();
+        if sync_cookies {
+            info!("\n🍪 Reading cookies...");
+            for adapter in &self.adapters {
+                if adapter.supports_cookies() {
+                    if let Ok(cookies) = adapter.read_cookies() {
+                        info!("  {} : {} cookies", adapter.browser_type().name(), cookies.len());
+                        all_cookies.insert(adapter.browser_type(), cookies);
+                    }
+                }
+            }
+        }
+        
+        // Phase 2: Merge and deduplicate
+        info!("\n🔄 Phase 2: Merging and deduplicating...");
+        
+        let merged_bookmarks = self.merge_bookmarks(&all_bookmarks, verbose)?;
+        let merged_urls = Self::count_all_bookmarks(&merged_bookmarks);
+        let merged_folders = Self::count_all_folders(&merged_bookmarks);
+        info!("  📚 Merged bookmarks: {} URLs, {} folders", merged_urls, merged_folders);
+        
+        let merged_history = if sync_history {
+            let h = self.merge_history(&all_history, verbose)?;
+            info!("  📜 Merged history: {} items", h.len());
+            h
+        } else {
+            Vec::new()
+        };
+        
+        let merged_reading_list = if sync_reading_list {
+            let r = self.merge_reading_lists(&all_reading_lists, verbose)?;
+            info!("  📚 Merged reading list: {} items", r.len());
+            r
+        } else {
+            Vec::new()
+        };
+        
+        let merged_cookies = if sync_cookies {
+            let c = self.merge_cookies(&all_cookies, verbose)?;
+            info!("  🍪 Merged cookies: {} items", c.len());
+            c
+        } else {
+            Vec::new()
+        };
+        
+        if dry_run {
+            info!("\n🏃 Dry run mode - no changes will be made");
+            println!("\n📊 Summary (Dry Run):");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("  Hub browsers will receive:");
+            println!("    📚 {} bookmarks ({} folders)", merged_urls, merged_folders);
+            if sync_history { println!("    📜 {} history items", merged_history.len()); }
+            if sync_reading_list { println!("    📖 {} reading list items", merged_reading_list.len()); }
+            if sync_cookies { println!("    🍪 {} cookies", merged_cookies.len()); }
+            if clear_others {
+                println!("\n  Non-hub browsers will be cleared:");
+                for adapter in &non_hub_adapters {
+                    println!("    🗑️  {}", adapter.browser_type().name());
+                }
+            }
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            return Ok(());
+        }
+        
+        // Phase 3: Backup everything
+        info!("\n💾 Phase 3: Creating backups...");
+        for adapter in &self.adapters {
+            if let Ok(path) = adapter.backup_bookmarks() {
+                info!("  ✅ Backup: {} -> {:?}", adapter.browser_type().name(), path);
+            }
+        }
+        
+        // Phase 4: Write to hub browsers
+        info!("\n✍️  Phase 4: Writing to hub browsers...");
+        for adapter in &hub_adapters {
+            let browser_name = adapter.browser_type().name();
+            
+            // Write bookmarks
+            match adapter.write_bookmarks(&merged_bookmarks) {
+                Ok(_) => info!("  ✅ {} : bookmarks written", browser_name),
+                Err(e) => error!("  ❌ {} : failed to write bookmarks: {}", browser_name, e),
+            }
+            
+            // Write history
+            if sync_history && adapter.supports_history() {
+                match adapter.write_history(&merged_history) {
+                    Ok(_) => info!("  ✅ {} : history written", browser_name),
+                    Err(e) => warn!("  ⚠️  {} : failed to write history: {}", browser_name, e),
+                }
+            }
+            
+            // Write reading list
+            if sync_reading_list && adapter.supports_reading_list() {
+                match adapter.write_reading_list(&merged_reading_list) {
+                    Ok(_) => info!("  ✅ {} : reading list written", browser_name),
+                    Err(e) => warn!("  ⚠️  {} : failed to write reading list: {}", browser_name, e),
+                }
+            }
+            
+            // Write cookies
+            if sync_cookies && adapter.supports_cookies() {
+                match adapter.write_cookies(&merged_cookies) {
+                    Ok(_) => info!("  ✅ {} : cookies written", browser_name),
+                    Err(e) => warn!("  ⚠️  {} : failed to write cookies: {}", browser_name, e),
+                }
+            }
+        }
+        
+        // Phase 5: Clear non-hub browsers if requested
+        if clear_others {
+            info!("\n🗑️  Phase 5: Clearing non-hub browsers...");
+            for adapter in &non_hub_adapters {
+                let browser_name = adapter.browser_type().name();
+                
+                // Clear bookmarks by writing empty structure
+                let empty_bookmarks: Vec<Bookmark> = Vec::new();
+                match adapter.write_bookmarks(&empty_bookmarks) {
+                    Ok(_) => info!("  ✅ {} : bookmarks cleared", browser_name),
+                    Err(e) => warn!("  ⚠️  {} : failed to clear bookmarks: {}", browser_name, e),
+                }
+            }
+        }
+        
+        // Phase 6: Verification
+        info!("\n🔍 Phase 6: Verification...");
+        for adapter in &hub_adapters {
+            if let Ok(bookmarks) = adapter.read_bookmarks() {
+                let url_count = Self::count_all_bookmarks(&bookmarks);
+                let folder_count = Self::count_all_folders(&bookmarks);
+                info!("  ✅ {} : {} URLs, {} folders", adapter.browser_type().name(), url_count, folder_count);
+            }
+        }
+        
+        println!("\n📊 Hub Configuration Complete!");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("  Hub browsers: {:?}", hub_list);
+        println!("  Bookmarks: {} URLs, {} folders", merged_urls, merged_folders);
+        if sync_history { println!("  History: {} items synced", merged_history.len()); }
+        if sync_reading_list { println!("  Reading list: {} items synced", merged_reading_list.len()); }
+        if sync_cookies { println!("  Cookies: {} items synced", merged_cookies.len()); }
+        if clear_others { println!("  Non-hub browsers: CLEARED"); }
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
         Ok(())
     }

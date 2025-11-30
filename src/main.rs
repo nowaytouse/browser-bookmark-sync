@@ -100,6 +100,37 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+    
+    /// Set hub browsers and clean others (migrate data to hubs, then clear non-hubs)
+    SetHubs {
+        /// Hub browsers (comma-separated, e.g., "waterfox,brave-nightly")
+        #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
+        browsers: String,
+        
+        /// Sync history to hubs
+        #[arg(long)]
+        sync_history: bool,
+        
+        /// Sync reading list to hubs
+        #[arg(long)]
+        sync_reading_list: bool,
+        
+        /// Sync cookies to hubs
+        #[arg(long)]
+        sync_cookies: bool,
+        
+        /// Clear bookmarks from non-hub browsers after migration
+        #[arg(long)]
+        clear_others: bool,
+        
+        /// Dry run - show what would be done without making changes
+        #[arg(short, long)]
+        dry_run: bool,
+        
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
 }
 
 #[tokio::main]
@@ -167,6 +198,13 @@ async fn main() -> Result<()> {
             let mut engine = SyncEngine::new()?;
             engine.sync_cookies(dry_run, verbose).await?;
             info!("✅ Cookies synchronization complete!");
+        }
+        
+        Commands::SetHubs { browsers, sync_history, sync_reading_list, sync_cookies, clear_others, dry_run, verbose } => {
+            info!("🎯 Setting hub browsers: {}", browsers);
+            let mut engine = SyncEngine::new()?;
+            engine.set_hub_browsers(&browsers, sync_history, sync_reading_list, sync_cookies, clear_others, dry_run, verbose).await?;
+            info!("✅ Hub configuration complete!");
         }
     }
 
