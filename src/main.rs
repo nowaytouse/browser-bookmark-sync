@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::{info, error};
+use tracing::info;
 
 mod browsers;
 mod sync;
@@ -63,6 +63,32 @@ enum Commands {
         #[arg(short, long, default_value = "all")]
         target: String,
     },
+    
+    /// Synchronize browsing history across browsers
+    SyncHistory {
+        /// Only sync history from last N days
+        #[arg(short, long)]
+        days: Option<i32>,
+        
+        /// Dry run - show what would be synced without making changes
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+        
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    
+    /// Synchronize reading lists across browsers
+    SyncReadingList {
+        /// Dry run - show what would be synced without making changes
+        #[arg(short, long)]
+        dry_run: bool,
+        
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
 }
 
 #[tokio::main]
@@ -109,6 +135,20 @@ async fn main() -> Result<()> {
             let mut engine = SyncEngine::new()?;
             engine.import_safari_html(&file, &target).await?;
             info!("✅ Import complete!");
+        }
+        
+        Commands::SyncHistory { days, dry_run, verbose } => {
+            info!("📜 Starting history synchronization...");
+            let mut engine = SyncEngine::new()?;
+            engine.sync_history(days, dry_run, verbose).await?;
+            info!("✅ History synchronization complete!");
+        }
+        
+        Commands::SyncReadingList { dry_run, verbose } => {
+            info!("📚 Starting reading list synchronization...");
+            let mut engine = SyncEngine::new()?;
+            engine.sync_reading_list(dry_run, verbose).await?;
+            info!("✅ Reading list synchronization complete!");
         }
     }
 

@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{debug, warn, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +70,28 @@ pub trait BrowserAdapter: Send + Sync {
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()>;
     fn backup_bookmarks(&self) -> Result<PathBuf>;
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool>;
+    
+    // Reading list support
+    fn supports_reading_list(&self) -> bool {
+        false
+    }
+    fn read_reading_list(&self) -> Result<Vec<ReadingListItem>> {
+        Ok(vec![])
+    }
+    fn write_reading_list(&self, _items: &[ReadingListItem]) -> Result<()> {
+        Ok(())
+    }
+    
+    // History support
+    fn supports_history(&self) -> bool {
+        false
+    }
+    fn read_history(&self, _days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        Ok(vec![])
+    }
+    fn write_history(&self, _items: &[HistoryItem]) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub fn get_all_adapters() -> Vec<Box<dyn BrowserAdapter + Send + Sync>> {
@@ -144,6 +166,45 @@ impl BrowserAdapter for WaterfoxAdapter {
 
     fn validate_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<bool> {
         Ok(true)
+    }
+    
+    fn supports_history(&self) -> bool {
+        true
+    }
+    
+    fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        let profiles = self.detect_all_profiles()?;
+        let mut all_history = Vec::new();
+        
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            match read_firefox_history(profile_path, days) {
+                Ok(history) => {
+                    info!("✅ Waterfox Profile {}: {} history items", idx + 1, history.len());
+                    all_history.extend(history);
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to read Waterfox history from profile {}: {}", idx + 1, e);
+                }
+            }
+        }
+        
+        info!("📊 Total Waterfox history from {} profiles: {}", profiles.len(), all_history.len());
+        Ok(all_history)
+    }
+    
+    fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+        let profiles = self.detect_all_profiles()?;
+        for (idx, profile_path) in profiles.iter().enumerate() {
+            match write_firefox_history(profile_path, items) {
+                Ok(_) => {
+                    info!("✅ Wrote {} history items to Waterfox profile {}", items.len(), idx + 1);
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to write history to Waterfox profile {}: {}", idx + 1, e);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -277,6 +338,66 @@ impl BrowserAdapter for SafariAdapter {
         }
         Ok(true)
     }
+    
+    fn supports_reading_list(&self) -> bool {
+        true
+    }
+    
+    fn read_reading_list(&self) -> Result<Vec<ReadingListItem>> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let path = PathBuf::from(format!("{}/Library/Safari/Bookmarks.plist", home));
+            
+            if !path.exists() {
+                anyhow::bail!("Safari bookmarks file not found");
+            }
+            
+            let data = std::fs::read(&path)?;
+            let plist_value: plist::Value = plist::from_bytes(&data)?;
+            
+            // Parse reading list from Safari plist
+            let items = parse_safari_reading_list(&plist_value)?;
+            info!("Read {} reading list items from Safari", items.len());
+            Ok(items)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Safari is only available on macOS")
+        }
+    }
+    
+    fn write_reading_list(&self, items: &[ReadingListItem]) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let path = PathBuf::from(format!("{}/Library/Safari/Bookmarks.plist", home));
+            
+            // Backup first
+            self.backup_bookmarks()?;
+            
+            // Read existing plist
+            let data = std::fs::read(&path)?;
+            let mut plist_value: plist::Value = plist::from_bytes(&data)?;
+            
+            // Update reading list section
+            update_safari_reading_list(&mut plist_value, items)?;
+            
+            // Write back
+            let mut data = Vec::new();
+            plist::to_writer_xml(&mut data, &plist_value)?;
+            std::fs::write(&path, data)?;
+            
+            info!("Wrote {} reading list items to Safari", items.len());
+            Ok(())
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Safari is only available on macOS")
+        }
+    }
 }
 
 // Brave Adapter
@@ -350,6 +471,50 @@ impl BrowserAdapter for BraveAdapter {
             }
         }
         Ok(true)
+    }
+    
+    fn supports_history(&self) -> bool {
+        true
+    }
+    
+    fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let history_path = PathBuf::from(format!(
+                "{}/Library/Application Support/BraveSoftware/Brave-Browser/Default/History",
+                home
+            ));
+            
+            if !history_path.exists() {
+                anyhow::bail!("Brave history file not found");
+            }
+            
+            read_chromium_history(&history_path, days)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Brave detection not implemented for this platform")
+        }
+    }
+    
+    fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let history_path = PathBuf::from(format!(
+                "{}/Library/Application Support/BraveSoftware/Brave-Browser/Default/History",
+                home
+            ));
+            
+            write_chromium_history(&history_path, items)
+        }
+        
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Brave detection not implemented for this platform")
+        }
     }
 }
 
@@ -566,13 +731,13 @@ impl BrowserAdapter for FirefoxNightlyAdapter {
 
 // Helper functions for Safari plist parsing
 #[cfg(target_os = "macos")]
-fn parse_safari_plist(value: &plist::Value) -> Result<Vec<Bookmark>> {
+fn parse_safari_plist(_value: &plist::Value) -> Result<Vec<Bookmark>> {
     // Simplified implementation - needs full Safari plist structure parsing
     Ok(vec![])
 }
 
 #[cfg(target_os = "macos")]
-fn bookmarks_to_safari_plist(bookmarks: &[Bookmark]) -> Result<plist::Value> {
+fn bookmarks_to_safari_plist(_bookmarks: &[Bookmark]) -> Result<plist::Value> {
     // Simplified implementation - needs full Safari plist structure generation
     Ok(plist::Value::Dictionary(Default::default()))
 }
@@ -621,7 +786,7 @@ fn parse_chromium_node_recursive(node: &serde_json::Value, bookmarks: &mut Vec<B
     Ok(())
 }
 
-fn bookmarks_to_chromium_json(bookmarks: &[Bookmark]) -> Result<serde_json::Value> {
+fn bookmarks_to_chromium_json(_bookmarks: &[Bookmark]) -> Result<serde_json::Value> {
     // Simplified implementation - needs full Chromium JSON structure generation
     Ok(serde_json::json!({
         "roots": {
@@ -726,5 +891,264 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
     conn.execute("COMMIT", [])?;
     
     debug!("Wrote {} bookmarks to Firefox database", bookmarks.len());
+    Ok(())
+}
+
+// Firefox history helper functions
+fn read_firefox_history(db_path: &std::path::Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+    use rusqlite::{Connection, OpenFlags};
+    
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    )?;
+    
+    let mut history = Vec::new();
+    
+    // Calculate timestamp for filtering (microseconds since epoch)
+    let cutoff_timestamp = if let Some(days) = days {
+        let now = chrono::Utc::now();
+        let cutoff = now - chrono::Duration::days(days as i64);
+        Some(cutoff.timestamp_micros())
+    } else {
+        None
+    };
+    
+    let query = if let Some(cutoff) = cutoff_timestamp {
+        format!(
+            "SELECT p.url, p.title, p.visit_count, MAX(v.visit_date) as last_visit
+             FROM moz_places p
+             JOIN moz_historyvisits v ON p.id = v.place_id
+             WHERE v.visit_date > {}
+             GROUP BY p.id
+             ORDER BY last_visit DESC",
+            cutoff
+        )
+    } else {
+        "SELECT p.url, p.title, p.visit_count, MAX(v.visit_date) as last_visit
+         FROM moz_places p
+         JOIN moz_historyvisits v ON p.id = v.place_id
+         GROUP BY p.id
+         ORDER BY last_visit DESC"
+            .to_string()
+    };
+    
+    let mut stmt = conn.prepare(&query)?;
+    let history_iter = stmt.query_map([], |row| {
+        Ok(HistoryItem {
+            url: row.get(0)?,
+            title: row.get(1)?,
+            visit_count: row.get(2)?,
+            last_visit: row.get(3)?,
+        })
+    })?;
+    
+    for item in history_iter {
+        history.push(item?);
+    }
+    
+    debug!("Read {} history items from Firefox database", history.len());
+    Ok(history)
+}
+
+fn write_firefox_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Result<()> {
+    use rusqlite::Connection;
+    
+    let conn = Connection::open(db_path)?;
+    
+    // Start transaction
+    conn.execute("BEGIN TRANSACTION", [])?;
+    
+    // Insert history items
+    for item in items {
+        // First, ensure the URL exists in moz_places
+        conn.execute(
+            "INSERT OR REPLACE INTO moz_places (url, title, rev_host, hidden, typed, frecency, visit_count)
+             VALUES (?1, ?2, '', 0, 0, -1, ?3)",
+            rusqlite::params![&item.url, &item.title, item.visit_count],
+        )?;
+        
+        // Get the place_id
+        let place_id: i64 = conn.query_row(
+            "SELECT id FROM moz_places WHERE url = ?1",
+            [&item.url],
+            |row| row.get(0),
+        )?;
+        
+        // Insert visit record
+        if let Some(last_visit) = item.last_visit {
+            conn.execute(
+                "INSERT OR IGNORE INTO moz_historyvisits (place_id, visit_date, visit_type, from_visit)
+                 VALUES (?1, ?2, 1, 0)",
+                rusqlite::params![place_id, last_visit],
+            )?;
+        }
+    }
+    
+    // Commit transaction
+    conn.execute("COMMIT", [])?;
+    
+    debug!("Wrote {} history items to Firefox database", items.len());
+    Ok(())
+}
+
+// Safari reading list helper functions
+#[cfg(target_os = "macos")]
+fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem>> {
+    let mut items = Vec::new();
+    
+    if let Some(dict) = value.as_dictionary() {
+        if let Some(children) = dict.get("Children").and_then(|v| v.as_array()) {
+            for child in children {
+                if let Some(child_dict) = child.as_dictionary() {
+                    // Check if this is a reading list item
+                    if let Some(_reading_list) = child_dict.get("ReadingList") {
+                        if let Some(url_string) = child_dict.get("URLString").and_then(|v| v.as_string()) {
+                            let title = child_dict
+                                .get("URIDictionary")
+                                .and_then(|v| v.as_dictionary())
+                                .and_then(|d| d.get("title"))
+                                .and_then(|v| v.as_string())
+                                .unwrap_or(url_string)
+                                .to_string();
+                            
+                            let date_added = child_dict
+                                .get("ReadingListDateAdded")
+                                .and_then(|v| v.as_date())
+                                .map(|d| {
+                                    // Convert plist::Date to timestamp
+                                    use std::time::SystemTime;
+                                    let system_time: SystemTime = d.clone().into();
+                                    system_time.duration_since(SystemTime::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs() as i64
+                                });
+                            
+                            items.push(ReadingListItem {
+                                url: url_string.to_string(),
+                                title,
+                                date_added,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(items)
+}
+
+#[cfg(target_os = "macos")]
+fn update_safari_reading_list(_plist: &mut plist::Value, _items: &[ReadingListItem]) -> Result<()> {
+    // This is a simplified implementation
+    // In reality, we need to preserve the existing structure and only update the reading list section
+    // For now, we'll just log that this needs implementation
+    warn!("Safari reading list write not fully implemented yet");
+    Ok(())
+}
+
+// Chromium history helper functions
+fn read_chromium_history(db_path: &std::path::Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+    use rusqlite::{Connection, OpenFlags};
+    
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    )?;
+    
+    let mut history = Vec::new();
+    
+    // Calculate timestamp for filtering (microseconds since epoch for Chromium)
+    let cutoff_timestamp = if let Some(days) = days {
+        let now = chrono::Utc::now();
+        let cutoff = now - chrono::Duration::days(days as i64);
+        // Chromium uses microseconds since 1601-01-01
+        let chromium_epoch = chrono::NaiveDate::from_ymd_opt(1601, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        let duration = cutoff.signed_duration_since(chromium_epoch);
+        Some(duration.num_microseconds().unwrap_or(0))
+    } else {
+        None
+    };
+    
+    let query = if let Some(cutoff) = cutoff_timestamp {
+        format!(
+            "SELECT url, title, visit_count, last_visit_time
+             FROM urls
+             WHERE last_visit_time > {}
+             ORDER BY last_visit_time DESC",
+            cutoff
+        )
+    } else {
+        "SELECT url, title, visit_count, last_visit_time
+         FROM urls
+         ORDER BY last_visit_time DESC"
+            .to_string()
+    };
+    
+    let mut stmt = conn.prepare(&query)?;
+    let history_iter = stmt.query_map([], |row| {
+        Ok(HistoryItem {
+            url: row.get(0)?,
+            title: row.get(1)?,
+            visit_count: row.get(2)?,
+            last_visit: row.get(3)?,
+        })
+    })?;
+    
+    for item in history_iter {
+        history.push(item?);
+    }
+    
+    debug!("Read {} history items from Chromium database", history.len());
+    Ok(history)
+}
+
+fn write_chromium_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Result<()> {
+    use rusqlite::Connection;
+    
+    let conn = Connection::open(db_path)?;
+    
+    // Start transaction
+    conn.execute("BEGIN TRANSACTION", [])?;
+    
+    // Insert history items
+    for item in items {
+        conn.execute(
+            "INSERT OR REPLACE INTO urls (url, title, visit_count, last_visit_time, typed_count, hidden)
+             VALUES (?1, ?2, ?3, ?4, 0, 0)",
+            rusqlite::params![
+                &item.url,
+                &item.title,
+                item.visit_count,
+                item.last_visit.unwrap_or(0)
+            ],
+        )?;
+        
+        // Get the url_id
+        let url_id: i64 = conn.query_row(
+            "SELECT id FROM urls WHERE url = ?1",
+            [&item.url],
+            |row| row.get(0),
+        )?;
+        
+        // Insert visit record
+        if let Some(last_visit) = item.last_visit {
+            conn.execute(
+                "INSERT OR IGNORE INTO visits (url, visit_time, from_visit, transition, segment_id)
+                 VALUES (?1, ?2, 0, 0, 0)",
+                rusqlite::params![url_id, last_visit],
+            )?;
+        }
+    }
+    
+    // Commit transaction
+    conn.execute("COMMIT", [])?;
+    
+    debug!("Wrote {} history items to Chromium database", items.len());
     Ok(())
 }

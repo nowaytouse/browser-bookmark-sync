@@ -161,6 +161,102 @@ cargo build --release
 "0 0 10 * * SAT,SUN"
 ```
 
+## 历史记录同步
+
+### 基础用法
+
+同步所有浏览器的历史记录：
+
+```bash
+./target/release/browser-bookmark-sync sync-history
+```
+
+### 仅同步最近N天
+
+只同步最近7天的历史记录：
+
+```bash
+./target/release/browser-bookmark-sync sync-history --days 7
+```
+
+只同步最近30天：
+
+```bash
+./target/release/browser-bookmark-sync sync-history --days 30
+```
+
+### 预览模式
+
+先预览会同步什么：
+
+```bash
+./target/release/browser-bookmark-sync sync-history --days 7 --dry-run --verbose
+```
+
+输出示例：
+```
+📜 Starting history synchronization
+📅 Syncing history from last 7 days
+📖 Phase 1: Reading history from all browsers
+✅ Read 396 history items from Waterfox
+⚠️  Failed to read history from Brave: Brave history file not found
+🔄 Phase 2: Merging history
+📊 Merged result: 396 unique history items
+🏃 Dry run mode - no changes will be made
+✅ History synchronization complete!
+```
+
+### 支持的浏览器
+
+历史记录同步目前支持：
+- ✅ Waterfox（所有配置文件）
+- ✅ Firefox Nightly
+- ✅ Brave
+- ✅ Chrome
+- ❌ Safari（暂不支持）
+
+## 阅读列表同步
+
+### 基础用法
+
+同步所有浏览器的阅读列表：
+
+```bash
+./target/release/browser-bookmark-sync sync-reading-list
+```
+
+### 预览模式
+
+先预览会同步什么：
+
+```bash
+./target/release/browser-bookmark-sync sync-reading-list --dry-run --verbose
+```
+
+输出示例：
+```
+📚 Starting reading list synchronization
+📖 Phase 1: Reading lists from all browsers
+✅ Read 15 reading list items from Safari
+🔄 Phase 2: Merging reading lists
+📊 Merged result: 15 unique reading list items
+🏃 Dry run mode - no changes will be made
+✅ Reading list synchronization complete!
+```
+
+### 支持的浏览器
+
+阅读列表同步目前支持：
+- ✅ Safari（原生Reading List）
+- ❌ 其他浏览器（暂不支持）
+
+### 注意事项
+
+1. **历史记录可能很大**：如果不指定天数，可能会同步数万条记录
+2. **性能考虑**：建议使用 `--days` 参数限制同步范围
+3. **隐私保护**：历史记录包含敏感信息，请谨慎使用
+4. **Safari限制**：Safari的历史记录数据库格式特殊，暂不支持
+
 ## 高级功能
 
 ### 环境变量

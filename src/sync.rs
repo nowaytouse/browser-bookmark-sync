@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use tracing::{info, warn, error, debug};
 use sha2::{Sha256, Digest};
 
-use crate::browsers::{Bookmark, BrowserAdapter, BrowserType, get_all_adapters};
+use crate::browsers::{Bookmark, BrowserAdapter, BrowserType, get_all_adapters, HistoryItem, ReadingListItem};
 use crate::validator::ValidationReport;
 
 pub struct SyncEngine {
@@ -105,7 +105,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn post_sync_validation(&self, expected: &[Bookmark]) -> Result<()> {
+    fn post_sync_validation(&self, _expected: &[Bookmark]) -> Result<()> {
         let mut validation_passed = true;
 
         for adapter in &self.adapters {
@@ -246,6 +246,192 @@ impl SyncEngine {
         Ok(())
     }
     
+    
+    pub async fn sync_history(&mut self, days: Option<i32>, dry_run: bool, verbose: bool) -> Result<()> {
+        info!("📜 Starting history synchronization");
+        
+        if let Some(d) = days {
+            info!("📅 Syncing history from last {} days", d);
+        } else {
+            info!("📅 Syncing all history");
+        }
+        
+        info!("📖 Phase 1: Reading history from all browsers");
+        let mut browser_history = HashMap::new();
+        
+        for adapter in &self.adapters {
+            if !adapter.supports_history() {
+                debug!("{} does not support history sync", adapter.browser_type().name());
+                continue;
+            }
+            
+            let browser_type = adapter.browser_type();
+            match adapter.read_history(days) {
+                Ok(history) => {
+                    info!("✅ Read {} history items from {}", history.len(), browser_type.name());
+                    browser_history.insert(browser_type, history);
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to read history from {}: {}", browser_type.name(), e);
+                }
+            }
+        }
+        
+        if browser_history.is_empty() {
+            warn!("⚠️  No history could be read from any browser");
+            return Ok(());
+        }
+        
+        info!("🔄 Phase 2: Merging history");
+        let merged = self.merge_history(&browser_history, verbose)?;
+        info!("📊 Merged result: {} unique history items", merged.len());
+        
+        if dry_run {
+            info!("🏃 Dry run mode - no changes will be made");
+            return Ok(());
+        }
+        
+        info!("✍️  Phase 3: Writing merged history");
+        for adapter in &self.adapters {
+            if !adapter.supports_history() {
+                continue;
+            }
+            
+            let browser_type = adapter.browser_type();
+            match adapter.write_history(&merged) {
+                Ok(_) => {
+                    info!("✅ Wrote history to {}", browser_type.name());
+                }
+                Err(e) => {
+                    error!("❌ Failed to write history to {}: {}", browser_type.name(), e);
+                }
+            }
+        }
+        
+        info!("✅ History synchronization complete");
+        Ok(())
+    }
+    
+    pub async fn sync_reading_list(&mut self, dry_run: bool, verbose: bool) -> Result<()> {
+        info!("📚 Starting reading list synchronization");
+        
+        info!("📖 Phase 1: Reading lists from all browsers");
+        let mut browser_reading_lists = HashMap::new();
+        
+        for adapter in &self.adapters {
+            if !adapter.supports_reading_list() {
+                debug!("{} does not support reading list sync", adapter.browser_type().name());
+                continue;
+            }
+            
+            let browser_type = adapter.browser_type();
+            match adapter.read_reading_list() {
+                Ok(items) => {
+                    info!("✅ Read {} reading list items from {}", items.len(), browser_type.name());
+                    browser_reading_lists.insert(browser_type, items);
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to read reading list from {}: {}", browser_type.name(), e);
+                }
+            }
+        }
+        
+        if browser_reading_lists.is_empty() {
+            warn!("⚠️  No reading lists could be read from any browser");
+            return Ok(());
+        }
+        
+        info!("🔄 Phase 2: Merging reading lists");
+        let merged = self.merge_reading_lists(&browser_reading_lists, verbose)?;
+        info!("📊 Merged result: {} unique reading list items", merged.len());
+        
+        if dry_run {
+            info!("🏃 Dry run mode - no changes will be made");
+            return Ok(());
+        }
+        
+        info!("✍️  Phase 3: Writing merged reading lists");
+        for adapter in &self.adapters {
+            if !adapter.supports_reading_list() {
+                continue;
+            }
+            
+            let browser_type = adapter.browser_type();
+            match adapter.write_reading_list(&merged) {
+                Ok(_) => {
+                    info!("✅ Wrote reading list to {}", browser_type.name());
+                }
+                Err(e) => {
+                    error!("❌ Failed to write reading list to {}: {}", browser_type.name(), e);
+                }
+            }
+        }
+        
+        info!("✅ Reading list synchronization complete");
+        Ok(())
+    }
+    
+    fn merge_history(
+        &self,
+        browser_history: &HashMap<BrowserType, Vec<HistoryItem>>,
+        verbose: bool,
+    ) -> Result<Vec<HistoryItem>> {
+        let mut merged = Vec::new();
+        let mut seen_urls = HashSet::new();
+
+        for (browser, history) in browser_history {
+            if verbose {
+                debug!("Processing {} history items from {}", history.len(), browser.name());
+            }
+
+            for item in history {
+                let url_hash = self.hash_url(&item.url);
+                if seen_urls.insert(url_hash) {
+                    merged.push(item.clone());
+                } else if verbose {
+                    debug!("Skipping duplicate URL: {}", item.url);
+                }
+            }
+        }
+
+        // Sort by last visit time (most recent first)
+        merged.sort_by(|a, b| {
+            b.last_visit.unwrap_or(0).cmp(&a.last_visit.unwrap_or(0))
+        });
+
+        Ok(merged)
+    }
+    
+    fn merge_reading_lists(
+        &self,
+        browser_reading_lists: &HashMap<BrowserType, Vec<ReadingListItem>>,
+        verbose: bool,
+    ) -> Result<Vec<ReadingListItem>> {
+        let mut merged = Vec::new();
+        let mut seen_urls = HashSet::new();
+
+        for (browser, items) in browser_reading_lists {
+            if verbose {
+                debug!("Processing {} reading list items from {}", items.len(), browser.name());
+            }
+
+            for item in items {
+                let url_hash = self.hash_url(&item.url);
+                if seen_urls.insert(url_hash) {
+                    merged.push(item.clone());
+                } else if verbose {
+                    debug!("Skipping duplicate URL: {}", item.url);
+                }
+            }
+        }
+
+        // Sort by date added (most recent first)
+        merged.sort_by(|a, b| {
+            b.date_added.unwrap_or(0).cmp(&a.date_added.unwrap_or(0))
+        });
+
+        Ok(merged)
+    }
     pub async fn import_safari_html(&mut self, html_path: &str, target: &str) -> Result<()> {
         info!("📖 Reading Safari HTML export...");
         
