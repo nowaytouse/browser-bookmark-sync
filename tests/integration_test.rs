@@ -2,7 +2,6 @@
 // Run with: cargo test --test integration_test
 
 use std::process::Command;
-use std::path::Path;
 
 fn run_cli(args: &[&str]) -> (bool, String, String) {
     let output = Command::new("cargo")
@@ -18,7 +17,7 @@ fn run_cli(args: &[&str]) -> (bool, String, String) {
 
 #[test]
 fn test_list_command() {
-    let (success, stdout, stderr) = run_cli(&["list"]);
+    let (_success, stdout, stderr) = run_cli(&["list"]);
     
     // Should detect at least some browsers
     assert!(stderr.contains("Detected Browsers") || stdout.contains("Detected Browsers"), 
@@ -34,7 +33,7 @@ fn test_list_command() {
 
 #[test]
 fn test_validate_command() {
-    let (success, stdout, stderr) = run_cli(&["validate"]);
+    let (_success, stdout, stderr) = run_cli(&["validate"]);
     
     // Should show validation report
     assert!(stderr.contains("Validation Report") || stdout.contains("Validation Report"),
@@ -49,7 +48,7 @@ fn test_validate_command() {
 
 #[test]
 fn test_sync_dry_run() {
-    let (success, stdout, stderr) = run_cli(&["sync", "--dry-run"]);
+    let (_success, stdout, stderr) = run_cli(&["sync", "--dry-run"]);
     
     // Dry run should not fail
     assert!(stderr.contains("Dry run") || stdout.contains("Dry run"),
@@ -60,7 +59,7 @@ fn test_sync_dry_run() {
 
 #[test]
 fn test_sync_history_dry_run() {
-    let (success, stdout, stderr) = run_cli(&["sync-history", "--dry-run", "--days", "7"]);
+    let (_success, stdout, stderr) = run_cli(&["sync-history", "--dry-run", "--days", "7"]);
     
     // Should show history sync phases
     assert!(stderr.contains("history") || stdout.contains("history"),
@@ -76,7 +75,7 @@ fn test_sync_history_dry_run() {
 
 #[test]
 fn test_set_hubs_dry_run() {
-    let (success, stdout, stderr) = run_cli(&[
+    let (_success, stdout, stderr) = run_cli(&[
         "set-hubs",
         "--browsers", "waterfox,brave-nightly",
         "--dry-run"
