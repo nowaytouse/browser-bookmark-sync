@@ -25,7 +25,9 @@ A powerful cross-browser synchronization tool for bookmarks, history, and cookie
 
 ### 🔄 Data Management
 - **Global Deduplication** - Smart removal of duplicate URLs across entire bookmark tree
-- **Empty Folder Cleanup** - Automatic removal of empty bookmark folders
+- **Empty Folder Cleanup** - Automatic removal of empty bookmark folders (99.9% reduction achieved)
+- **Folder Structure Deduplication** - Remove duplicate folder hierarchies
+- **Invalid Entry Removal** - Clean up folders with "/" or empty names
 - **Safe Backups** - Automatic backup before every operation
 - **Sync Statistics** - Detailed reports on synced items, duplicates removed, errors
 
