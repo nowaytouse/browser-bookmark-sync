@@ -31,10 +31,6 @@ enum Commands {
         #[arg(long)]
         clear_others: bool,
         
-        /// Read from all profiles (slower, may have duplicates)
-        #[arg(long)]
-        all_profiles: bool,
-        
         /// Dry run - show what would be synced without making changes
         #[arg(short, long)]
         dry_run: bool,
@@ -78,10 +74,6 @@ enum Commands {
     
     /// Synchronize browsing history across browsers (syncs ALL history)
     SyncHistory {
-        /// Read from all profiles (slower, may have duplicates)
-        #[arg(long)]
-        all_profiles: bool,
-        
         /// Dry run - show what would be synced without making changes
         #[arg(short, long)]
         dry_run: bool,
@@ -104,10 +96,6 @@ enum Commands {
     
     /// Synchronize cookies across browsers
     SyncCookies {
-        /// Read from all profiles (slower, may have duplicates)
-        #[arg(long)]
-        all_profiles: bool,
-        
         /// Dry run - show what would be synced without making changes
         #[arg(short, long)]
         dry_run: bool,
@@ -158,10 +146,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sync { browsers, clear_others, all_profiles, dry_run, verbose } => {
+        Commands::Sync { browsers, clear_others, dry_run, verbose } => {
             info!("🔄 Starting full sync between hub browsers: {}", browsers);
             let mut engine = SyncEngine::new()?;
-            engine.set_all_profiles(all_profiles);
             // Full sync: bookmarks + history + reading list + cookies
             engine.set_hub_browsers(&browsers, true, true, true, clear_others, dry_run, verbose).await?;
             info!("✅ Full synchronization complete!");
@@ -193,10 +180,9 @@ async fn main() -> Result<()> {
             info!("✅ Import complete!");
         }
         
-        Commands::SyncHistory { all_profiles, dry_run, verbose } => {
+        Commands::SyncHistory { dry_run, verbose } => {
             info!("📜 Starting history synchronization (ALL history)...");
             let mut engine = SyncEngine::new()?;
-            engine.set_all_profiles(all_profiles);
             engine.sync_history(None, dry_run, verbose).await?;
             info!("✅ History synchronization complete!");
         }
@@ -208,10 +194,9 @@ async fn main() -> Result<()> {
             info!("✅ Reading list synchronization complete!");
         }
         
-        Commands::SyncCookies { all_profiles, dry_run, verbose } => {
+        Commands::SyncCookies { dry_run, verbose } => {
             info!("🍪 Starting cookies synchronization...");
             let mut engine = SyncEngine::new()?;
-            engine.set_all_profiles(all_profiles);
             engine.sync_cookies(dry_run, verbose).await?;
             info!("✅ Cookies synchronization complete!");
         }

@@ -8,21 +8,12 @@ use crate::validator::ValidationReport;
 
 pub struct SyncEngine {
     adapters: Vec<Box<dyn BrowserAdapter + Send + Sync>>,
-    all_profiles: bool,
 }
 
 impl SyncEngine {
     pub fn new() -> Result<Self> {
         let adapters = get_all_adapters();
-        Ok(Self { adapters, all_profiles: false })
-    }
-    
-    /// Enable reading from all profiles (slower, may have duplicates)
-    pub fn set_all_profiles(&mut self, enabled: bool) {
-        self.all_profiles = enabled;
-        if enabled {
-            info!("📂 All profiles mode enabled - will read from all browser profiles");
-        }
+        Ok(Self { adapters })
     }
 
     pub async fn sync(&mut self, dry_run: bool, verbose: bool) -> Result<()> {
@@ -233,11 +224,6 @@ impl SyncEngine {
         if normalized.ends_with('/') {
             normalized.pop();
         }
-        // Remove common tracking parameters
-        if let Some(pos) = normalized.find('?') {
-            // Keep URL without query params for basic dedup
-            // More aggressive: normalized.truncate(pos);
-        }
         // Remove fragment
         if let Some(pos) = normalized.find('#') {
             normalized.truncate(pos);
@@ -370,12 +356,7 @@ impl SyncEngine {
             }
             
             let browser_type = adapter.browser_type();
-            let history_result = if self.all_profiles {
-                adapter.read_history_all_profiles(days)
-            } else {
-                adapter.read_history(days)
-            };
-            match history_result {
+            match adapter.read_history(days) {
                 Ok(history) => {
                     info!("✅ Read {} history items from {}", history.len(), browser_type.name());
                     browser_history.insert(browser_type, history);
@@ -555,12 +536,7 @@ impl SyncEngine {
             }
             
             let browser_type = adapter.browser_type();
-            let cookies_result = if self.all_profiles {
-                adapter.read_cookies_all_profiles()
-            } else {
-                adapter.read_cookies()
-            };
-            match cookies_result {
+            match adapter.read_cookies() {
                 Ok(cookies) => {
                     info!("✅ Read {} cookies from {}", cookies.len(), browser_type.name());
                     browser_cookies.insert(browser_type, cookies);
@@ -742,12 +718,7 @@ impl SyncEngine {
             info!("\n📜 Reading history...");
             for adapter in &self.adapters {
                 if adapter.supports_history() {
-                    let history_result = if self.all_profiles {
-                        adapter.read_history_all_profiles(None)
-                    } else {
-                        adapter.read_history(None)
-                    };
-                    if let Ok(history) = history_result {
+                    if let Ok(history) = adapter.read_history(None) {
                         info!("  {} : {} history items", adapter.browser_type().name(), history.len());
                         all_history.insert(adapter.browser_type(), history);
                     }
@@ -775,12 +746,7 @@ impl SyncEngine {
             info!("\n🍪 Reading cookies...");
             for adapter in &self.adapters {
                 if adapter.supports_cookies() {
-                    let cookies_result = if self.all_profiles {
-                        adapter.read_cookies_all_profiles()
-                    } else {
-                        adapter.read_cookies()
-                    };
-                    if let Ok(cookies) = cookies_result {
+                    if let Ok(cookies) = adapter.read_cookies() {
                         info!("  {} : {} cookies", adapter.browser_type().name(), cookies.len());
                         all_cookies.insert(adapter.browser_type(), cookies);
                     }
