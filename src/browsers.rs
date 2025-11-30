@@ -126,7 +126,11 @@ impl BrowserAdapter for WaterfoxAdapter {
 
     fn detect_bookmark_path(&self) -> Result<PathBuf> {
         let profiles = self.detect_all_profiles()?;
-        Ok(profiles.first()
+        // Find first profile with valid (non-empty) places.sqlite
+        let valid = profiles.iter()
+            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            .or_else(|| profiles.first());
+        Ok(valid
             .ok_or_else(|| anyhow::anyhow!("No Waterfox profiles found"))?
             .clone())
     }
@@ -151,14 +155,13 @@ impl BrowserAdapter for WaterfoxAdapter {
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
-        // Only write to default profile (first valid one)
-        // Note: detect_all_profiles returns paths to places.sqlite files
+        // Only write to profile with valid database (non-empty places.sqlite)
         let profiles = self.detect_all_profiles()?;
-        let default_profile = profiles.iter()
-            .find(|p| p.exists())
+        let valid_profile = profiles.iter()
+            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
             .ok_or_else(|| anyhow::anyhow!("No valid Waterfox profile found"))?;
         
-        match write_firefox_bookmarks(default_profile, bookmarks) {
+        match write_firefox_bookmarks(valid_profile, bookmarks) {
             Ok(_) => {
                 info!("✅ Wrote {} bookmarks to Waterfox (Default)", bookmarks.len());
             }
@@ -203,13 +206,13 @@ impl BrowserAdapter for WaterfoxAdapter {
     }
     
     fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
-        // Only write to default profile
+        // Only write to profile with valid database
         let profiles = self.detect_all_profiles()?;
-        let default_profile = profiles.iter()
-            .find(|p| p.exists())
+        let valid_profile = profiles.iter()
+            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
             .ok_or_else(|| anyhow::anyhow!("No valid Waterfox profile found"))?;
         
-        match write_firefox_history(default_profile, items) {
+        match write_firefox_history(valid_profile, items) {
             Ok(_) => info!("✅ Wrote {} history items to Waterfox (Default)", items.len()),
             Err(e) => warn!("⚠️  Failed to write history to Waterfox: {}", e),
         }

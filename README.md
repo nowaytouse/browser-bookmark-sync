@@ -173,6 +173,48 @@ Rules are processed by priority (highest first). First matching rule wins.
 └─────────────────────────────────────────────────────┘
 ```
 
+### Sync Strategy (Important!)
+
+**This is NOT incremental sync.** The synchronization uses a "Best Structure Wins" strategy:
+
+#### Bookmarks Sync Logic
+
+```
+Phase 1: Read all bookmarks from ALL browsers
+         ↓
+Phase 2: Score each browser:
+         Score = (folder_count × 1000) + url_count
+         (Folder structure is prioritized)
+         ↓
+Phase 3: Select browser with HIGHEST score as BASE
+         ↓
+Phase 4: Global deduplication on base bookmarks
+         ↓
+Phase 5: Write merged result to ALL hub browsers
+```
+
+**Example:**
+```
+Before sync:
+  Waterfox:     66,023 URLs, 3,188 folders → Score: 3,254,023 ✓ (selected as base)
+  Brave Nightly: 53,658 URLs, 1,904 folders → Score: 1,957,658
+
+After sync:
+  Both browsers: 23,514 URLs (after dedup), 3,188 folders
+```
+
+#### History Sync Logic
+- **Merge all history** from all browsers
+- **Deduplicate by URL** (keep first occurrence)
+- Write to all hub browsers
+
+#### Cookies Sync Logic
+- **Merge all cookies** from all browsers  
+- **Deduplicate by host+name+path**
+- Write to all hub browsers
+
+> ⚠️ **Warning**: This is OVERWRITE sync, not merge sync. The browser with best folder structure becomes the source of truth. Other browsers' unique bookmarks NOT in this structure will be lost.
+
 ### Smart Deduplication
 
 The deduplication engine uses intelligent rules:
@@ -237,12 +279,19 @@ After:  https://example.com (kept in Work folder only)
 ```
 Test Suite: 48 tests (40 unit + 8 integration) ✅
 
-Sync Statistics:
-├── Bookmarks: 41,661 URLs, 1,936 folders
-├── History: 30,301 unique items
-├── Cookies: 925 unique
-├── Rule Engine: 18 built-in classification rules
-└── Performance: ~1.1s (release build)
+Real-world Sync Test (Waterfox ↔ Brave Nightly):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Before:
+    Waterfox:      66,023 URLs, 3,188 folders
+    Brave Nightly: 53,658 URLs, 1,904 folders
+  
+  After (both browsers):
+    Bookmarks: 23,514 URLs, 3,188 folders
+    History:   39,287 items (merged & deduped)
+    Cookies:   952 items
+  
+  Performance: ~1.5s (release build)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ## 🔧 Installation
