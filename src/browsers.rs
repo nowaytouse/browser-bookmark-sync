@@ -1364,6 +1364,17 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
         *position += 1;
         
         if bookmark.folder {
+            // 🔧 FIX: Skip empty folders and folders with "/" name
+            if bookmark.children.is_empty() {
+                debug!("Skipping empty folder: {}", bookmark.title);
+                return Ok(());
+            }
+            
+            if bookmark.title == "/" || bookmark.title.is_empty() {
+                debug!("Skipping invalid folder name: '{}'", bookmark.title);
+                return Ok(());
+            }
+            
             // Generate a unique GUID for the folder
             let guid = format!("folder_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
             

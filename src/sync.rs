@@ -386,7 +386,22 @@ impl SyncEngine {
             Vec::new()
         };
         
-        // Deduplicate bookmarks by URL within the tree structure
+        // 🔧 Phase 1: Clean up empty folders and invalid names
+        info!("🧹 Phase 1: Cleaning up empty folders...");
+        let empty_removed = Self::cleanup_empty_folders(&mut merged);
+        if empty_removed > 0 {
+            info!("   Removed {} empty folders", empty_removed);
+        }
+        
+        // 🔧 Phase 2: Deduplicate folder structures
+        info!("🔄 Phase 2: Deduplicating folder structures...");
+        let folder_dupes_removed = Self::deduplicate_folder_structures(&mut merged);
+        if folder_dupes_removed > 0 {
+            info!("   Removed {} duplicate folders", folder_dupes_removed);
+        }
+        
+        // 🔧 Phase 3: Deduplicate bookmarks by URL
+        info!("🔄 Phase 3: Deduplicating bookmarks by URL...");
         let before_count = Self::count_all_bookmarks(&merged);
         
         // Global deduplication - track all URLs across entire tree with smart selection
@@ -395,8 +410,14 @@ impl SyncEngine {
         let after_count = Self::count_all_bookmarks(&merged);
         
         if before_count != after_count {
-            info!("🔄 Deduplicated: {} → {} URLs (removed {} duplicates)", 
-                before_count, after_count, before_count - after_count);
+            info!("   Removed {} duplicate URLs ({} → {})", 
+                before_count - after_count, before_count, after_count);
+        }
+        
+        // Summary
+        let total_removed = empty_removed + folder_dupes_removed + (before_count - after_count);
+        if total_removed > 0 {
+            info!("✨ Cleanup complete: removed {} items total", total_removed);
         }
         
         Ok(merged)
@@ -550,6 +571,95 @@ impl SyncEngine {
             }
         }
         count
+    }
+    
+    /// Remove empty folders and folders with invalid names
+    fn cleanup_empty_folders(bookmarks: &mut Vec<Bookmark>) -> usize {
+        let mut removed_count = 0;
+        
+        // Recursively clean up folders
+        fn cleanup_recursive(bookmarks: &mut Vec<Bookmark>, removed: &mut usize) {
+            bookmarks.retain_mut(|bookmark| {
+                if bookmark.folder {
+                    // First, recursively clean children
+                    cleanup_recursive(&mut bookmark.children, removed);
+                    
+                    // Remove if empty after cleaning children
+                    if bookmark.children.is_empty() {
+                        debug!("Removing empty folder: {}", bookmark.title);
+                        *removed += 1;
+                        return false;
+                    }
+                    
+                    // Remove if name is "/" or empty
+                    if bookmark.title == "/" || bookmark.title.trim().is_empty() {
+                        debug!("Removing invalid folder name: '{}'", bookmark.title);
+                        *removed += 1;
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+        
+        cleanup_recursive(bookmarks, &mut removed_count);
+        removed_count
+    }
+    
+    /// Deduplicate folder structures by signature
+    fn deduplicate_folder_structures(bookmarks: &mut Vec<Bookmark>) -> usize {
+        let mut removed_count = 0;
+        
+        fn get_folder_signature(bookmark: &Bookmark) -> String {
+            if !bookmark.folder {
+                return String::new();
+            }
+            
+            // Signature: name + child count + first 3 child names
+            let child_names: Vec<String> = bookmark.children.iter()
+                .take(3)
+                .map(|c| c.title.clone())
+                .collect();
+            
+            format!("{}|{}|{}", bookmark.title, bookmark.children.len(), child_names.join(","))
+        }
+        
+        fn deduplicate_recursive(bookmarks: &mut Vec<Bookmark>, removed: &mut usize) {
+            // Build signature map
+            let mut seen_signatures: HashMap<String, usize> = HashMap::new();
+            let mut to_remove: Vec<usize> = Vec::new();
+            
+            for (idx, bookmark) in bookmarks.iter().enumerate() {
+                if bookmark.folder {
+                    let signature = get_folder_signature(bookmark);
+                    if !signature.is_empty() {
+                        if seen_signatures.contains_key(&signature) {
+                            // Duplicate found
+                            debug!("Found duplicate folder: {} (signature: {})", bookmark.title, signature);
+                            to_remove.push(idx);
+                            *removed += 1;
+                        } else {
+                            seen_signatures.insert(signature, idx);
+                        }
+                    }
+                }
+            }
+            
+            // Remove duplicates (in reverse order to maintain indices)
+            for idx in to_remove.iter().rev() {
+                bookmarks.remove(*idx);
+            }
+            
+            // Recursively process children
+            for bookmark in bookmarks.iter_mut() {
+                if bookmark.folder {
+                    deduplicate_recursive(&mut bookmark.children, removed);
+                }
+            }
+        }
+        
+        deduplicate_recursive(bookmarks, &mut removed_count);
+        removed_count
     }
 
     fn hash_url(&self, url: &str) -> String {
