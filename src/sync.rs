@@ -6,6 +6,16 @@ use sha2::{Sha256, Digest};
 use crate::browsers::{Bookmark, BrowserAdapter, BrowserType, get_all_adapters, HistoryItem, ReadingListItem, Cookie};
 use crate::validator::ValidationReport;
 
+/// Location information for a bookmark in the tree
+struct BookmarkLocation {
+    path: BookmarkPath,  // Vector of indices representing the path in the tree
+    depth: usize,
+    date_added: Option<i64>,
+}
+
+/// Path to a bookmark in the tree (sequence of indices)
+type BookmarkPath = Vec<usize>;
+
 pub struct SyncEngine {
     adapters: Vec<Box<dyn BrowserAdapter + Send + Sync>>,
 }
@@ -175,9 +185,8 @@ impl SyncEngine {
         // Deduplicate bookmarks by URL within the tree structure
         let before_count = Self::count_all_bookmarks(&merged);
         
-        // Global deduplication - track all URLs across entire tree
-        let mut seen_urls: HashSet<String> = HashSet::new();
-        Self::deduplicate_bookmarks_global(&mut merged, &mut seen_urls);
+        // Global deduplication - track all URLs across entire tree with smart selection
+        Self::deduplicate_bookmarks_global(&mut merged);
         
         let after_count = Self::count_all_bookmarks(&merged);
         
@@ -189,31 +198,116 @@ impl SyncEngine {
         Ok(merged)
     }
     
-    /// Recursively deduplicate bookmarks across the ENTIRE tree (global deduplication)
-    fn deduplicate_bookmarks_global(bookmarks: &mut Vec<Bookmark>, seen_urls: &mut HashSet<String>) {
-        // Remove duplicates at current level
-        bookmarks.retain(|b| {
-            if b.folder {
-                true // Keep all folders
-            } else if let Some(ref url) = b.url {
-                // Normalize URL for comparison
-                let normalized = Self::normalize_url(url);
-                if seen_urls.contains(&normalized) {
-                    false // Remove duplicate - URL already seen elsewhere in tree
-                } else {
-                    seen_urls.insert(normalized);
-                    true
-                }
-            } else {
-                true
-            }
-        });
+    /// Recursively deduplicate bookmarks with smart selection
+    /// Priority: 1. Deeper in folder structure, 2. Newer bookmarks, 3. Root level keeps newest
+    fn deduplicate_bookmarks_global(bookmarks: &mut Vec<Bookmark>) {
+        // Two-pass strategy:
+        // Pass 1: Collect all bookmarks with their metadata
+        // Pass 2: For each URL, decide which one to keep, mark others for deletion
+        let mut url_map: HashMap<String, Vec<BookmarkLocation>> = HashMap::new();
+        Self::collect_all_bookmarks(bookmarks, &mut url_map, 0, &[]);
         
-        // Recursively process children (using same seen_urls set for global dedup)
-        for bookmark in bookmarks.iter_mut() {
-            if bookmark.folder && !bookmark.children.is_empty() {
-                Self::deduplicate_bookmarks_global(&mut bookmark.children, seen_urls);
+        // Determine which bookmark to keep for each URL
+        let mut urls_to_keep: HashMap<String, BookmarkPath> = HashMap::new();
+        for (url, locations) in url_map.iter() {
+            if locations.len() > 1 {
+                // Find the best bookmark according to priority rules
+                let best = Self::select_best_bookmark(locations);
+                urls_to_keep.insert(url.clone(), best.path.clone());
             }
+        }
+        
+        // Pass 2: Remove duplicates based on decision
+        Self::remove_duplicates_by_path(bookmarks, &urls_to_keep, &[]);
+    }
+    
+    /// Collect all bookmarks with their locations and metadata
+    fn collect_all_bookmarks(
+        bookmarks: &[Bookmark],
+        url_map: &mut HashMap<String, Vec<BookmarkLocation>>,
+        depth: usize,
+        parent_path: &[usize],
+    ) {
+        for (index, bookmark) in bookmarks.iter().enumerate() {
+            if bookmark.folder {
+                // Recurse into folder
+                let mut current_path = parent_path.to_vec();
+                current_path.push(index);
+                Self::collect_all_bookmarks(&bookmark.children, url_map, depth + 1, &current_path);
+            } else if let Some(ref url) = bookmark.url {
+                let normalized = Self::normalize_url(url);
+                let mut current_path = parent_path.to_vec();
+                current_path.push(index);
+                
+                let location = BookmarkLocation {
+                    path: current_path,
+                    depth,
+                    date_added: bookmark.date_added,
+                };
+                
+                url_map.entry(normalized).or_insert_with(Vec::new).push(location);
+            }
+        }
+    }
+    
+    /// Select the best bookmark from duplicates
+    /// Rules:
+    /// 1. Prefer bookmarks in deeper folder structure
+    /// 2. If same depth, prefer newer (larger date_added)
+    /// 3. If depth=0 for all, prefer newest
+    fn select_best_bookmark(locations: &[BookmarkLocation]) -> &BookmarkLocation {
+        locations.iter().max_by(|a, b| {
+            // Compare depth first (higher is better)
+            match a.depth.cmp(&b.depth) {
+                std::cmp::Ordering::Equal => {
+                    // Same depth, compare date (newer is better)
+                    let a_date = a.date_added.unwrap_or(0);
+                    let b_date = b.date_added.unwrap_or(0);
+                    a_date.cmp(&b_date)
+                }
+                other => other,
+            }
+        }).unwrap()
+    }
+    
+    /// Remove duplicates by keeping only the specified paths
+    fn remove_duplicates_by_path(
+        bookmarks: &mut Vec<Bookmark>,
+        urls_to_keep: &HashMap<String, BookmarkPath>,
+        parent_path: &[usize],
+    ) {
+        // First, recursively process children
+        for (index, bookmark) in bookmarks.iter_mut().enumerate() {
+            if bookmark.folder && !bookmark.children.is_empty() {
+                let mut current_path = parent_path.to_vec();
+                current_path.push(index);
+                Self::remove_duplicates_by_path(&mut bookmark.children, urls_to_keep, &current_path);
+            }
+        }
+        
+        // Then filter current level
+        let mut indices_to_remove = Vec::new();
+        for (index, bookmark) in bookmarks.iter().enumerate() {
+            if !bookmark.folder {
+                if let Some(ref url) = bookmark.url {
+                    let normalized = Self::normalize_url(url);
+                    if let Some(keep_path) = urls_to_keep.get(&normalized) {
+                        // This URL has duplicates, check if this is the one to keep
+                        let mut current_path = parent_path.to_vec();
+                        current_path.push(index);
+                        
+                        if &current_path != keep_path {
+                            // This is a duplicate, mark for removal
+                            indices_to_remove.push(index);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Remove in reverse order to maintain indices
+        for &index in indices_to_remove.iter().rev() {
+            bookmarks.remove(index);
         }
     }
     
@@ -886,6 +980,536 @@ impl SyncEngine {
         
         Ok(())
     }
+
+    /// Synchronize specific scenario folders across browsers
+    pub async fn sync_scenario_folders(
+        &mut self,
+        scenario_path: &str,
+        browser_names: &str,
+        dry_run: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        info!("📁 Starting scenario folder synchronization");
+        info!("🎯 Scenario path: {}", scenario_path);
+        
+        // Parse browser names
+        let browser_list: Vec<String> = browser_names
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .collect();
+        
+        info!("🌐 Target browsers: {:?}", browser_list);
+        
+        // Filter adapters for specified browsers
+        let mut target_adapters = Vec::new();
+        for adapter in &self.adapters {
+            let name = adapter.browser_type().name().to_lowercase();
+            if browser_list.iter().any(|b| name.contains(b)) {
+                target_adapters.push(adapter);
+                info!("  ✅ {}", adapter.browser_type().name());
+            }
+        }
+        
+        if target_adapters.is_empty() {
+            anyhow::bail!("No matching browsers found for: {:?}", browser_list);
+        }
+        
+        // Read scenario folders from all target browsers
+        info!("\n📖 Phase 1: Reading scenario folders from browsers...");
+        let mut scenario_folders: HashMap<BrowserType, Option<Bookmark>> = HashMap::new();
+        
+        for adapter in &target_adapters {
+            let browser_type = adapter.browser_type();
+            match adapter.read_bookmarks() {
+                Ok(bookmarks) => {
+                    let folder = Self::find_folder_by_path(&bookmarks, scenario_path);
+                    if let Some(ref f) = folder {
+                        let count = Self::count_all_bookmarks(&f.children);
+                        info!("  ✅ {} : found folder with {} bookmarks", browser_type.name(), count);
+                    } else {
+                        info!("  ⚠️  {} : scenario folder not found", browser_type.name());
+                    }
+                    scenario_folders.insert(browser_type, folder);
+                }
+                Err(e) => {
+                    warn!("  ❌ {} : failed to read bookmarks: {}", browser_type.name(), e);
+                }
+            }
+        }
+        
+        // Merge scenario folders
+        info!("\n🔄 Phase 2: Merging scenario folders...");
+        let merged_folder = self.merge_scenario_folders(&scenario_folders, scenario_path, verbose)?;
+        let merged_count = Self::count_all_bookmarks(&merged_folder.children);
+        info!("  📊 Merged folder contains {} bookmarks", merged_count);
+        
+        if dry_run {
+            info!("\n🏃 Dry run mode - no changes will be made");
+            println!("\n📊 Scenario Sync Preview:");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("  Scenario: {}", scenario_path);
+            println!("  Merged bookmarks: {}", merged_count);
+            println!("  Target browsers:");
+            for adapter in &target_adapters {
+                println!("    - {}", adapter.browser_type().name());
+            }
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            return Ok(());
+        }
+        
+        // Backup and write
+        info!("\n💾 Phase 3: Creating backups...");
+        for adapter in &target_adapters {
+            if let Ok(path) = adapter.backup_bookmarks() {
+                info!("  ✅ Backup: {:?}", path);
+            }
+        }
+        
+        info!("\n✍️  Phase 4: Updating scenario folders...");
+        for adapter in &target_adapters {
+            match adapter.read_bookmarks() {
+                Ok(mut bookmarks) => {
+                    // Replace or create scenario folder
+                    if Self::replace_folder_by_path(&mut bookmarks, scenario_path, &merged_folder) {
+                        match adapter.write_bookmarks(&bookmarks) {
+                            Ok(_) => info!("  ✅ {} : scenario folder updated", adapter.browser_type().name()),
+                            Err(e) => error!("  ❌ {} : failed to write: {}", adapter.browser_type().name(), e),
+                        }
+                    } else {
+                        warn!("  ⚠️  {} : failed to locate/create scenario folder", adapter.browser_type().name());
+                    }
+                }
+                Err(e) => error!("  ❌ {} : failed to read bookmarks: {}", adapter.browser_type().name(), e),
+            }
+        }
+        
+        info!("\n✅ Scenario folder synchronization complete!");
+        Ok(())
+    }
+
+    /// Find a folder by path (e.g., "Work/Projects")
+    fn find_folder_by_path(bookmarks: &[Bookmark], path: &str) -> Option<Bookmark> {
+        let parts: Vec<&str> = path.split('/').collect();
+        Self::find_folder_recursive(bookmarks, &parts, 0)
+    }
+
+    fn find_folder_recursive(bookmarks: &[Bookmark], parts: &[&str], depth: usize) -> Option<Bookmark> {
+        if depth >= parts.len() {
+            return None;
+        }
+        
+        let target_name = parts[depth].trim().to_lowercase();
+        
+        for bookmark in bookmarks {
+            if bookmark.folder && bookmark.title.to_lowercase() == target_name {
+                if depth == parts.len() - 1 {
+                    // Found the target folder
+                    return Some(bookmark.clone());
+                } else {
+                    // Continue searching in children
+                    return Self::find_folder_recursive(&bookmark.children, parts, depth + 1);
+                }
+            }
+        }
+        
+        None
+    }
+
+    /// Replace a folder at the specified path, or create it if it doesn't exist
+    fn replace_folder_by_path(bookmarks: &mut Vec<Bookmark>, path: &str, new_folder: &Bookmark) -> bool {
+        let parts: Vec<&str> = path.split('/').collect();
+        Self::replace_folder_recursive(bookmarks, &parts, 0, new_folder)
+    }
+
+    fn replace_folder_recursive(bookmarks: &mut Vec<Bookmark>, parts: &[&str], depth: usize, new_folder: &Bookmark) -> bool {
+        if depth >= parts.len() {
+            return false;
+        }
+        
+        let target_name = parts[depth].trim().to_lowercase();
+        
+        for bookmark in bookmarks.iter_mut() {
+            if bookmark.folder && bookmark.title.to_lowercase() == target_name {
+                if depth == parts.len() - 1 {
+                    // Replace this folder's children with new folder's children
+                    bookmark.children = new_folder.children.clone();
+                    return true;
+                } else {
+                    // Continue searching in children
+                    return Self::replace_folder_recursive(&mut bookmark.children, parts, depth + 1, new_folder);
+                }
+            }
+        }
+        
+        // If folder not found, create it at the current level
+        if depth == parts.len() - 1 {
+            let mut folder_to_add = new_folder.clone();
+            folder_to_add.title = parts[depth].trim().to_string();
+            bookmarks.push(folder_to_add);
+            return true;
+        }
+        
+        false
+    }
+
+    /// Merge scenario folders from multiple browsers
+    fn merge_scenario_folders(
+        &self,
+        scenario_folders: &HashMap<BrowserType, Option<Bookmark>>,
+        scenario_path: &str,
+        verbose: bool,
+    ) -> Result<Bookmark> {
+        // Collect all valid folders
+        let mut all_children = Vec::new();
+        
+        for (browser, folder_opt) in scenario_folders {
+            if let Some(folder) = folder_opt {
+                if verbose {
+                    let count = Self::count_all_bookmarks(&folder.children);
+                    debug!("  {} : {} bookmarks in scenario folder", browser.name(), count);
+                }
+                all_children.extend(folder.children.clone());
+            }
+        }
+        
+        // Deduplicate globally with smart selection
+        Self::deduplicate_bookmarks_global(&mut all_children);
+        
+        // Create merged folder
+        let path_parts: Vec<&str> = scenario_path.split('/').collect();
+        let folder_name = path_parts.last().unwrap_or(&"Scenario").to_string();
+        
+        Ok(Bookmark {
+            id: format!("scenario-{}", chrono::Utc::now().timestamp_millis()),
+            title: folder_name,
+            url: None,
+            folder: true,
+            children: all_children,
+            date_added: Some(chrono::Utc::now().timestamp_millis()),
+            date_modified: Some(chrono::Utc::now().timestamp_millis()),
+        })
+    }
+
+    /// Clean up duplicates and empty folders
+    pub async fn cleanup_bookmarks(
+        &mut self,
+        browser_names: Option<&str>,
+        remove_duplicates: bool,
+        remove_empty_folders: bool,
+        dry_run: bool,
+        _verbose: bool,
+    ) -> Result<()> {
+        info!("🧹 Starting bookmark cleanup");
+        
+        // Determine target browsers
+        let target_adapters: Vec<_> = if let Some(names) = browser_names {
+            let browser_list: Vec<String> = names
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .collect();
+            
+            self.adapters.iter()
+                .filter(|a| {
+                    let name = a.browser_type().name().to_lowercase();
+                    browser_list.iter().any(|b| name.contains(b))
+                })
+                .collect()
+        } else {
+            self.adapters.iter().collect()
+        };
+        
+        if target_adapters.is_empty() {
+            anyhow::bail!("No browsers found for cleanup");
+        }
+        
+        info!("🎯 Target browsers:");
+        for adapter in &target_adapters {
+            info!("  - {}", adapter.browser_type().name());
+        }
+        
+        // Process each browser
+        for adapter in &target_adapters {
+            let browser_name = adapter.browser_type().name();
+            
+            match adapter.read_bookmarks() {
+                Ok(mut bookmarks) => {
+                    let initial_count = Self::count_all_bookmarks(&bookmarks);
+                    let initial_folders = Self::count_all_folders(&bookmarks);
+                    
+                    info!("\n📊 {} : {} bookmarks, {} folders", browser_name, initial_count, initial_folders);
+                    
+                    let mut stats = CleanupStats::default();
+                    
+                    // Step 1: Remove duplicates with smart selection
+                    if remove_duplicates {
+                        Self::deduplicate_bookmarks_global(&mut bookmarks);
+                        let after_dedup = Self::count_all_bookmarks(&bookmarks);
+                        stats.duplicates_removed = initial_count.saturating_sub(after_dedup);
+                        
+                        if stats.duplicates_removed > 0 {
+                            info!("  🔄 Removed {} duplicate bookmarks", stats.duplicates_removed);
+                        }
+                    }
+                    
+                    // Step 2: Remove empty folders
+                    if remove_empty_folders {
+                        stats.empty_folders_removed = Self::remove_empty_folders(&mut bookmarks);
+                        
+                        if stats.empty_folders_removed > 0 {
+                            info!("  🗑️  Removed {} empty folders", stats.empty_folders_removed);
+                        }
+                    }
+                    
+                    let final_count = Self::count_all_bookmarks(&bookmarks);
+                    let final_folders = Self::count_all_folders(&bookmarks);
+                    
+                    if dry_run {
+                        info!("  🏃 Dry run - would remove {} duplicates, {} empty folders", 
+                              stats.duplicates_removed, stats.empty_folders_removed);
+                    } else if stats.duplicates_removed > 0 || stats.empty_folders_removed > 0 {
+                        // Backup first
+                        if let Ok(backup_path) = adapter.backup_bookmarks() {
+                            info!("  💾 Backup created: {:?}", backup_path);
+                        }
+                        
+                        // Write cleaned bookmarks
+                        match adapter.write_bookmarks(&bookmarks) {
+                            Ok(_) => {
+                                info!("  ✅ Cleanup complete: {} bookmarks, {} folders remaining", 
+                                      final_count, final_folders);
+                            }
+                            Err(e) => {
+                                error!("  ❌ Failed to write cleaned bookmarks: {}", e);
+                            }
+                        }
+                    } else {
+                        info!("  ✨ No cleanup needed - bookmarks are already clean!");
+                    }
+                }
+                Err(e) => {
+                    error!("  ❌ Failed to read bookmarks from {}: {}", browser_name, e);
+                }
+            }
+        }
+        
+        info!("\n✅ Cleanup complete!");
+        Ok(())
+    }
+
+    /// Organize homepage bookmarks into a dedicated folder
+    /// Homepage = URL that is a root domain (e.g., https://example.com or https://example.com/)
+    pub async fn organize_homepages(
+        &mut self,
+        browser_names: Option<&str>,
+        dry_run: bool,
+        _verbose: bool,
+    ) -> Result<()> {
+        info!("📋 Starting homepage organization");
+        
+        // Determine target browsers
+        let target_adapters: Vec<_> = if let Some(names) = browser_names {
+            let browser_list: Vec<String> = names
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .collect();
+            
+            self.adapters.iter()
+                .filter(|a| {
+                    let name = a.browser_type().name().to_lowercase();
+                    browser_list.iter().any(|b| name.contains(b))
+                })
+                .collect()
+        } else {
+            self.adapters.iter().collect()
+        };
+        
+        if target_adapters.is_empty() {
+            anyhow::bail!("No browsers found for organization");
+        }
+        
+        info!("🎯 Target browsers:");
+        for adapter in &target_adapters {
+            info!("  - {}", adapter.browser_type().name());
+        }
+        
+        // Process each browser
+        for adapter in &target_adapters {
+            let browser_name = adapter.browser_type().name();
+            
+            match adapter.read_bookmarks() {
+                Ok(mut bookmarks) => {
+                    info!("\n📊 {} : Processing...", browser_name);
+                    
+                    // Collect all homepages from entire tree first
+                    let mut homepages_collected: Vec<Bookmark> = Vec::new();
+                    Self::collect_homepages_recursive(&mut bookmarks, &mut homepages_collected);
+
+                    let moved_count = homepages_collected.len();
+
+                    if moved_count > 0 {
+                        // Find or create "网站主页" folder at root level
+                        let homepage_folder = bookmarks.iter_mut()
+                            .find(|b| b.folder && b.title == "网站主页");
+
+                        if let Some(folder) = homepage_folder {
+                            folder.children.extend(homepages_collected);
+                        } else {
+                            let new_folder = Bookmark {
+                                id: format!("homepage-folder-{}", chrono::Utc::now().timestamp_millis()),
+                                title: "网站主页".to_string(),
+                                url: None,
+                                folder: true,
+                                children: homepages_collected,
+                                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                                date_modified: Some(chrono::Utc::now().timestamp_millis()),
+                            };
+                            bookmarks.push(new_folder);
+                        }
+                        info!("  📁 Moved {} homepage bookmarks to root \"网站主页\" folder", moved_count);
+                    } else {
+                        info!("  ✨ No homepages found to organize");
+                    }
+
+                    if dry_run {
+                        info!("  🏃 Dry run - would move {} homepages to root folder", moved_count);
+                    } else if moved_count > 0 {
+                        // Backup first
+                        if let Ok(backup_path) = adapter.backup_bookmarks() {
+                            info!("  💾 Backup created: {:?}", backup_path);
+                        }
+                        
+                        // Write organized bookmarks
+                        match adapter.write_bookmarks(&bookmarks) {
+                            Ok(_) => {
+                                info!("  ✅ Organization complete");
+                            }
+                            Err(e) => {
+                                error!("  ❌ Failed to write organized bookmarks: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("  ❌ Failed to read bookmarks from {}: {}", browser_name, e);
+                }
+            }
+        }
+        
+        info!("\n✅ Organization complete!");
+        Ok(())
+    }
+
+    /// Recursively collect homepages from entire bookmark tree
+    /// Removes homepages from their original locations and collects them
+    fn collect_homepages_recursive(bookmarks: &mut Vec<Bookmark>, collected: &mut Vec<Bookmark>) {
+        // First pass: recursively process children
+        for bookmark in bookmarks.iter_mut() {
+            if bookmark.folder && bookmark.title != "网站主页" && !bookmark.children.is_empty() {
+                Self::collect_homepages_recursive(&mut bookmark.children, collected);
+            }
+        }
+
+        // Second pass: identify and collect homepages at current level
+        let mut indices_to_remove = Vec::new();
+        for (i, bookmark) in bookmarks.iter().enumerate() {
+            if !bookmark.folder {
+                if let Some(ref url) = bookmark.url {
+                    if Self::is_homepage_url(url) {
+                        collected.push(bookmark.clone());
+                        indices_to_remove.push(i);
+                    }
+                }
+            }
+        }
+
+        // Remove homepages from current level (in reverse to maintain indices)
+        for &i in indices_to_remove.iter().rev() {
+            bookmarks.remove(i);
+        }
+    }
+
+    /// Check if a URL is a homepage (root domain)
+    /// Examples: https://example.com, https://example.com/, http://example.com
+    fn is_homepage_url(url: &str) -> bool {
+        // Parse URL
+        let normalized = url.trim().to_lowercase();
+        
+        // Must start with http:// or https://
+        if !normalized.starts_with("http://") && !normalized.starts_with("https://") {
+            return false;
+        }
+        
+        // Remove protocol
+        let without_protocol = normalized
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        
+        // Remove trailing slash
+        let without_slash = without_protocol.trim_end_matches('/');
+        
+        // Check if it's just a domain (no path)
+        // Should not contain '/' after domain
+        if without_slash.contains('/') {
+            return false;
+        }
+        
+        // Should contain at least one dot (domain.tld)
+        // But allow single-word domains like http://localhost
+        true
+    }
+
+    /// Recursively remove empty folders and return count of removed folders
+
+    fn remove_empty_folders(bookmarks: &mut Vec<Bookmark>) -> usize {
+        let mut removed_count = 0;
+        
+        // First, recursively clean children
+        for bookmark in bookmarks.iter_mut() {
+            if bookmark.folder {
+                removed_count += Self::remove_empty_folders(&mut bookmark.children);
+            }
+        }
+        
+        // Then remove empty folders at this level
+        let before_count = bookmarks.iter().filter(|b| b.folder).count();
+        bookmarks.retain(|b| {
+            if b.folder {
+                !b.children.is_empty()
+            } else {
+                true
+            }
+        });
+        let after_count = bookmarks.iter().filter(|b| b.folder).count();
+        
+        removed_count += before_count - after_count;
+        removed_count
+    }
+
+    /// Find all empty folders (for reporting)
+    #[allow(dead_code)]
+    fn find_empty_folders(bookmarks: &[Bookmark], path: &str, results: &mut Vec<String>) {
+        for bookmark in bookmarks {
+            if bookmark.folder {
+                let current_path = if path.is_empty() {
+                    bookmark.title.clone()
+                } else {
+                    format!("{}/{}", path, bookmark.title)
+                };
+                
+                if bookmark.children.is_empty() {
+                    results.push(current_path.clone());
+                } else {
+                    Self::find_empty_folders(&bookmark.children, &current_path, results);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct CleanupStats {
+    duplicates_removed: usize,
+    empty_folders_removed: usize,
 }
 
 fn parse_safari_html(html: &str) -> Result<Vec<Bookmark>> {
@@ -916,4 +1540,174 @@ fn parse_safari_html(html: &str) -> Result<Vec<Bookmark>> {
     }
     
     Ok(bookmarks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_bookmark(id: &str, title: &str, url: Option<&str>) -> Bookmark {
+        Bookmark {
+            id: id.to_string(),
+            title: title.to_string(),
+            url: url.map(|s| s.to_string()),
+            folder: false,
+            children: vec![],
+            date_added: Some(1700000000000),
+            date_modified: Some(1700000000000),
+        }
+    }
+
+    fn create_folder(id: &str, title: &str, children: Vec<Bookmark>) -> Bookmark {
+        Bookmark {
+            id: id.to_string(),
+            title: title.to_string(),
+            url: None,
+            folder: true,
+            children,
+            date_added: Some(1700000000000),
+            date_modified: Some(1700000000000),
+        }
+    }
+
+    #[test]
+    fn test_normalize_url() {
+        assert_eq!(SyncEngine::normalize_url("https://example.com/"), "https://example.com");
+        assert_eq!(SyncEngine::normalize_url("https://example.com"), "https://example.com");
+        assert_eq!(SyncEngine::normalize_url("HTTPS://EXAMPLE.COM/"), "https://example.com");
+        assert_eq!(SyncEngine::normalize_url("https://example.com#section"), "https://example.com");
+        assert_eq!(SyncEngine::normalize_url("  https://example.com/  "), "https://example.com");
+    }
+
+    #[test]
+    fn test_count_all_bookmarks() {
+        let bookmarks = vec![
+            create_bookmark("1", "Test1", Some("https://test1.com")),
+            create_folder("2", "Folder1", vec![
+                create_bookmark("3", "Test2", Some("https://test2.com")),
+                create_bookmark("4", "Test3", Some("https://test3.com")),
+            ]),
+        ];
+        assert_eq!(SyncEngine::count_all_bookmarks(&bookmarks), 3);
+    }
+
+    #[test]
+    fn test_count_all_folders() {
+        let bookmarks = vec![
+            create_bookmark("1", "Test1", Some("https://test1.com")),
+            create_folder("2", "Folder1", vec![
+                create_folder("3", "SubFolder", vec![
+                    create_bookmark("4", "Test2", Some("https://test2.com")),
+                ]),
+            ]),
+        ];
+        assert_eq!(SyncEngine::count_all_folders(&bookmarks), 2);
+    }
+
+    #[test]
+    fn test_is_homepage_url() {
+        assert!(SyncEngine::is_homepage_url("https://example.com"));
+        assert!(SyncEngine::is_homepage_url("https://example.com/"));
+        assert!(SyncEngine::is_homepage_url("http://example.com"));
+        assert!(SyncEngine::is_homepage_url("https://sub.example.com"));
+        
+        assert!(!SyncEngine::is_homepage_url("https://example.com/path"));
+        assert!(!SyncEngine::is_homepage_url("https://example.com/path/"));
+        assert!(!SyncEngine::is_homepage_url("ftp://example.com"));
+    }
+
+    #[test]
+    fn test_remove_empty_folders() {
+        let mut bookmarks = vec![
+            create_folder("1", "EmptyFolder", vec![]),
+            create_folder("2", "NonEmptyFolder", vec![
+                create_bookmark("3", "Test", Some("https://test.com")),
+            ]),
+            create_folder("4", "NestedEmpty", vec![
+                create_folder("5", "InnerEmpty", vec![]),
+            ]),
+        ];
+        
+        let removed = SyncEngine::remove_empty_folders(&mut bookmarks);
+        assert_eq!(removed, 3); // EmptyFolder, NestedEmpty, and InnerEmpty
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0].title, "NonEmptyFolder");
+    }
+
+    #[test]
+    fn test_deduplicate_bookmarks_global() {
+        let mut bookmarks = vec![
+            create_bookmark("1", "Dup1", Some("https://example.com")),
+            create_folder("2", "Folder", vec![
+                create_bookmark("3", "Dup2", Some("https://example.com")), // duplicate - deeper, should keep
+            ]),
+            create_bookmark("4", "Other", Some("https://other.com")),
+        ];
+        
+        SyncEngine::deduplicate_bookmarks_global(&mut bookmarks);
+        
+        let total = SyncEngine::count_all_bookmarks(&bookmarks);
+        assert_eq!(total, 2); // One example.com and one other.com
+    }
+
+    #[test]
+    fn test_find_folder_by_path() {
+        let bookmarks = vec![
+            create_folder("1", "Work", vec![
+                create_folder("2", "Projects", vec![
+                    create_bookmark("3", "Project1", Some("https://project1.com")),
+                ]),
+            ]),
+        ];
+        
+        let found = SyncEngine::find_folder_by_path(&bookmarks, "Work/Projects");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().title, "Projects");
+        
+        let not_found = SyncEngine::find_folder_by_path(&bookmarks, "Work/NonExistent");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_parse_safari_html() {
+        let html = r#"
+            <html>
+            <body>
+                <a href="https://example.com">Example</a>
+                <a href="https://test.com">Test Site</a>
+            </body>
+            </html>
+        "#;
+        
+        let bookmarks = parse_safari_html(html).unwrap();
+        assert_eq!(bookmarks.len(), 2);
+        assert_eq!(bookmarks[0].title, "Example");
+        assert_eq!(bookmarks[0].url.as_ref().unwrap(), "https://example.com");
+        assert_eq!(bookmarks[1].title, "Test Site");
+    }
+
+    #[test]
+    fn test_collect_homepages_recursive() {
+        let mut bookmarks = vec![
+            create_bookmark("1", "Homepage", Some("https://example.com")),
+            create_bookmark("2", "Article", Some("https://example.com/article")),
+            create_folder("3", "Folder", vec![
+                create_bookmark("4", "SubHomepage", Some("https://sub.example.com/")),
+                create_bookmark("5", "SubArticle", Some("https://sub.example.com/page")),
+            ]),
+        ];
+        
+        let mut collected = Vec::new();
+        SyncEngine::collect_homepages_recursive(&mut bookmarks, &mut collected);
+        
+        assert_eq!(collected.len(), 2); // Two homepages
+        assert_eq!(SyncEngine::count_all_bookmarks(&bookmarks), 2); // Two non-homepages remain
+    }
+
+    #[test]
+    fn test_cleanup_stats_default() {
+        let stats = CleanupStats::default();
+        assert_eq!(stats.duplicates_removed, 0);
+        assert_eq!(stats.empty_folders_removed, 0);
+    }
 }

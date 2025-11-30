@@ -1960,3 +1960,200 @@ fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Resu
     debug!("Wrote {} cookies to Chromium database", cookies.len());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_browser_type_name() {
+        assert_eq!(BrowserType::Waterfox.name(), "Waterfox");
+        assert_eq!(BrowserType::Safari.name(), "Safari");
+        assert_eq!(BrowserType::Brave.name(), "Brave");
+        assert_eq!(BrowserType::BraveNightly.name(), "Brave Nightly");
+        assert_eq!(BrowserType::Chrome.name(), "Chrome");
+        assert_eq!(BrowserType::FirefoxNightly.name(), "Firefox Nightly");
+    }
+
+    #[test]
+    fn test_bookmark_creation() {
+        let bookmark = Bookmark {
+            id: "test-id".to_string(),
+            title: "Test Bookmark".to_string(),
+            url: Some("https://example.com".to_string()),
+            folder: false,
+            children: vec![],
+            date_added: Some(1700000000000),
+            date_modified: Some(1700000000000),
+        };
+        
+        assert_eq!(bookmark.id, "test-id");
+        assert_eq!(bookmark.title, "Test Bookmark");
+        assert!(bookmark.url.is_some());
+        assert!(!bookmark.folder);
+        assert!(bookmark.children.is_empty());
+    }
+
+    #[test]
+    fn test_folder_creation() {
+        let child = Bookmark {
+            id: "child-id".to_string(),
+            title: "Child".to_string(),
+            url: Some("https://child.com".to_string()),
+            folder: false,
+            children: vec![],
+            date_added: None,
+            date_modified: None,
+        };
+        
+        let folder = Bookmark {
+            id: "folder-id".to_string(),
+            title: "Test Folder".to_string(),
+            url: None,
+            folder: true,
+            children: vec![child],
+            date_added: Some(1700000000000),
+            date_modified: None,
+        };
+        
+        assert!(folder.folder);
+        assert!(folder.url.is_none());
+        assert_eq!(folder.children.len(), 1);
+    }
+
+    #[test]
+    fn test_cookie_creation() {
+        let cookie = Cookie {
+            host: ".example.com".to_string(),
+            name: "session".to_string(),
+            value: "abc123".to_string(),
+            path: "/".to_string(),
+            expiry: Some(1800000000),
+            is_secure: true,
+            is_http_only: true,
+        };
+        
+        assert_eq!(cookie.host, ".example.com");
+        assert_eq!(cookie.name, "session");
+        assert!(cookie.is_secure);
+        assert!(cookie.is_http_only);
+    }
+
+    #[test]
+    fn test_history_item_creation() {
+        let item = HistoryItem {
+            url: "https://example.com/page".to_string(),
+            title: Some("Example Page".to_string()),
+            visit_count: 5,
+            last_visit: Some(1700000000000),
+        };
+        
+        assert_eq!(item.url, "https://example.com/page");
+        assert_eq!(item.title.as_ref().unwrap(), "Example Page");
+        assert_eq!(item.visit_count, 5);
+    }
+
+    #[test]
+    fn test_reading_list_item_creation() {
+        let item = ReadingListItem {
+            url: "https://article.com/long-read".to_string(),
+            title: "Long Article".to_string(),
+            date_added: Some(1700000000000),
+        };
+        
+        assert_eq!(item.url, "https://article.com/long-read");
+        assert_eq!(item.title, "Long Article");
+    }
+
+    #[test]
+    fn test_get_all_adapters() {
+        let adapters = get_all_adapters();
+        assert_eq!(adapters.len(), 6);
+        
+        let names: Vec<&str> = adapters.iter().map(|a| a.browser_type().name()).collect();
+        assert!(names.contains(&"Waterfox"));
+        assert!(names.contains(&"Safari"));
+        assert!(names.contains(&"Brave"));
+        assert!(names.contains(&"Brave Nightly"));
+        assert!(names.contains(&"Chrome"));
+        assert!(names.contains(&"Firefox Nightly"));
+    }
+
+    #[test]
+    fn test_browser_adapter_default_methods() {
+        let adapter = WaterfoxAdapter;
+        
+        assert!(adapter.supports_history());
+        assert!(adapter.supports_cookies());
+        assert!(!adapter.supports_reading_list());
+    }
+
+    #[test]
+    fn test_safari_adapter_supports() {
+        let adapter = SafariAdapter;
+        
+        assert!(adapter.supports_reading_list());
+        assert!(adapter.supports_history());
+        assert!(!adapter.supports_cookies());
+    }
+
+    #[test]
+    fn test_bookmark_serialization() {
+        let bookmark = Bookmark {
+            id: "1".to_string(),
+            title: "Test".to_string(),
+            url: Some("https://test.com".to_string()),
+            folder: false,
+            children: vec![],
+            date_added: Some(1700000000000),
+            date_modified: None,
+        };
+        
+        let json = serde_json::to_string(&bookmark).unwrap();
+        assert!(json.contains("\"id\":\"1\""));
+        assert!(json.contains("\"title\":\"Test\""));
+        
+        let deserialized: Bookmark = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, bookmark.id);
+        assert_eq!(deserialized.title, bookmark.title);
+    }
+
+    #[test]
+    fn test_nested_bookmarks() {
+        let inner_folder = Bookmark {
+            id: "inner".to_string(),
+            title: "Inner Folder".to_string(),
+            url: None,
+            folder: true,
+            children: vec![
+                Bookmark {
+                    id: "deep".to_string(),
+                    title: "Deep Bookmark".to_string(),
+                    url: Some("https://deep.com".to_string()),
+                    folder: false,
+                    children: vec![],
+                    date_added: None,
+                    date_modified: None,
+                },
+            ],
+            date_added: None,
+            date_modified: None,
+        };
+        
+        let outer_folder = Bookmark {
+            id: "outer".to_string(),
+            title: "Outer Folder".to_string(),
+            url: None,
+            folder: true,
+            children: vec![inner_folder],
+            date_added: None,
+            date_modified: None,
+        };
+        
+        assert!(outer_folder.folder);
+        assert_eq!(outer_folder.children.len(), 1);
+        assert!(outer_folder.children[0].folder);
+        assert_eq!(outer_folder.children[0].children.len(), 1);
+        assert!(!outer_folder.children[0].children[0].folder);
+    }
+}
