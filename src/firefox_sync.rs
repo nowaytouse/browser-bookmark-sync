@@ -181,6 +181,9 @@ pub enum SyncStrategy {
     
     /// 触发同步并等待完成
     TriggerAndWait { timeout_secs: u64 },
+    
+    /// 使用Firefox Sync API直接上传到云端（推荐）
+    UseAPI,
 }
 
 /// Firefox Sync处理器
@@ -211,7 +214,7 @@ impl FirefoxSyncHandler {
                 self.config.show_warning();
                 Ok(())
             }
-            SyncStrategy::TriggerSync | SyncStrategy::TriggerAndWait { .. } => {
+            SyncStrategy::TriggerSync | SyncStrategy::TriggerAndWait { .. } | SyncStrategy::UseAPI => {
                 self.config.show_warning();
                 Ok(())
             }
@@ -255,6 +258,10 @@ impl FirefoxSyncHandler {
                     warn!("⚠️  Sync may not be complete, please verify manually");
                 }
                 
+                Ok(())
+            }
+            SyncStrategy::UseAPI => {
+                // 使用API策略在sync.rs中处理
                 Ok(())
             }
         }

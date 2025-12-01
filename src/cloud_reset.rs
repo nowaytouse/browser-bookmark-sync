@@ -1,0 +1,108 @@
+/// 云端重置模块
+/// 
+/// 核心思路：利用Firefox Sync的正常行为
+/// 1. 清空本地书签 → Sync上传"空"到云端
+/// 2. 等待云端清空
+/// 3. 写入新书签 → Sync上传新数据到云端
+
+use anyhow::{Result, Context};
+use std::path::Path;
+use rusqlite::Connection;
+use tracing::{info, warn};
+
+/// 清空Firefox/Waterfox的本地书签（保留根文件夹）
+pub fn clear_local_bookmarks(db_path: &Path) -> Result<()> {
+    info!("🗑️  Clearing local bookmarks...");
+    
+    // 使用WAL模式和超时
+    let conn = Connection::open(db_path)
+        .context("Failed to open places.sqlite")?;
+    
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    
+    // 先检查当前书签数量
+    let before_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM moz_bookmarks WHERE type = 1",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    
+    info!("   Current bookmarks: {}", before_count);
+    
+    // 删除所有非根书签（type=1是书签，type=2是文件夹）
+    // 保留根文件夹：1=root, 2=menu, 3=toolbar, 4=tags, 5=unfiled, 6=mobile
+    let deleted = conn.execute(
+        "DELETE FROM moz_bookmarks WHERE id > 6",
+        [],
+    ).context("Failed to delete bookmarks")?;
+    
+    info!("   Deleted {} bookmark entries", deleted);
+    
+    // 清理moz_places中的孤立记录
+    let orphans = conn.execute(
+        "DELETE FROM moz_places WHERE id NOT IN (SELECT DISTINCT fk FROM moz_bookmarks WHERE fk IS NOT NULL) AND id NOT IN (SELECT DISTINCT place_id FROM moz_historyvisits)",
+        [],
+    ).unwrap_or(0);
+    
+    info!("   Cleaned {} orphan places", orphans);
+    
+    // 验证清空
+    let after_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM moz_bookmarks WHERE type = 1",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    
+    info!("   After cleanup: {} bookmarks", after_count);
+    
+    if after_count < 10 {
+        info!("✅ Local bookmarks cleared successfully");
+    } else {
+        warn!("⚠️  Some bookmarks may remain: {}", after_count);
+    }
+    
+    Ok(())
+}
+
+/// 等待用户确认云端已同步
+pub fn wait_for_cloud_sync() -> Result<()> {
+    info!("");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("📤 请执行以下步骤：");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("");
+    info!("   1. 启动 Waterfox");
+    info!("   2. 等待同步图标旋转并停止（约30秒）");
+    info!("   3. 确认书签栏已清空");
+    info!("   4. 关闭 Waterfox");
+    info!("");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("");
+    
+    print!("完成后按 Enter 继续...");
+    use std::io::{self, Write};
+    io::stdout().flush().ok();
+    
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).ok();
+    
+    info!("✅ 继续执行...");
+    
+    Ok(())
+}
+
+/// 验证本地书签已清空
+pub fn verify_cleared(db_path: &Path) -> Result<bool> {
+    let conn = Connection::open(db_path)
+        .context("Failed to open places.sqlite")?;
+    
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM moz_bookmarks WHERE type = 1",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(0);
+    
+    info!("📊 Current bookmark count: {}", count);
+    
+    Ok(count < 10) // 允许少量系统书签
+}

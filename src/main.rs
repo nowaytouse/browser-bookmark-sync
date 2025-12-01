@@ -7,6 +7,9 @@ mod sync;
 mod scheduler;
 mod validator;
 mod firefox_sync;
+mod firefox_sync_api;
+mod cloud_reset;
+mod cleanup;
 
 use sync::{SyncEngine, SyncMode};
 use scheduler::SchedulerConfig;
@@ -44,8 +47,8 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
         
-        /// Firefox Sync strategy: ignore, warn, trigger, or wait
-        #[arg(long, default_value = "trigger")]
+        /// Firefox Sync strategy: ignore, warn, trigger, wait, or api
+        #[arg(long, default_value = "api")]
         firefox_sync: String,
     },
     
@@ -227,6 +230,63 @@ enum Commands {
     
     /// List available classification rules
     ListRules,
+    
+    /// Reset Firefox Sync cloud and sync fresh data (solves cloud override issue)
+    CloudReset {
+        /// Skip confirmation prompts
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+
+    /// Migrate all data to Safari and clear other browsers
+    MigrateToSafari {
+        /// Skip confirmation prompts
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Dry run - show what would be migrated without making changes
+        #[arg(short, long)]
+        dry_run: bool,
+
+        /// Keep data in source browsers (don't clear after migration)
+        #[arg(long)]
+        keep_source: bool,
+
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    
+    /// Analyze bookmarks for anomalies (bulk imports, history pollution, NSFW)
+    Analyze {
+        /// Target browsers (comma-separated, default: all browsers)
+        #[arg(short = 'b', long)]
+        browsers: Option<String>,
+    },
+    
+    // DeepClean命令已移除 - 自动删除功能误删风险太高
+    
+    /// Restore bookmarks from backup
+    RestoreBackup {
+        /// Browser to restore (e.g., "waterfox")
+        #[arg(short = 'b', long)]
+        browser: String,
+        
+        /// Backup file path (optional, uses latest backup if not specified)
+        #[arg(short = 'f', long)]
+        file: Option<String>,
+    },
+    
+    /// Create comprehensive master backup from all browser data
+    MasterBackup {
+        /// Output directory for master backup
+        #[arg(short = 'o', long, default_value = "~/Library/Safari/MasterBackup")]
+        output: String,
+        
+        /// Include full data (not just unique URLs)
+        #[arg(long)]
+        include_full: bool,
+    },
 }
 
 #[tokio::main]
@@ -258,8 +318,9 @@ async fn main() -> Result<()> {
                 "warn" => firefox_sync::SyncStrategy::WarnAndContinue,
                 "trigger" => firefox_sync::SyncStrategy::TriggerSync,
                 "wait" => firefox_sync::SyncStrategy::TriggerAndWait { timeout_secs: 60 },
+                "api" => firefox_sync::SyncStrategy::UseAPI,
                 _ => {
-                    eprintln!("❌ Invalid firefox-sync strategy: {}. Use 'ignore', 'warn', 'trigger', or 'wait'", firefox_sync);
+                    eprintln!("❌ Invalid firefox-sync strategy: {}. Use 'ignore', 'warn', 'trigger', 'wait', or 'api'", firefox_sync);
                     std::process::exit(1);
                 }
             };
@@ -403,6 +464,155 @@ async fn main() -> Result<()> {
         
         Commands::ListRules => {
             SyncEngine::print_builtin_rules();
+        }
+        
+        Commands::CloudReset { yes } => {
+            info!("🔄 Firefox Sync Cloud Reset");
+            info!("");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("⚠️  这将清空Firefox Sync云端的书签数据！");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("");
+            info!("流程：");
+            info!("  1. 清空Waterfox本地书签");
+            info!("  2. 启动Waterfox，让Firefox Sync上传'空书签'到云端");
+            info!("  3. 云端书签被清空");
+            info!("  4. 写入我们清理后的书签");
+            info!("  5. 再次启动Waterfox，让Firefox Sync上传新书签到云端");
+            info!("");
+            
+            if !yes {
+                print!("确认继续？(y/N): ");
+                use std::io::{self, Write};
+                io::stdout().flush().ok();
+                
+                let mut input = String::new();
+                io::stdin().read_line(&mut input).ok();
+                
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    info!("❌ 已取消");
+                    return Ok(());
+                }
+            }
+            
+            // Step 1: 确保Waterfox已关闭
+            info!("");
+            info!("📋 Step 1: 关闭Waterfox");
+            let _ = std::process::Command::new("killall")
+                .arg("waterfox-bin")
+                .output();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            info!("✅ Waterfox已关闭");
+            
+            // Step 2: 清空本地书签
+            info!("");
+            info!("📋 Step 2: 清空本地书签");
+            let waterfox_db = std::path::PathBuf::from(std::env::var("HOME")?)
+                .join("Library/Application Support/Waterfox/Profiles/ll4fbmm0.default-release/places.sqlite");
+            
+            // 先备份
+            let backup_path = waterfox_db.with_extension("sqlite.cloud_reset_backup");
+            std::fs::copy(&waterfox_db, &backup_path)?;
+            info!("   💾 备份已创建: {:?}", backup_path);
+            
+            cloud_reset::clear_local_bookmarks(&waterfox_db)?;
+            
+            // Step 3: 等待用户同步到云端
+            info!("");
+            info!("📋 Step 3: 同步空书签到云端");
+            cloud_reset::wait_for_cloud_sync()?;
+            
+            // Step 4: 验证清空
+            if !cloud_reset::verify_cleared(&waterfox_db)? {
+                info!("⚠️  书签可能未完全清空，但继续执行...");
+            }
+            
+            // Step 5: 关闭Waterfox
+            info!("");
+            info!("📋 Step 4: 关闭Waterfox");
+            let _ = std::process::Command::new("killall")
+                .arg("waterfox-bin")
+                .output();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            
+            // Step 6: 执行正常同步（写入清理后的书签）
+            info!("");
+            info!("📋 Step 5: 写入清理后的书签");
+            let mut engine = SyncEngine::new()?;
+            engine.set_hub_browsers(
+                "waterfox,brave-nightly",
+                true,  // sync_history
+                true,  // sync_reading_list
+                true,  // sync_cookies
+                false, // clear_others
+                false, // dry_run
+                false, // verbose
+            ).await?;
+            
+            // Step 7: 提示用户再次同步
+            info!("");
+            info!("📋 Step 6: 同步新书签到云端");
+            info!("");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("📤 请执行以下步骤：");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("");
+            info!("   1. 启动 Waterfox");
+            info!("   2. 等待同步图标旋转并停止（约1-2分钟）");
+            info!("   3. 确认书签已恢复");
+            info!("   4. 完成！云端和本地数据现在一致");
+            info!("");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("");
+            info!("🎉 Cloud Reset 完成！");
+        }
+
+        Commands::MigrateToSafari { yes, dry_run, keep_source, verbose } => {
+            info!("🚀 Migrate to Safari - 迁移所有数据到Safari");
+            info!("");
+            
+            if !yes && !dry_run {
+                info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                info!("⚠️  警告：此操作将：");
+                info!("   1. 合并所有浏览器的书签、历史、阅读列表到Safari");
+                if !keep_source {
+                    info!("   2. 清空其他浏览器的书签、历史、阅读列表");
+                }
+                info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                info!("");
+                info!("使用 -y 跳过确认，或 --dry-run 预览");
+                std::process::exit(0);
+            }
+            
+            let mut engine = SyncEngine::new()?;
+            engine.migrate_to_safari(dry_run, keep_source, verbose).await?;
+            
+            if dry_run {
+                info!("✅ 预览完成（dry-run模式，未实际执行）");
+            } else {
+                info!("✅ 迁移完成！所有数据已迁移到Safari");
+            }
+        }
+        
+        Commands::Analyze { browsers } => {
+            info!("🔍 分析书签异常...");
+            let engine = SyncEngine::new()?;
+            engine.analyze_bookmarks(browsers.as_deref()).await?;
+        }
+        
+        // DeepClean命令已移除
+        
+        Commands::RestoreBackup { browser, file } => {
+            info!("🔄 恢复书签备份...");
+            let mut engine = SyncEngine::new()?;
+            engine.restore_backup(&browser, file.as_deref()).await?;
+            info!("✅ 备份恢复完成!");
+        }
+        
+        Commands::MasterBackup { output, include_full } => {
+            info!("📦 创建主备份...");
+            sync::create_master_backup(&output, include_full).await?;
+            info!("✅ 主备份创建完成!");
         }
     }
 

@@ -1944,7 +1944,7 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             "Login and authentication pages"
         ),
         
-        // 2. Social Media
+        // 2. Social Media & Messaging
         ClassificationRule::new(
             "social",
             "社交媒体",
@@ -1954,7 +1954,15 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "twitter.com", "x.com", "facebook.com", "instagram.com", "linkedin.com",
                 "weibo.com", "weixin.qq.com", "douyin.com", "tiktok.com", "reddit.com",
                 "discord.com", "telegram.org", "whatsapp.com", "snapchat.com",
-                "pinterest.com", "tumblr.com", "mastodon.", "threads.net"
+                "pinterest.com", "tumblr.com", "mastodon.", "threads.net",
+                // Telegram
+                "t.me", "telegram.me", "telegra.ph",
+                // Reddit short
+                "redd.it",
+                // Fediverse
+                "misskey.io", "pleroma.", "lemmy.",
+                // VK
+                "vk.com"
             ],
             vec![],
             vec![],
@@ -1991,7 +1999,15 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "npmjs.com", "crates.io", "pypi.org", "rubygems.org",
                 "hub.docker.com", "vercel.com", "netlify.com", "heroku.com",
                 "aws.amazon.com", "console.cloud.google.com", "portal.azure.com",
-                "developer.mozilla.org", "devdocs.io", "docs.rs"
+                "developer.mozilla.org", "devdocs.io", "docs.rs",
+                // 开源代码托管
+                "codeberg.org", "sourceforge.net", "sr.ht", "gitea.com",
+                // 浏览器扩展/脚本
+                "greasyfork.org", "openuserjs.org", "userscripts-mirror.org",
+                "addons.mozilla.org", "chrome.google.com/webstore",
+                "mybrowseraddon.com", "webextension.org",
+                // Colab/Jupyter
+                "colab.research.google.com", "jupyter.org", "kaggle.com"
             ],
             vec!["/api/", "/docs/", "/documentation", "/developer", "/sdk"],
             vec!["api 文档", "api doc", "developer", "开发者"],
@@ -2227,6 +2243,408 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             10,
             "API endpoints and web services"
         ),
+        
+        // 19. App Stores
+        ClassificationRule::new(
+            "appstore",
+            "应用商店",
+            "App Stores",
+            vec![],
+            vec![
+                "apps.apple.com", "play.google.com", "apps.microsoft.com",
+                "f-droid.org", "apkpure.com", "apkmirror.com",
+                "apps.kde.org", "flathub.org", "snapcraft.io",
+                "modrinth.com", "curseforge.com", "itch.io"
+            ],
+            vec!["/app/", "/apps/", "/store/"],
+            vec!["app store", "应用商店", "下载"],
+            55,
+            "App stores and software distribution"
+        ),
+        
+        // 20. Archives & References
+        ClassificationRule::new(
+            "archive",
+            "存档资料",
+            "Archives & References",
+            vec![],
+            vec![
+                "archive.org", "web.archive.org", "archive.is", "archive.ph",
+                "rentry.co", "rentry.org", "pastebin.com", "paste.ee",
+                "ghostbin.com", "hastebin.com", "dpaste.org",
+                "start.me", "linktr.ee"
+            ],
+            vec!["/archive", "/paste"],
+            vec!["archive", "存档", "备份"],
+            45,
+            "Web archives and paste services"
+        ),
+        
+        // 21. Wiki & Knowledge Base
+        ClassificationRule::new(
+            "wiki",
+            "百科知识",
+            "Wiki & Knowledge",
+            vec!["wiki."],
+            vec![
+                "wikipedia.org", "wikimedia.org", "fandom.com", "wikia.com",
+                "wiki.archlinux.org", "wotaku.wiki", "wiki.gentoo.org",
+                "bulbapedia.bulbagarden.net", "minecraft.wiki"
+            ],
+            vec!["/wiki/"],
+            vec!["wiki", "百科", "encyclopedia"],
+            50,
+            "Wikis and knowledge bases"
+        ),
+        
+        // 22. File Hosting & Cloud
+        ClassificationRule::new(
+            "filehost",
+            "文件托管",
+            "File Hosting",
+            vec![],
+            vec![
+                "mega.nz", "mediafire.com", "zippyshare.com", "gofile.io",
+                "anonfiles.com", "1fichier.com", "uploaded.net",
+                "drive.google.com", "onedrive.live.com", "dropbox.com",
+                "i.ibb.co", "imgur.com", "imgbb.com", "postimg.cc"
+            ],
+            vec!["/file/", "/download/", "/d/"],
+            vec!["download", "下载", "文件"],
+            40,
+            "File hosting and cloud storage"
+        ),
+        
+        // 23. Search Engines
+        ClassificationRule::new(
+            "search",
+            "搜索引擎",
+            "Search Engines",
+            vec!["search."],
+            vec![
+                "google.com", "bing.com", "duckduckgo.com", "baidu.com",
+                "yandex.com", "ecosia.org", "startpage.com", "searx.",
+                "cse.google.com"
+            ],
+            vec!["/search"],
+            vec!["search", "搜索"],
+            35,
+            "Search engines"
+        ),
+        
+        // 24. NSFW/Adult Content (高优先级，确保被正确分类)
+        ClassificationRule::new(
+            "nsfw",
+            "NSFW内容",
+            "NSFW Content",
+            vec!["porn", "xxx", "adult", "nsfw", "hentai", "sex", "nude", "erotic", "18+"],
+            vec![
+                "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com",
+                "redtube.com", "youporn.com", "tube8.com", "spankbang.com",
+                "eporner.com", "tnaflix.com", "drtuber.com", "sunporno.com",
+                "porn.com", "4tube.com", "porntrex.com", "hqporner.com",
+                "javlibrary.com", "javdb.com", "missav.com", "supjav.com",
+                "hanime.tv", "nhentai.net", "e-hentai.org", "exhentai.org",
+                "rule34.xxx", "gelbooru.com", "danbooru.donmai.us",
+                "pixiv.net", "iwara.tv", "kemono.party", "coomer.party",
+                "onlyfans.com", "fansly.com", "patreon.com/nsfw",
+                "f95zone.to", "ulmf.org", "dlsite.com",
+                "e621.net", "kemono.cr", "baraag.net", "tbib.org"
+            ],
+            vec!["/porn", "/adult", "/xxx", "/nsfw", "/hentai", "/video/porn"],
+            vec!["porn", "hentai", "nsfw", "adult", "xxx", "18+", "r18", "r-18"],
+            95,  // 高优先级，仅次于登录页面
+            "Adult and NSFW content"
+        ),
+        
+        // 25. Discord & Chat Invites
+        ClassificationRule::new(
+            "discord",
+            "Discord社群",
+            "Discord Communities",
+            vec![],
+            vec![
+                "discord.gg", "discord.com/invite", "discordapp.com/invite",
+                "discord.me", "disboard.org", "top.gg"
+            ],
+            vec!["/invite/"],
+            vec!["discord", "server", "invite"],
+            88,
+            "Discord server invites and communities"
+        ),
+        
+        // 26. Anime & Manga
+        ClassificationRule::new(
+            "anime",
+            "动漫二次元",
+            "Anime & Manga",
+            vec!["anime", "manga"],
+            vec![
+                "myanimelist.net", "anilist.co", "anidb.net", "kitsu.io",
+                "mangadex.org", "mangaupdates.com", "mangakakalot.com",
+                "crunchyroll.com", "funimation.com", "9anime.to",
+                "gogoanime.io", "animixplay.to", "zoro.to",
+                "theindex.moe", "everythingmoe.com", "everythingmoe.org",
+                "wotaku.wiki", "asmr.one", "aidn.jp"
+            ],
+            vec!["/anime/", "/manga/"],
+            vec!["anime", "manga", "动漫", "漫画", "番剧"],
+            72,
+            "Anime and manga resources"
+        ),
+        
+        // 27. Torrents & Downloads
+        ClassificationRule::new(
+            "torrents",
+            "下载资源",
+            "Downloads & Torrents",
+            vec!["torrent", "magnet"],
+            vec![
+                "1337x.to", "nyaa.si", "rarbg.to", "thepiratebay.org",
+                "rutracker.org", "torrentgalaxy.to", "limetorrents.info",
+                "fitgirl-repacks.site", "dodi-repacks.site",
+                "steamunlocked.net", "igg-games.com", "cs.rin.ru",
+                "androidfilehost.com", "apkmirror.com"
+            ],
+            vec!["/torrent", "/download", "/magnet"],
+            vec!["torrent", "download", "magnet", "repack"],
+            28,
+            "Torrent and download sites"
+        ),
+        
+        // 28. Security & Privacy Tools
+        ClassificationRule::new(
+            "security",
+            "安全隐私",
+            "Security & Privacy",
+            vec!["vpn", "proxy", "privacy"],
+            vec![
+                "mullvad.net", "protonvpn.com", "nordvpn.com", "expressvpn.com",
+                "adguard.com", "adguard-dns.io", "rethinkdns.com",
+                "virustotal.com", "malwarebytes.com", "eff.org",
+                "privacytools.io", "privacyguides.org",
+                "grc.com", "haveibeenpwned.com"
+            ],
+            vec!["/security", "/privacy", "/vpn"],
+            vec!["vpn", "proxy", "privacy", "security", "安全", "隐私"],
+            42,
+            "Security and privacy tools"
+        ),
+        
+        // 29. Linux & Open Source
+        ClassificationRule::new(
+            "linux",
+            "Linux开源",
+            "Linux & Open Source",
+            vec![],
+            vec![
+                "archlinux.org", "wiki.archlinux.org", "aur.archlinux.org",
+                "ubuntu.com", "debian.org", "fedoraproject.org",
+                "linuxmint.com", "manjaro.org", "opensuse.org",
+                "gnome.org", "kde.org", "apps.kde.org",
+                "flathub.org", "snapcraft.io", "appimage.org",
+                "gnu.org", "fsf.org", "opensource.org"
+            ],
+            vec!["/linux", "/gnu"],
+            vec!["linux", "gnu", "开源", "open source"],
+            38,
+            "Linux distributions and open source"
+        ),
+        
+        // 30. Microsoft Services
+        ClassificationRule::new(
+            "microsoft",
+            "微软服务",
+            "Microsoft Services",
+            vec![],
+            vec![
+                "microsoft.com", "support.microsoft.com", "answers.microsoft.com",
+                "docs.microsoft.com", "learn.microsoft.com",
+                "office.com", "office365.com", "live.com",
+                "azure.microsoft.com", "visualstudio.com",
+                "windows.com", "xbox.com"
+            ],
+            vec![],
+            vec!["microsoft", "windows", "office", "azure"],
+            36,
+            "Microsoft products and services"
+        ),
+        
+        // 31. Apple Services
+        ClassificationRule::new(
+            "apple",
+            "苹果服务",
+            "Apple Services",
+            vec![],
+            vec![
+                "apple.com", "support.apple.com", "developer.apple.com",
+                "icloud.com", "testflight.apple.com",
+                "ios.cfw.guide", "ipsw.me", "appledb.dev"
+            ],
+            vec![],
+            vec!["apple", "iphone", "ipad", "mac", "ios"],
+            34,
+            "Apple products and services"
+        ),
+        
+        // 32. Google Services
+        ClassificationRule::new(
+            "google",
+            "谷歌服务",
+            "Google Services",
+            vec![],
+            vec![
+                "google.com", "sites.google.com", "labs.google",
+                "cloud.google.com", "firebase.google.com",
+                "analytics.google.com", "ads.google.com",
+                "workspace.google.com", "meet.google.com"
+            ],
+            vec![],
+            vec!["google", "谷歌"],
+            32,
+            "Google products and services"
+        ),
+        
+        // 33. Fediverse & Decentralized
+        ClassificationRule::new(
+            "fediverse",
+            "联邦宇宙",
+            "Fediverse & Decentralized",
+            vec!["mastodon", "fediverse"],
+            vec![
+                "mastodon.social", "mastodon.online", "mstdn.social",
+                "misskey.io", "pleroma.social", "lemmy.ml",
+                "pixelfed.social", "peertube.social",
+                "the-federation.info", "fedidb.org", "fediverse.party"
+            ],
+            vec![],
+            vec!["fediverse", "mastodon", "activitypub"],
+            30,
+            "Fediverse and decentralized social networks"
+        ),
+        
+        // 34. XDA & Mobile Dev
+        ClassificationRule::new(
+            "mobile",
+            "移动开发",
+            "Mobile Development",
+            vec![],
+            vec![
+                "xdaforums.com", "xda-developers.com",
+                "forum.mobilism.org", "forums.mydigitallife.net",
+                "gbatemp.net", "pdalife.com",
+                "apt.izzysoft.de"
+            ],
+            vec!["/forum", "/thread"],
+            vec!["android", "rom", "root", "mod"],
+            26,
+            "Mobile development and modding"
+        ),
+        
+        // 35. Science & Research
+        ClassificationRule::new(
+            "science",
+            "科学研究",
+            "Science & Research",
+            vec![],
+            vec![
+                "nasa.gov", "arxiv.org", "nature.com", "science.org",
+                "nih.gov", "si.edu", "libretexts.org",
+                "wolframalpha.com", "mathworld.wolfram.com"
+            ],
+            vec!["/research", "/paper", "/article"],
+            vec!["research", "science", "paper", "study"],
+            24,
+            "Science and research resources"
+        ),
+        
+        // 36. Streaming & Live
+        ClassificationRule::new(
+            "streaming",
+            "直播平台",
+            "Streaming & Live",
+            vec!["stream", "live"],
+            vec![
+                "twitch.tv", "kick.com", "youtube.com/live",
+                "rivestream.org", "pomf.tv", "alienflix.net",
+                "pluto.tv", "tubi.tv"
+            ],
+            vec!["/live", "/stream"],
+            vec!["live", "stream", "直播"],
+            68,
+            "Live streaming platforms"
+        ),
+        
+        // 37. Browser Extensions
+        ClassificationRule::new(
+            "extensions",
+            "浏览器扩展",
+            "Browser Extensions",
+            vec![],
+            vec![
+                "add0n.com", "webextension.org", "mybrowseraddon.com",
+                "userstyles.world", "betterdiscord.app",
+                "draculatheme.com", "sindresorhus.com"
+            ],
+            vec!["/extension", "/addon", "/theme"],
+            vec!["extension", "addon", "theme", "扩展", "插件"],
+            22,
+            "Browser extensions and themes"
+        ),
+        
+        // 38. Online Tools & Utilities
+        ClassificationRule::new(
+            "tools",
+            "在线工具",
+            "Online Tools",
+            vec!["tool", "converter", "generator"],
+            vec![
+                "url-decode.com", "caniuse.com", "regex101.com",
+                "jsonformatter.org", "base64decode.org",
+                "time.is", "weather.com", "viewdns.info",
+                "ss64.com", "softwareok.com", "nirsoft.net",
+                "majorgeeks.com"
+            ],
+            vec!["/tool", "/convert", "/generate"],
+            vec!["tool", "converter", "generator", "工具"],
+            18,
+            "Online tools and utilities"
+        ),
+        
+        // 39. Productivity & Notes
+        ClassificationRule::new(
+            "productivity",
+            "效率工具",
+            "Productivity",
+            vec![],
+            vec![
+                "notion.so", "notion.site", "obsidian.md",
+                "trello.com", "airtable.com", "asana.com",
+                "todoist.com", "evernote.com"
+            ],
+            vec![],
+            vec!["note", "todo", "task", "笔记", "待办"],
+            16,
+            "Productivity and note-taking tools"
+        ),
+        
+        // 40. Gaming Communities
+        ClassificationRule::new(
+            "gamecommunity",
+            "游戏社区",
+            "Gaming Communities",
+            vec![],
+            vec![
+                "steamcommunity.com", "steamdb.info", "steambase.io",
+                "crackwatch.com", "pcgamingwiki.com",
+                "nexusmods.com", "moddb.com",
+                "lichess.org", "chess.com"
+            ],
+            vec!["/community", "/mod", "/guide"],
+            vec!["mod", "guide", "wiki", "攻略"],
+            14,
+            "Gaming communities and resources"
+        ),
     ]
 }
 
@@ -2428,6 +2846,26 @@ impl SyncEngine {
                     
                     if !unclassified.is_empty() {
                         info!("  ❓ Unclassified: {} bookmarks", unclassified.len());
+                        
+                        // 🔧 BUG FIX: 将未分类的书签放入"未分类"文件夹，而不是丢弃！
+                        let unclassified_folder = bookmarks.iter_mut()
+                            .find(|b| b.folder && b.title == "未分类");
+                        
+                        if let Some(folder) = unclassified_folder {
+                            folder.children.extend(unclassified.clone());
+                        } else {
+                            let new_folder = Bookmark {
+                                id: format!("unclassified-folder-{}", chrono::Utc::now().timestamp_millis()),
+                                title: "未分类".to_string(),
+                                url: None,
+                                folder: true,
+                                children: unclassified.clone(),
+                                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                                date_modified: Some(chrono::Utc::now().timestamp_millis()),
+                            };
+                            bookmarks.push(new_folder);
+                        }
+                        info!("  📁 未分类 : {} bookmarks (preserved)", unclassified.len());
                     }
                     
                     // Show statistics if requested
@@ -2503,11 +2941,21 @@ impl SyncEngine {
     /// Collect all bookmarks from entire tree for classification
     fn collect_all_bookmarks_for_classification(bookmarks: &mut Vec<Bookmark>, collected: &mut Vec<Bookmark>) {
         // Protected folder names that should not be reorganized
+        // Includes: Safari system folders + all classification folders
         let protected_folders = [
+            // Safari系统文件夹
+            "BookmarksBar", "BookmarksMenu", "com.apple.ReadingList",
+            "Favorites", "收藏夹", "书签栏", "书签菜单", "阅读列表",
+            // 分类文件夹 (40个规则对应的文件夹)
             "登录入口", "社交媒体", "视频流媒体", "开发工具", "购物网站",
             "新闻资讯", "文档参考", "云存储", "邮箱通讯", "金融理财",
             "AI工具", "设计创意", "教育学习", "音乐音频", "游戏娱乐",
-            "论坛社区", "管理后台", "API服务", "网站主页"
+            "论坛社区", "管理后台", "API服务", "应用商店", "存档资料",
+            "百科知识", "文件托管", "搜索引擎", "NSFW内容", "Discord社群",
+            "动漫二次元", "下载资源", "安全隐私", "Linux开源", "微软服务",
+            "苹果服务", "谷歌服务", "联邦宇宙", "移动开发", "科学研究",
+            "直播平台", "浏览器扩展", "在线工具", "效率工具", "游戏社区",
+            "未分类", "网站主页"
         ];
         
         // First pass: recursively process children (skip protected folders)
@@ -2872,14 +3320,36 @@ impl SyncEngine {
         verbose: bool,
         firefox_sync_strategy: crate::firefox_sync::SyncStrategy,
     ) -> Result<()> {
-        use crate::firefox_sync::FirefoxSyncHandler;
+        use crate::firefox_sync::{FirefoxSyncHandler, SyncStrategy};
+        use crate::firefox_sync_api::FirefoxSyncAPIClient;
         
-        // 检测Waterfox profile并创建Firefox Sync处理器
+        // 检测Waterfox profile
         let waterfox_profile = std::path::PathBuf::from(
             std::env::var("HOME")?
         ).join("Library/Application Support/Waterfox/Profiles/ll4fbmm0.default-release");
         
-        let firefox_sync_handler = if waterfox_profile.exists() {
+        // 如果使用API策略，先检查是否能加载API客户端
+        let api_client = if matches!(firefox_sync_strategy, SyncStrategy::UseAPI) {
+            if waterfox_profile.exists() {
+                match FirefoxSyncAPIClient::from_profile(&waterfox_profile) {
+                    Ok(client) => {
+                        info!("✅ Firefox Sync API client loaded");
+                        Some(client)
+                    }
+                    Err(e) => {
+                        warn!("⚠️  Failed to load Firefox Sync API client: {}", e);
+                        warn!("   Falling back to local sync only");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        let firefox_sync_handler = if waterfox_profile.exists() && api_client.is_none() {
             Some(FirefoxSyncHandler::new(&waterfox_profile, firefox_sync_strategy)?)
         } else {
             None
@@ -2901,7 +3371,34 @@ impl SyncEngine {
             verbose
         ).await?;
         
-        // 在写入后执行Firefox Sync处理
+        // 如果使用API策略，上传到云端
+        if let Some(ref client) = api_client {
+            if !dry_run {
+                info!("");
+                info!("📤 Uploading bookmarks to Firefox Sync cloud via API...");
+                
+                // 读取刚写入的书签
+                for adapter in &self.adapters {
+                    if adapter.browser_type().name().to_lowercase().contains("waterfox") {
+                        if let Ok(bookmarks) = adapter.read_bookmarks() {
+                            match client.upload_bookmarks(&bookmarks).await {
+                                Ok(_) => {
+                                    info!("✅ Bookmarks uploaded to cloud successfully!");
+                                    info!("   Your changes are now synced across all devices");
+                                }
+                                Err(e) => {
+                                    warn!("⚠️  Failed to upload to cloud: {}", e);
+                                    warn!("   Local changes are saved, but not synced to cloud");
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // 在写入后执行Firefox Sync处理（非API策略）
         if let Some(ref handler) = firefox_sync_handler {
             if !dry_run {
                 handler.after_write()?;
@@ -2909,5 +3406,452 @@ impl SyncEngine {
         }
         
         Ok(())
+    }
+}
+
+impl SyncEngine {
+    /// Migrate all data to Safari and optionally clear other browsers
+    pub async fn migrate_to_safari(
+        &mut self,
+        dry_run: bool,
+        keep_source: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        info!("📖 Phase 1: 读取所有浏览器数据");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        // 收集所有书签
+        let mut all_bookmarks: HashMap<BrowserType, Vec<Bookmark>> = HashMap::new();
+        let mut all_history: HashMap<BrowserType, Vec<HistoryItem>> = HashMap::new();
+        let mut all_reading_lists: HashMap<BrowserType, Vec<ReadingListItem>> = HashMap::new();
+        
+        for adapter in &self.adapters {
+            let browser_name = adapter.browser_type().name();
+            
+            // 读取书签
+            if let Ok(bookmarks) = adapter.read_bookmarks() {
+                let count = Self::count_all_bookmarks(&bookmarks);
+                if count > 0 {
+                    info!("  {} : {} 书签", browser_name, count);
+                    all_bookmarks.insert(adapter.browser_type(), bookmarks);
+                }
+            }
+            
+            // 读取历史
+            if adapter.supports_history() {
+                if let Ok(history) = adapter.read_history(None) {
+                    if !history.is_empty() {
+                        info!("  {} : {} 历史记录", browser_name, history.len());
+                        all_history.insert(adapter.browser_type(), history);
+                    }
+                }
+            }
+            
+            // 读取阅读列表
+            if adapter.supports_reading_list() {
+                if let Ok(reading_list) = adapter.read_reading_list() {
+                    if !reading_list.is_empty() {
+                        info!("  {} : {} 阅读列表", browser_name, reading_list.len());
+                        all_reading_lists.insert(adapter.browser_type(), reading_list);
+                    }
+                }
+            }
+        }
+        
+        // 合并数据
+        info!("");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        info!("🔄 Phase 2: 合并和去重");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        let mut merged_bookmarks = self.merge_bookmarks(&all_bookmarks, verbose)?;
+        let merged_history = self.merge_history(&all_history, verbose)?;
+        let merged_reading_list = self.merge_reading_lists(&all_reading_lists, verbose)?;
+        
+        // 🔧 彻底清理空文件夹（多次迭代直到没有空文件夹）
+        info!("🧹 Phase 2.5: 彻底清理空文件夹");
+        let mut total_empty_removed = 0;
+        loop {
+            let removed = Self::cleanup_empty_folders(&mut merged_bookmarks);
+            if removed == 0 {
+                break;
+            }
+            total_empty_removed += removed;
+        }
+        if total_empty_removed > 0 {
+            info!("   移除 {} 个空文件夹", total_empty_removed);
+        }
+        
+        let bookmark_count = Self::count_all_bookmarks(&merged_bookmarks);
+        let folder_count = Self::count_all_folders(&merged_bookmarks);
+        
+        info!("  📚 合并后书签: {} URLs, {} 文件夹", bookmark_count, folder_count);
+        info!("  📜 合并后历史: {} 条", merged_history.len());
+        info!("  📖 合并后阅读列表: {} 条", merged_reading_list.len());
+        
+        if dry_run {
+            info!("");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("🏃 Dry Run 模式 - 以下是将要执行的操作：");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("  ✅ 写入 {} 书签到 Safari", bookmark_count);
+            info!("  ✅ 写入 {} 历史记录到 Safari", merged_history.len());
+            info!("  ✅ 写入 {} 阅读列表到 Safari", merged_reading_list.len());
+            if !keep_source {
+                info!("  🗑️  清空其他浏览器的书签、历史、阅读列表");
+            }
+            return Ok(());
+        }
+        
+        // 写入Safari
+        info!("");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        info!("💾 Phase 3: 写入Safari");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        for adapter in &self.adapters {
+            if adapter.browser_type() == BrowserType::Safari {
+                // 备份
+                if let Ok(backup_path) = adapter.backup_bookmarks() {
+                    info!("  💾 Safari备份: {:?}", backup_path);
+                }
+                
+                // 写入书签
+                if let Err(e) = adapter.write_bookmarks(&merged_bookmarks) {
+                    warn!("  ⚠️  写入Safari书签失败: {}", e);
+                } else {
+                    info!("  ✅ 写入 {} 书签到Safari", bookmark_count);
+                }
+                
+                // 写入阅读列表
+                if adapter.supports_reading_list() {
+                    if let Err(e) = adapter.write_reading_list(&merged_reading_list) {
+                        warn!("  ⚠️  写入Safari阅读列表失败: {}", e);
+                    } else {
+                        info!("  ✅ 写入 {} 阅读列表到Safari", merged_reading_list.len());
+                    }
+                }
+                
+                // Safari不支持直接写入历史（系统限制）
+                info!("  ℹ️  Safari历史记录由系统管理，无法直接写入");
+                
+                break;
+            }
+        }
+        
+        // 清空其他浏览器
+        if !keep_source {
+            info!("");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("🗑️  Phase 4: 清空其他浏览器");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            
+            for adapter in &self.adapters {
+                if adapter.browser_type() == BrowserType::Safari {
+                    continue; // 跳过Safari
+                }
+                
+                let browser_name = adapter.browser_type().name();
+                
+                // 备份
+                if let Ok(backup_path) = adapter.backup_bookmarks() {
+                    info!("  💾 {}备份: {:?}", browser_name, backup_path);
+                }
+                
+                // 清空书签（写入空列表）
+                let empty_bookmarks: Vec<Bookmark> = vec![];
+                if let Err(e) = adapter.write_bookmarks(&empty_bookmarks) {
+                    warn!("  ⚠️  清空{}书签失败: {}", browser_name, e);
+                } else {
+                    info!("  ✅ 已清空{}书签", browser_name);
+                }
+                
+                // 清空历史
+                if adapter.supports_history() {
+                    let empty_history: Vec<HistoryItem> = vec![];
+                    if let Err(e) = adapter.write_history(&empty_history) {
+                        warn!("  ⚠️  清空{}历史失败: {}", browser_name, e);
+                    } else {
+                        info!("  ✅ 已清空{}历史", browser_name);
+                    }
+                }
+                
+                // 清空阅读列表
+                if adapter.supports_reading_list() {
+                    let empty_reading_list: Vec<ReadingListItem> = vec![];
+                    if let Err(e) = adapter.write_reading_list(&empty_reading_list) {
+                        warn!("  ⚠️  清空{}阅读列表失败: {}", browser_name, e);
+                    } else {
+                        info!("  ✅ 已清空{}阅读列表", browser_name);
+                    }
+                }
+            }
+        }
+        
+        // 验证
+        info!("");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        info!("🔍 Phase 5: 验证");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        for adapter in &self.adapters {
+            if adapter.browser_type() == BrowserType::Safari {
+                if let Ok(bookmarks) = adapter.read_bookmarks() {
+                    let count = Self::count_all_bookmarks(&bookmarks);
+                    info!("  Safari: {} 书签", count);
+                }
+            }
+        }
+        
+        info!("");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        info!("📊 迁移完成！");
+        info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        info!("  Safari现在包含所有浏览器的数据");
+        if !keep_source {
+            info!("  其他浏览器的数据已清空（备份已保存）");
+        }
+        
+        Ok(())
+    }
+}
+
+impl SyncEngine {
+    /// Analyze bookmarks for anomalies
+    pub async fn analyze_bookmarks(&self, browser_names: Option<&str>) -> Result<()> {
+        use crate::cleanup::{detect_anomalies, AnomalyReport};
+        
+        info!("🔍 分析书签异常...");
+        
+        // Determine target browsers
+        let target_adapters: Vec<_> = if let Some(names) = browser_names {
+            let browser_list: Vec<String> = names
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .collect();
+            
+            self.adapters.iter()
+                .filter(|a| {
+                    let name = a.browser_type().name().to_lowercase();
+                    browser_list.iter().any(|b| name.contains(b))
+                })
+                .collect()
+        } else {
+            self.adapters.iter().collect()
+        };
+        
+        for adapter in &target_adapters {
+            let browser_name = adapter.browser_type().name();
+            
+            match adapter.read_bookmarks() {
+                Ok(bookmarks) => {
+                    let total = Self::count_all_bookmarks(&bookmarks);
+                    let folders = Self::count_all_folders(&bookmarks);
+                    
+                    println!("\n📊 {} 书签分析", browser_name);
+                    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                    println!("  总书签数: {}", total);
+                    println!("  文件夹数: {}", folders);
+                    
+                    let report = detect_anomalies(&bookmarks);
+                    report.print_summary();
+                }
+                Err(e) => {
+                    warn!("⚠️  无法读取 {} 书签: {}", browser_name, e);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    // deep_clean_bookmarks 已移除 - 自动删除功能误删风险太高
+    
+    /// Restore bookmarks from backup
+    pub async fn restore_backup(
+        &mut self,
+        browser_name: &str,
+        backup_file: Option<&str>,
+    ) -> Result<()> {
+        info!("🔄 恢复书签备份...");
+        
+        let browser_lower = browser_name.to_lowercase();
+        
+        // Find the adapter
+        let adapter = self.adapters.iter()
+            .find(|a| a.browser_type().name().to_lowercase().contains(&browser_lower))
+            .ok_or_else(|| anyhow::anyhow!("未找到浏览器: {}", browser_name))?;
+        
+        let browser_type_name = adapter.browser_type().name();
+        
+        // Find backup file
+        let backup_path = if let Some(file) = backup_file {
+            std::path::PathBuf::from(file)
+        } else {
+            // Find latest backup
+            let bookmark_path = adapter.detect_bookmark_path()?;
+            let backup_path = bookmark_path.with_extension("sqlite.backup");
+            
+            if !backup_path.exists() {
+                // Try other backup extensions
+                let backup_path2 = bookmark_path.with_extension("sqlite.cloud_reset_backup");
+                if backup_path2.exists() {
+                    backup_path2
+                } else {
+                    anyhow::bail!("未找到备份文件。请使用 -f 指定备份文件路径");
+                }
+            } else {
+                backup_path
+            }
+        };
+        
+        if !backup_path.exists() {
+            anyhow::bail!("备份文件不存在: {:?}", backup_path);
+        }
+        
+        info!("📂 备份文件: {:?}", backup_path);
+        
+        // Get current bookmark path
+        let current_path = adapter.detect_bookmark_path()?;
+        
+        // Create a backup of current state before restore
+        let pre_restore_backup = current_path.with_extension("sqlite.pre_restore_backup");
+        if current_path.exists() {
+            std::fs::copy(&current_path, &pre_restore_backup)?;
+            info!("💾 当前状态已备份到: {:?}", pre_restore_backup);
+        }
+        
+        // Restore
+        std::fs::copy(&backup_path, &current_path)?;
+        
+        // Verify
+        match adapter.read_bookmarks() {
+            Ok(bookmarks) => {
+                let count = Self::count_all_bookmarks(&bookmarks);
+                info!("✅ 恢复成功! {} 现在有 {} 个书签", browser_type_name, count);
+            }
+            Err(e) => {
+                warn!("⚠️  恢复后验证失败: {}", e);
+                warn!("   尝试恢复原状态...");
+                if pre_restore_backup.exists() {
+                    std::fs::copy(&pre_restore_backup, &current_path)?;
+                }
+                anyhow::bail!("恢复失败");
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+/// Create comprehensive master backup from all browser data
+pub async fn create_master_backup(output_dir: &str, include_full: bool) -> Result<()> {
+    use std::collections::HashMap as StdHashMap;
+    
+    info!("📦 创建主备份...");
+    
+    let output_path = if output_dir.starts_with("~/") {
+        let home = std::env::var("HOME").unwrap_or_default();
+        output_dir.replacen("~", &home, 1)
+    } else {
+        output_dir.to_string()
+    };
+    std::fs::create_dir_all(&output_path)?;
+    
+    let mut all_bookmarks = Vec::new();
+    let mut source_stats = StdHashMap::new();
+    
+    // 收集所有浏览器数据
+    let browsers = [
+        BrowserType::Safari, 
+        BrowserType::Chrome, 
+        BrowserType::Waterfox, 
+        BrowserType::Brave,
+        BrowserType::BraveNightly,
+    ];
+    
+    for browser in browsers {
+        let adapters = crate::browsers::get_all_adapters();
+        if let Some(adapter) = adapters.iter().find(|a| a.browser_type() == browser) {
+            match adapter.read_bookmarks() {
+                Ok(bookmarks) => {
+                    let count = count_bookmarks_recursive(&bookmarks);
+                    if count > 0 {
+                        info!("  📱 {}: {} 书签", browser.name(), count);
+                        source_stats.insert(browser.name().to_string(), count);
+                        
+                        collect_urls_recursive(&bookmarks, browser.name(), &mut all_bookmarks);
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+    
+    info!("📊 总计收集: {} 条记录", all_bookmarks.len());
+    
+    // 去重
+    let mut unique_urls = StdHashMap::new();
+    for bookmark in &all_bookmarks {
+        let url = bookmark["url"].as_str().unwrap_or("").to_lowercase();
+        let url_key = url.trim_end_matches('/');
+        if !url_key.is_empty() {
+            unique_urls.entry(url_key.to_string()).or_insert(bookmark.clone());
+        }
+    }
+    
+    info!("📊 唯一URL: {} 个", unique_urls.len());
+    
+    // 保存文件
+    if include_full {
+        let full_path = format!("{}/all_bookmarks_full.json", output_path);
+        std::fs::write(&full_path, serde_json::to_string_pretty(&all_bookmarks)?)?;
+        info!("✅ 完整数据: {}", full_path);
+    }
+    
+    let unique_path = format!("{}/unique_bookmarks.json", output_path);
+    let unique_list: Vec<_> = unique_urls.into_values().collect();
+    std::fs::write(&unique_path, serde_json::to_string_pretty(&unique_list)?)?;
+    info!("✅ 唯一URL: {}", unique_path);
+    
+    let stats_path = format!("{}/sources_stats.json", output_path);
+    std::fs::write(&stats_path, serde_json::to_string_pretty(&source_stats)?)?;
+    info!("✅ 来源统计: {}", stats_path);
+    
+    let urls_path = format!("{}/all_urls.txt", output_path);
+    let mut urls: Vec<_> = unique_list.iter()
+        .filter_map(|b| b["url"].as_str())
+        .collect();
+    urls.sort();
+    std::fs::write(&urls_path, urls.join("\n"))?;
+    info!("✅ URL列表: {}", urls_path);
+    
+    info!("\n✅ 主备份创建完成: {}", output_path);
+    
+    Ok(())
+}
+
+fn count_bookmarks_recursive(bookmarks: &[Bookmark]) -> usize {
+    let mut count = 0;
+    for bookmark in bookmarks {
+        if bookmark.url.is_some() {
+            count += 1;
+        }
+        count += count_bookmarks_recursive(&bookmark.children);
+    }
+    count
+}
+
+fn collect_urls_recursive(bookmarks: &[Bookmark], source: &str, result: &mut Vec<serde_json::Value>) {
+    for bookmark in bookmarks {
+        if let Some(url) = &bookmark.url {
+            result.push(serde_json::json!({
+                "url": url,
+                "title": bookmark.title,
+                "source": source
+            }));
+        }
+        collect_urls_recursive(&bookmark.children, source, result);
     }
 }

@@ -1081,15 +1081,165 @@ impl BrowserAdapter for FirefoxNightlyAdapter {
 
 // Helper functions for Safari plist parsing
 #[cfg(target_os = "macos")]
-fn parse_safari_plist(_value: &plist::Value) -> Result<Vec<Bookmark>> {
-    // Simplified implementation - needs full Safari plist structure parsing
-    Ok(vec![])
+fn parse_safari_plist(value: &plist::Value) -> Result<Vec<Bookmark>> {
+    let mut bookmarks = Vec::new();
+    
+    if let Some(dict) = value.as_dictionary() {
+        if let Some(children) = dict.get("Children").and_then(|v| v.as_array()) {
+            for child in children {
+                if let Some(bookmark) = parse_safari_bookmark_node(child) {
+                    // Skip Reading List and History folders
+                    if bookmark.title != "com.apple.ReadingList" && bookmark.title != "History" {
+                        bookmarks.push(bookmark);
+                    }
+                }
+            }
+        }
+    }
+    
+    debug!("Parsed {} bookmarks from Safari plist", bookmarks.len());
+    Ok(bookmarks)
 }
 
 #[cfg(target_os = "macos")]
-fn bookmarks_to_safari_plist(_bookmarks: &[Bookmark]) -> Result<plist::Value> {
-    // Simplified implementation - needs full Safari plist structure generation
-    Ok(plist::Value::Dictionary(Default::default()))
+fn parse_safari_bookmark_node(node: &plist::Value) -> Option<Bookmark> {
+    let dict = node.as_dictionary()?;
+    
+    let web_bookmark_type = dict.get("WebBookmarkType")
+        .and_then(|v| v.as_string())
+        .unwrap_or("");
+    
+    let title = dict.get("Title")
+        .and_then(|v| v.as_string())
+        .or_else(|| {
+            dict.get("URIDictionary")
+                .and_then(|v| v.as_dictionary())
+                .and_then(|d| d.get("title"))
+                .and_then(|v| v.as_string())
+        })
+        .unwrap_or("")
+        .to_string();
+    
+    let uuid = dict.get("WebBookmarkUUID")
+        .and_then(|v| v.as_string())
+        .unwrap_or("")
+        .to_string();
+    
+    match web_bookmark_type {
+        "WebBookmarkTypeList" => {
+            // This is a folder
+            let mut children = Vec::new();
+            if let Some(child_array) = dict.get("Children").and_then(|v| v.as_array()) {
+                for child in child_array {
+                    if let Some(child_bookmark) = parse_safari_bookmark_node(child) {
+                        children.push(child_bookmark);
+                    }
+                }
+            }
+            
+            Some(Bookmark {
+                id: uuid,
+                title,
+                url: None,
+                folder: true,
+                children,
+                date_added: None,
+                date_modified: None,
+            })
+        }
+        "WebBookmarkTypeLeaf" => {
+            // This is a bookmark
+            let url = dict.get("URLString")
+                .and_then(|v| v.as_string())
+                .map(|s| s.to_string());
+            
+            Some(Bookmark {
+                id: uuid,
+                title,
+                url,
+                folder: false,
+                children: vec![],
+                date_added: None,
+                date_modified: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn bookmarks_to_safari_plist(bookmarks: &[Bookmark]) -> Result<plist::Value> {
+    use plist::{Dictionary, Value};
+    
+    fn bookmark_to_safari_node(bookmark: &Bookmark) -> Value {
+        let mut dict = Dictionary::new();
+        
+        // Generate UUID
+        let uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
+        dict.insert("WebBookmarkUUID".to_string(), Value::String(uuid));
+        
+        if bookmark.folder {
+            // Folder
+            dict.insert("WebBookmarkType".to_string(), Value::String("WebBookmarkTypeList".to_string()));
+            dict.insert("Title".to_string(), Value::String(bookmark.title.clone()));
+            
+            // Convert children
+            let children: Vec<Value> = bookmark.children
+                .iter()
+                .map(bookmark_to_safari_node)
+                .collect();
+            dict.insert("Children".to_string(), Value::Array(children));
+        } else {
+            // Bookmark
+            dict.insert("WebBookmarkType".to_string(), Value::String("WebBookmarkTypeLeaf".to_string()));
+            
+            if let Some(ref url) = bookmark.url {
+                dict.insert("URLString".to_string(), Value::String(url.clone()));
+                
+                // URIDictionary with title
+                let mut uri_dict = Dictionary::new();
+                uri_dict.insert("title".to_string(), Value::String(bookmark.title.clone()));
+                dict.insert("URIDictionary".to_string(), Value::Dictionary(uri_dict));
+            }
+        }
+        
+        Value::Dictionary(dict)
+    }
+    
+    // Create root structure
+    let mut root = Dictionary::new();
+    root.insert("WebBookmarkFileVersion".to_string(), Value::Integer(1.into()));
+    root.insert("WebBookmarkType".to_string(), Value::String("WebBookmarkTypeList".to_string()));
+    root.insert("Title".to_string(), Value::String("".to_string()));
+    root.insert("WebBookmarkUUID".to_string(), Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
+    
+    // Create BookmarksBar folder
+    let mut bookmarks_bar = Dictionary::new();
+    bookmarks_bar.insert("WebBookmarkType".to_string(), Value::String("WebBookmarkTypeList".to_string()));
+    bookmarks_bar.insert("Title".to_string(), Value::String("BookmarksBar".to_string()));
+    bookmarks_bar.insert("WebBookmarkUUID".to_string(), Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
+    
+    // Convert bookmarks to Safari format
+    let children: Vec<Value> = bookmarks
+        .iter()
+        .map(bookmark_to_safari_node)
+        .collect();
+    bookmarks_bar.insert("Children".to_string(), Value::Array(children));
+    
+    // Create BookmarksMenu folder (empty)
+    let mut bookmarks_menu = Dictionary::new();
+    bookmarks_menu.insert("WebBookmarkType".to_string(), Value::String("WebBookmarkTypeList".to_string()));
+    bookmarks_menu.insert("Title".to_string(), Value::String("BookmarksMenu".to_string()));
+    bookmarks_menu.insert("WebBookmarkUUID".to_string(), Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
+    bookmarks_menu.insert("Children".to_string(), Value::Array(vec![]));
+    
+    // Add to root Children
+    root.insert("Children".to_string(), Value::Array(vec![
+        Value::Dictionary(bookmarks_bar),
+        Value::Dictionary(bookmarks_menu),
+    ]));
+    
+    Ok(Value::Dictionary(root))
 }
 
 // Helper functions for Chromium JSON parsing
