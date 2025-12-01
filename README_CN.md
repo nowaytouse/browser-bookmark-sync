@@ -82,8 +82,20 @@ browser-bookmark-sync export-html \
 -d, --deduplicate        移除重复书签
     --merge              合并为扁平结构（不按浏览器分文件夹）
     --include-html <文件> 同时导入已有 HTML 备份
+    --clear-after        导出后清空来源浏览器的书签
 -v, --verbose            显示详细输出
 ```
+
+### 导出后清空
+
+`--clear-after` 选项会在成功导出后删除来源浏览器的所有书签：
+
+```bash
+# 导出并清空来源书签
+browser-bookmark-sync export-html -d --merge --clear-after
+```
+
+⚠️ **警告**: 如果浏览器启用了同步功能（Firefox Sync、Chrome Sync、iCloud 等），删除可能无效或导致书签版本不可预测。建议在使用此选项前禁用同步功能。
 
 ## 🧠 智能分类
 

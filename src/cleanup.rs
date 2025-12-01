@@ -41,28 +41,28 @@ const NSFW_TITLE_KEYWORDS: &[&str] = &[
 
 impl AnomalyReport {
     pub fn print_summary(&self) {
-        println!("\n📊 书签分析报告");
+        println!("\n📊 Bookmark Analysis Report");
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
         if self.duplicate_count > 0 {
-            println!("🔄 重复URL: {} 个", self.duplicate_count);
+            println!("🔄 Duplicate URLs: {}", self.duplicate_count);
         }
         
         if self.empty_folder_count > 0 {
-            println!("📁 空文件夹: {} 个", self.empty_folder_count);
+            println!("📁 Empty folders: {}", self.empty_folder_count);
         }
         
-        // NSFW仅统计，不是问题
+        // NSFW is just statistics, not an issue
         if self.nsfw_count > 0 {
-            println!("🔞 NSFW内容: {} 个", self.nsfw_count);
+            println!("🔞 NSFW content: {}", self.nsfw_count);
         }
         
         let total_issues = self.duplicate_count + self.empty_folder_count;
         
         if total_issues == 0 {
-            println!("✅ 书签状态良好");
+            println!("✅ Bookmarks are in good condition");
         } else {
-            println!("\n💡 可使用 cleanup 命令清理");
+            println!("\n💡 Use 'cleanup' command to clean up");
         }
         
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");

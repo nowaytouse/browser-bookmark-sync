@@ -16,7 +16,7 @@ use sync::SyncEngine;
 
 #[derive(Parser)]
 #[command(name = "browser-bookmark-sync")]
-#[command(about = "🔖 跨浏览器书签管理工具 - 合并、去重、导出", long_about = None)]
+#[command(about = "Cross-browser bookmark management tool - merge, deduplicate, export", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -25,166 +25,182 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 📋 列出所有检测到的浏览器及其书签位置
+    /// List all detected browsers and their bookmark locations
     #[command(alias = "l", alias = "ls")]
     List,
     
-    /// 📤 导出书签到HTML文件 (推荐方式 - 避免同步覆盖)
+    /// Export bookmarks to HTML file (RECOMMENDED - avoids sync conflicts)
     #[command(alias = "export", alias = "e")]
     ExportHtml {
-        /// 输出HTML文件路径
+        /// Output HTML file path
         #[arg(short = 'o', long, default_value = "~/Desktop/bookmarks_export.html")]
         output: String,
         
-        /// 来源浏览器 (逗号分隔, 默认: all)
+        /// Source browsers (comma-separated, default: all)
         #[arg(short = 'b', long, default_value = "all")]
         browsers: String,
         
-        /// 合并所有书签到扁平结构 (不按浏览器分文件夹)
+        /// Merge all bookmarks into flat structure (no browser folders)
         #[arg(long)]
         merge: bool,
         
-        /// 去除重复书签
+        /// Remove duplicate bookmarks
         #[arg(long, short = 'd')]
         deduplicate: bool,
         
-        /// 同时导入已有HTML备份文件
+        /// Also import from existing HTML backup file
         #[arg(long)]
         include_html: Option<String>,
         
-        /// 详细输出
+        /// Clear bookmarks from source browsers after export (WARNING: destructive!)
+        #[arg(long)]
+        clear_after: bool,
+        
+        /// Verbose output
         #[arg(short, long)]
         verbose: bool,
     },
     
-    /// 🔍 验证书签完整性
+    /// Validate bookmark integrity
     #[command(alias = "v", alias = "check")]
     Validate {
-        /// 显示详细验证报告
+        /// Show detailed validation report
         #[arg(short, long)]
         detailed: bool,
     },
     
-    /// 🧹 清理书签 (去重复/删除空文件夹)
+    /// Clean up bookmarks (remove duplicates/empty folders) - MODIFIES BROWSER DATA
     #[command(alias = "c", alias = "clean")]
     Cleanup {
-        /// 目标浏览器 (逗号分隔, 默认: all)
+        /// Target browsers (comma-separated, default: all)
         #[arg(short = 'b', long)]
         browsers: Option<String>,
         
-        /// 删除重复书签
+        /// Remove duplicate bookmarks
         #[arg(long)]
         remove_duplicates: bool,
         
-        /// 删除空文件夹
+        /// Remove empty folders
         #[arg(long)]
         remove_empty_folders: bool,
         
-        /// 预览模式 - 不实际修改
+        /// Dry run - preview without making changes
         #[arg(short, long)]
         dry_run: bool,
         
-        /// 详细输出
+        /// Verbose output
         #[arg(short, long)]
         verbose: bool,
     },
     
-    /// 🧠 智能分类书签 (按URL模式自动归类)
+    /// Smart organize bookmarks by URL patterns - MODIFIES BROWSER DATA
     #[command(alias = "so", alias = "smart")]
     SmartOrganize {
-        /// 目标浏览器 (逗号分隔, 默认: all)
+        /// Target browsers (comma-separated, default: all)
         #[arg(short = 'b', long)]
         browsers: Option<String>,
         
-        /// 自定义规则文件 (JSON格式)
+        /// Custom rules file (JSON format)
         #[arg(short = 'r', long)]
         rules_file: Option<String>,
         
-        /// 只处理未分类的书签
+        /// Only process uncategorized bookmarks
         #[arg(long)]
         uncategorized_only: bool,
         
-        /// 显示规则匹配统计
+        /// Show rule matching statistics
         #[arg(long)]
         show_stats: bool,
         
-        /// 预览模式 - 不实际修改
+        /// Dry run - preview without making changes
         #[arg(short, long)]
         dry_run: bool,
         
-        /// 详细输出
+        /// Verbose output
         #[arg(short, long)]
         verbose: bool,
     },
     
-    /// 📜 列出可用的分类规则
+    /// List available classification rules
     ListRules,
     
-    /// 🔄 同步浏览器历史记录 (双向增量同步)
+    /// Sync browsing history between hub browsers
     #[command(alias = "sh", alias = "history")]
     SyncHistory {
-        /// Hub浏览器 (逗号分隔, 默认: waterfox,brave-nightly)
+        /// Hub browsers (comma-separated, default: waterfox,brave-nightly)
         #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
         browsers: String,
         
-        /// 同步天数 (默认: 30天)
+        /// Number of days to sync (default: 30)
         #[arg(short = 'd', long, default_value = "30")]
         days: i32,
         
-        /// 预览模式 - 不实际修改
+        /// Dry run - preview without making changes
         #[arg(long)]
         dry_run: bool,
         
-        /// 详细输出
+        /// Verbose output
         #[arg(short, long)]
         verbose: bool,
     },
     
-    /// 🔍 分析书签 (NSFW检测)
+    /// Analyze bookmarks (NSFW detection, duplicates)
     #[command(alias = "a")]
     Analyze {
-        /// 目标浏览器 (逗号分隔, 默认: all)
+        /// Target browsers (comma-separated, default: all)
         #[arg(short = 'b', long)]
         browsers: Option<String>,
     },
     
-    /// 💾 创建主备份 (合并所有浏览器数据)
+    /// Create master backup (merge all browser data)
     MasterBackup {
-        /// 输出目录
+        /// Output directory
         #[arg(short = 'o', long, default_value = "~/Desktop/BookmarkBackup")]
         output: String,
         
-        /// 包含完整数据 (不只是唯一URL)
+        /// Include full data (not just unique URLs)
         #[arg(long)]
         include_full: bool,
     },
     
-    /// 🔄 恢复书签备份
+    /// Restore bookmarks from backup
     RestoreBackup {
-        /// 要恢复的浏览器 (如: waterfox)
+        /// Browser to restore (e.g., waterfox)
         #[arg(short = 'b', long)]
         browser: String,
         
-        /// 备份文件路径 (可选, 默认使用最新备份)
+        /// Backup file path (optional, uses latest if not specified)
         #[arg(short = 'f', long)]
         file: Option<String>,
     },
     
-    /// 🗑️ 清空浏览器书签 (调试用 - 谨慎使用!)
+    /// Clear all bookmarks from browsers (DEBUG ONLY - use with caution!)
     #[command(alias = "clear")]
     ClearBookmarks {
-        /// 目标浏览器 (逗号分隔)
+        /// Target browsers (comma-separated)
         #[arg(short = 'b', long)]
         browsers: String,
         
-        /// 跳过确认
+        /// Skip confirmation
         #[arg(short = 'y', long)]
         yes: bool,
         
-        /// 预览模式
+        /// Dry run - preview without making changes
         #[arg(short, long)]
         dry_run: bool,
     },
+}
+
+/// Print sync warning for operations that modify browser data
+fn print_sync_warning() {
+    warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    warn!("⚠️  WARNING: This operation modifies browser bookmark data!");
+    warn!("");
+    warn!("   If browser sync is enabled (Firefox Sync, Chrome Sync, iCloud, etc.),");
+    warn!("   changes may be overwritten or cause unexpected sync conflicts.");
+    warn!("");
+    warn!("   RECOMMENDED: Use 'export-html' instead and import manually.");
+    warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }
 
 #[tokio::main]
@@ -200,21 +216,24 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::List => {
-            info!("📋 检测浏览器...");
+            info!("Detecting browsers...");
             let engine = SyncEngine::new()?;
             engine.list_browsers()?;
         }
         
-        Commands::ExportHtml { output, browsers, merge, deduplicate, include_html, verbose } => {
-            info!("📤 导出书签到HTML文件");
+        Commands::ExportHtml { output, browsers, merge, deduplicate, include_html, clear_after, verbose } => {
+            info!("Exporting bookmarks to HTML");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            info!("📄 输出: {}", output);
-            info!("🌐 来源: {}", browsers);
-            if merge { info!("🔀 合并模式"); }
-            if deduplicate { info!("🧹 去重复"); }
+            info!("Output: {}", output);
+            info!("Source: {}", browsers);
+            if merge { info!("Mode: Merged (flat structure)"); }
+            if deduplicate { info!("Deduplicate: Yes"); }
+            if clear_after { 
+                warn!("Clear after: YES (will delete original bookmarks!)"); 
+            }
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             
-            let engine = SyncEngine::new()?;
+            let mut engine = SyncEngine::new()?;
             
             let mut extra_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
             if let Some(html_path) = &include_html {
@@ -222,14 +241,14 @@ async fn main() -> Result<()> {
                     html_path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
                 } else { html_path.clone() };
                 
-                info!("📥 导入HTML: {}", expanded);
+                info!("Importing HTML: {}", expanded);
                 match sync::import_bookmarks_from_html(&expanded) {
                     Ok(bookmarks) => {
                         let count = bookmarks.iter().map(|b| count_bookmark_tree(b)).sum::<usize>();
-                        info!("  ✅ {} 书签", count);
+                        info!("  Imported {} bookmarks", count);
                         extra_bookmarks = bookmarks;
                     }
-                    Err(e) => warn!("  ⚠️ 导入失败: {}", e),
+                    Err(e) => warn!("  Import failed: {}", e),
                 }
             }
             
@@ -237,12 +256,29 @@ async fn main() -> Result<()> {
                 Some(&browsers), &output, merge, deduplicate, verbose, extra_bookmarks
             ).await?;
             
-            info!("\n🎉 导出完成! {} 书签", count);
-            info!("💡 请手动导入到目标浏览器，避免被同步覆盖");
+            info!("");
+            info!("Export complete! {} bookmarks", count);
+            
+            // Clear bookmarks after export if requested
+            if clear_after {
+                warn!("");
+                warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                warn!("⚠️  WARNING: Clearing bookmarks from source browsers!");
+                warn!("");
+                warn!("   If browser sync is enabled (Firefox Sync, Chrome Sync, iCloud, etc.),");
+                warn!("   deletion may be ineffective or cause unpredictable bookmark versions.");
+                warn!("   Consider disabling sync before using this option.");
+                warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                
+                engine.clear_bookmarks(&browsers, false).await?;
+                info!("✅ Source bookmarks cleared. Import the HTML file to restore.");
+            } else {
+                info!("Import this file manually to avoid sync conflicts.");
+            }
         }
         
         Commands::Validate { detailed } => {
-            info!("🔍 验证书签...");
+            info!("Validating bookmarks...");
             let engine = SyncEngine::new()?;
             let report = engine.validate(detailed)?;
             println!("{}", report);
@@ -250,25 +286,33 @@ async fn main() -> Result<()> {
         
         Commands::Cleanup { browsers, remove_duplicates, remove_empty_folders, dry_run, verbose } => {
             if !remove_duplicates && !remove_empty_folders {
-                eprintln!("⚠️ 请指定清理选项: --remove-duplicates 或 --remove-empty-folders");
+                eprintln!("Error: Specify --remove-duplicates or --remove-empty-folders");
                 std::process::exit(1);
             }
             
-            info!("🧹 清理书签");
+            if !dry_run {
+                print_sync_warning();
+            }
+            
+            info!("Cleaning up bookmarks...");
             let mut engine = SyncEngine::new()?;
             engine.cleanup_bookmarks(
                 browsers.as_deref(), remove_duplicates, remove_empty_folders, dry_run, verbose
             ).await?;
-            info!("✅ 清理完成!");
+            info!("Cleanup complete!");
         }
         
         Commands::SmartOrganize { browsers, rules_file, uncategorized_only, show_stats, dry_run, verbose } => {
-            info!("🧠 智能分类书签");
+            if !dry_run {
+                print_sync_warning();
+            }
+            
+            info!("Smart organizing bookmarks...");
             let mut engine = SyncEngine::new()?;
             engine.smart_organize(
                 browsers.as_deref(), rules_file.as_deref(), uncategorized_only, show_stats, dry_run, verbose
             ).await?;
-            info!("✅ 分类完成!");
+            info!("Organization complete!");
         }
         
         Commands::ListRules => {
@@ -276,57 +320,61 @@ async fn main() -> Result<()> {
         }
         
         Commands::SyncHistory { browsers, days, dry_run, verbose } => {
-            info!("🔄 同步浏览器历史记录");
+            info!("Syncing browser history");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            info!("🌐 Hub浏览器: {}", browsers);
-            info!("📅 同步范围: 最近{}天", days);
-            if dry_run { info!("🏃 预览模式"); }
+            info!("Hub browsers: {}", browsers);
+            info!("Sync range: Last {} days", days);
+            if dry_run { info!("Mode: Dry run"); }
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             
             let mut engine = SyncEngine::new()?;
             engine.sync_history(Some(days), dry_run, verbose).await?;
-            info!("✅ 历史记录同步完成!");
+            info!("History sync complete!");
         }
         
         Commands::Analyze { browsers } => {
-            info!("🔍 分析书签...");
+            info!("Analyzing bookmarks...");
             let engine = SyncEngine::new()?;
             engine.analyze_bookmarks(browsers.as_deref()).await?;
         }
         
         Commands::MasterBackup { output, include_full } => {
-            info!("💾 创建主备份...");
+            info!("Creating master backup...");
             sync::create_master_backup(&output, include_full).await?;
-            info!("✅ 备份完成!");
+            info!("Backup complete!");
         }
         
         Commands::RestoreBackup { browser, file } => {
-            info!("🔄 恢复备份...");
+            print_sync_warning();
+            info!("Restoring backup...");
             let mut engine = SyncEngine::new()?;
             engine.restore_backup(&browser, file.as_deref()).await?;
-            info!("✅ 恢复完成!");
+            info!("Restore complete!");
         }
         
         Commands::ClearBookmarks { browsers, yes, dry_run } => {
-            info!("🗑️ 清空浏览器书签");
-            info!("⚠️ 警告: 此操作将清空所有书签!");
-            info!("🎯 目标: {}", browsers);
+            warn!("WARNING: This will clear ALL bookmarks!");
+            warn!("Target: {}", browsers);
+            
+            if !dry_run {
+                print_sync_warning();
+            }
             
             if !yes && !dry_run {
-                print!("确认? (y/N): ");
+                print!("Confirm? (y/N): ");
                 use std::io::{self, Write};
                 io::stdout().flush().ok();
                 let mut input = String::new();
                 io::stdin().read_line(&mut input).ok();
                 if !input.trim().eq_ignore_ascii_case("y") {
-                    info!("❌ 已取消");
+                    info!("Cancelled");
                     return Ok(());
                 }
             }
             
             let mut engine = SyncEngine::new()?;
             engine.clear_bookmarks(&browsers, dry_run).await?;
-            info!("✅ 完成!");
+            info!("Clear complete!");
         }
     }
 

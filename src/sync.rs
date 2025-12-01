@@ -1808,7 +1808,7 @@ impl SyncEngine {
                             };
                             bookmarks.push(new_folder);
                         }
-                        info!("  📁 Moved {} homepage bookmarks to root \"网站主页\" folder", moved_count);
+                        info!("  📁 Moved {} homepage bookmarks to root \"Homepages\" folder", moved_count);
                     } else {
                         info!("  ✨ No homepages found to organize");
                     }
@@ -3868,7 +3868,7 @@ impl SyncEngine {
                             };
                             bookmarks.push(new_folder);
                         }
-                        info!("  📁 未分类 : {} bookmarks (preserved)", unclassified.len());
+                        info!("  📁 Uncategorized : {} bookmarks (preserved)", unclassified.len());
                     }
                     
                     // Show statistics if requested
@@ -4452,10 +4452,10 @@ impl SyncEngine {
         verbose: bool,
     ) -> Result<()> {
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        info!("📖 Phase 1: 读取所有浏览器数据");
+        info!("📖 Phase 1: Reading all browser data");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
-        // 收集所有书签
+        // Collect all bookmarks
         let mut all_bookmarks: HashMap<BrowserType, Vec<Bookmark>> = HashMap::new();
         let mut all_history: HashMap<BrowserType, Vec<HistoryItem>> = HashMap::new();
         let mut all_reading_lists: HashMap<BrowserType, Vec<ReadingListItem>> = HashMap::new();
@@ -4463,48 +4463,48 @@ impl SyncEngine {
         for adapter in &self.adapters {
             let browser_name = adapter.browser_type().name();
             
-            // 读取书签
+            // Read bookmarks
             if let Ok(bookmarks) = adapter.read_bookmarks() {
                 let count = Self::count_all_bookmarks(&bookmarks);
                 if count > 0 {
-                    info!("  {} : {} 书签", browser_name, count);
+                    info!("  {} : {} bookmarks", browser_name, count);
                     all_bookmarks.insert(adapter.browser_type(), bookmarks);
                 }
             }
             
-            // 读取历史
+            // Read history
             if adapter.supports_history() {
                 if let Ok(history) = adapter.read_history(None) {
                     if !history.is_empty() {
-                        info!("  {} : {} 历史记录", browser_name, history.len());
+                        info!("  {} : {} history items", browser_name, history.len());
                         all_history.insert(adapter.browser_type(), history);
                     }
                 }
             }
             
-            // 读取阅读列表
+            // Read reading list
             if adapter.supports_reading_list() {
                 if let Ok(reading_list) = adapter.read_reading_list() {
                     if !reading_list.is_empty() {
-                        info!("  {} : {} 阅读列表", browser_name, reading_list.len());
+                        info!("  {} : {} reading list items", browser_name, reading_list.len());
                         all_reading_lists.insert(adapter.browser_type(), reading_list);
                     }
                 }
             }
         }
         
-        // 合并数据
+        // Merge data
         info!("");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        info!("🔄 Phase 2: 合并和去重");
+        info!("🔄 Phase 2: Merging and deduplicating");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
         let mut merged_bookmarks = self.merge_bookmarks(&all_bookmarks, verbose)?;
         let merged_history = self.merge_history(&all_history, verbose)?;
         let merged_reading_list = self.merge_reading_lists(&all_reading_lists, verbose)?;
         
-        // 🔧 彻底清理空文件夹（多次迭代直到没有空文件夹）
-        info!("🧹 Phase 2.5: 彻底清理空文件夹");
+        // Thoroughly clean empty folders (iterate until none remain)
+        info!("🧹 Phase 2.5: Cleaning empty folders");
         let mut total_empty_removed = 0;
         loop {
             let removed = Self::cleanup_empty_folders(&mut merged_bookmarks);
@@ -4514,137 +4514,137 @@ impl SyncEngine {
             total_empty_removed += removed;
         }
         if total_empty_removed > 0 {
-            info!("   移除 {} 个空文件夹", total_empty_removed);
+            info!("   Removed {} empty folders", total_empty_removed);
         }
         
         let bookmark_count = Self::count_all_bookmarks(&merged_bookmarks);
         let folder_count = Self::count_all_folders(&merged_bookmarks);
         
-        info!("  📚 合并后书签: {} URLs, {} 文件夹", bookmark_count, folder_count);
-        info!("  📜 合并后历史: {} 条", merged_history.len());
-        info!("  📖 合并后阅读列表: {} 条", merged_reading_list.len());
+        info!("  📚 Merged bookmarks: {} URLs, {} folders", bookmark_count, folder_count);
+        info!("  📜 Merged history: {} items", merged_history.len());
+        info!("  📖 Merged reading list: {} items", merged_reading_list.len());
         
         if dry_run {
             info!("");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            info!("🏃 Dry Run 模式 - 以下是将要执行的操作：");
+            info!("🏃 Dry Run Mode - Actions that would be performed:");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            info!("  ✅ 写入 {} 书签到 Safari", bookmark_count);
-            info!("  ✅ 写入 {} 历史记录到 Safari", merged_history.len());
-            info!("  ✅ 写入 {} 阅读列表到 Safari", merged_reading_list.len());
+            info!("  ✅ Write {} bookmarks to Safari", bookmark_count);
+            info!("  ✅ Write {} history items to Safari", merged_history.len());
+            info!("  ✅ Write {} reading list items to Safari", merged_reading_list.len());
             if !keep_source {
-                info!("  🗑️  清空其他浏览器的书签、历史、阅读列表");
+                info!("  🗑️  Clear bookmarks, history, reading list from other browsers");
             }
             return Ok(());
         }
         
-        // 写入Safari
+        // Write to Safari
         info!("");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        info!("💾 Phase 3: 写入Safari");
+        info!("💾 Phase 3: Writing to Safari");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
         for adapter in &self.adapters {
             if adapter.browser_type() == BrowserType::Safari {
-                // 备份
+                // Backup
                 if let Ok(backup_path) = adapter.backup_bookmarks() {
-                    info!("  💾 Safari备份: {:?}", backup_path);
+                    info!("  💾 Safari backup: {:?}", backup_path);
                 }
                 
-                // 写入书签
+                // Write bookmarks
                 if let Err(e) = adapter.write_bookmarks(&merged_bookmarks) {
-                    warn!("  ⚠️  写入Safari书签失败: {}", e);
+                    warn!("  ⚠️  Failed to write Safari bookmarks: {}", e);
                 } else {
-                    info!("  ✅ 写入 {} 书签到Safari", bookmark_count);
+                    info!("  ✅ Wrote {} bookmarks to Safari", bookmark_count);
                 }
                 
-                // 写入阅读列表
+                // Write reading list
                 if adapter.supports_reading_list() {
                     if let Err(e) = adapter.write_reading_list(&merged_reading_list) {
-                        warn!("  ⚠️  写入Safari阅读列表失败: {}", e);
+                        warn!("  ⚠️  Failed to write Safari reading list: {}", e);
                     } else {
-                        info!("  ✅ 写入 {} 阅读列表到Safari", merged_reading_list.len());
+                        info!("  ✅ Wrote {} reading list items to Safari", merged_reading_list.len());
                     }
                 }
                 
-                // Safari不支持直接写入历史（系统限制）
-                info!("  ℹ️  Safari历史记录由系统管理，无法直接写入");
+                // Safari history is managed by the system
+                info!("  ℹ️  Safari history is managed by the system, cannot write directly");
                 
                 break;
             }
         }
         
-        // 清空其他浏览器
+        // Clear other browsers
         if !keep_source {
             info!("");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            info!("🗑️  Phase 4: 清空其他浏览器");
+            info!("🗑️  Phase 4: Clearing other browsers");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             
             for adapter in &self.adapters {
                 if adapter.browser_type() == BrowserType::Safari {
-                    continue; // 跳过Safari
+                    continue; // Skip Safari
                 }
                 
                 let browser_name = adapter.browser_type().name();
                 
-                // 备份
+                // Backup
                 if let Ok(backup_path) = adapter.backup_bookmarks() {
-                    info!("  💾 {}备份: {:?}", browser_name, backup_path);
+                    info!("  💾 {} backup: {:?}", browser_name, backup_path);
                 }
                 
-                // 清空书签（写入空列表）
+                // Clear bookmarks (write empty list)
                 let empty_bookmarks: Vec<Bookmark> = vec![];
                 if let Err(e) = adapter.write_bookmarks(&empty_bookmarks) {
-                    warn!("  ⚠️  清空{}书签失败: {}", browser_name, e);
+                    warn!("  ⚠️  Failed to clear {} bookmarks: {}", browser_name, e);
                 } else {
-                    info!("  ✅ 已清空{}书签", browser_name);
+                    info!("  ✅ Cleared {} bookmarks", browser_name);
                 }
                 
-                // 清空历史
+                // Clear history
                 if adapter.supports_history() {
                     let empty_history: Vec<HistoryItem> = vec![];
                     if let Err(e) = adapter.write_history(&empty_history) {
-                        warn!("  ⚠️  清空{}历史失败: {}", browser_name, e);
+                        warn!("  ⚠️  Failed to clear {} history: {}", browser_name, e);
                     } else {
-                        info!("  ✅ 已清空{}历史", browser_name);
+                        info!("  ✅ Cleared {} history", browser_name);
                     }
                 }
                 
-                // 清空阅读列表
+                // Clear reading list
                 if adapter.supports_reading_list() {
                     let empty_reading_list: Vec<ReadingListItem> = vec![];
                     if let Err(e) = adapter.write_reading_list(&empty_reading_list) {
-                        warn!("  ⚠️  清空{}阅读列表失败: {}", browser_name, e);
+                        warn!("  ⚠️  Failed to clear {} reading list: {}", browser_name, e);
                     } else {
-                        info!("  ✅ 已清空{}阅读列表", browser_name);
+                        info!("  ✅ Cleared {} reading list", browser_name);
                     }
                 }
             }
         }
         
-        // 验证
+        // Verify
         info!("");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        info!("🔍 Phase 5: 验证");
+        info!("🔍 Phase 5: Verification");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
         for adapter in &self.adapters {
             if adapter.browser_type() == BrowserType::Safari {
                 if let Ok(bookmarks) = adapter.read_bookmarks() {
                     let count = Self::count_all_bookmarks(&bookmarks);
-                    info!("  Safari: {} 书签", count);
+                    info!("  Safari: {} bookmarks", count);
                 }
             }
         }
         
         info!("");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        info!("📊 迁移完成！");
+        info!("📊 Migration complete!");
         info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        info!("  Safari现在包含所有浏览器的数据");
+        info!("  Safari now contains all browser data");
         if !keep_source {
-            info!("  其他浏览器的数据已清空（备份已保存）");
+            info!("  Other browser data has been cleared (backups saved)");
         }
         
         Ok(())
@@ -4656,7 +4656,7 @@ impl SyncEngine {
     pub async fn analyze_bookmarks(&self, browser_names: Option<&str>) -> Result<()> {
         use crate::cleanup::detect_anomalies;
         
-        info!("🔍 分析书签异常...");
+        info!("🔍 Analyzing bookmark anomalies...");
         
         // Determine target browsers
         let target_adapters: Vec<_> = if let Some(names) = browser_names {
@@ -4683,16 +4683,16 @@ impl SyncEngine {
                     let total = Self::count_all_bookmarks(&bookmarks);
                     let folders = Self::count_all_folders(&bookmarks);
                     
-                    println!("\n📊 {} 书签分析", browser_name);
+                    println!("\n📊 {} Bookmark Analysis", browser_name);
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                    println!("  总书签数: {}", total);
-                    println!("  文件夹数: {}", folders);
+                    println!("  Total bookmarks: {}", total);
+                    println!("  Total folders: {}", folders);
                     
                     let report = detect_anomalies(&bookmarks);
                     report.print_summary();
                 }
                 Err(e) => {
-                    warn!("⚠️  无法读取 {} 书签: {}", browser_name, e);
+                    warn!("⚠️  Cannot read {} bookmarks: {}", browser_name, e);
                 }
             }
         }
@@ -4725,7 +4725,7 @@ impl SyncEngine {
         verbose: bool,
         extra_bookmarks: Vec<Bookmark>,
     ) -> Result<usize> {
-        info!("📤 导出书签到HTML文件...");
+        info!("📤 Exporting bookmarks to HTML...");
         
         // Determine target browsers
         let target_adapters: Vec<_> = if let Some(names) = browser_names {
@@ -4756,10 +4756,10 @@ impl SyncEngine {
         };
         
         if target_adapters.is_empty() {
-            anyhow::bail!("未找到指定的浏览器");
+            anyhow::bail!("No matching browsers found");
         }
         
-        info!("🎯 目标浏览器:");
+        info!("🎯 Target browsers:");
         for adapter in &target_adapters {
             info!("  - {}", adapter.browser_type().name());
         }
@@ -4771,8 +4771,8 @@ impl SyncEngine {
         // Add extra bookmarks first (from HTML imports etc.)
         if !extra_bookmarks.is_empty() {
             let extra_count = Self::count_all_bookmarks(&extra_bookmarks);
-            info!("  📥 额外导入: {} 书签", extra_count);
-            browser_stats.push(("HTML导入".to_string(), extra_count));
+            info!("  📥 HTML import: {} bookmarks", extra_count);
+            browser_stats.push(("HTML Import".to_string(), extra_count));
             all_bookmarks.extend(extra_bookmarks);
         }
         
@@ -4781,7 +4781,7 @@ impl SyncEngine {
             match adapter.read_bookmarks() {
                 Ok(bookmarks) => {
                     let count = Self::count_all_bookmarks(&bookmarks);
-                    info!("  ✅ {} : {} 书签", browser_name, count);
+                    info!("  ✅ {} : {} bookmarks", browser_name, count);
                     browser_stats.push((browser_name.to_string(), count));
                     
                     if merge {
@@ -4802,22 +4802,22 @@ impl SyncEngine {
                     }
                 }
                 Err(e) => {
-                    warn!("  ⚠️  {} : 读取失败 - {}", browser_name, e);
+                    warn!("  ⚠️  {} : read failed - {}", browser_name, e);
                 }
             }
         }
         
         let before_dedup = Self::count_all_bookmarks(&all_bookmarks);
-        info!("\n📊 收集完成: {} 书签", before_dedup);
+        info!("\n📊 Collection complete: {} bookmarks", before_dedup);
         
         // Deduplicate if requested
         if deduplicate {
-            info!("🧹 去重复中...");
+            info!("🧹 Deduplicating...");
             Self::deduplicate_bookmarks_global(&mut all_bookmarks);
             let after_dedup = Self::count_all_bookmarks(&all_bookmarks);
             let removed = before_dedup.saturating_sub(after_dedup);
             if removed > 0 {
-                info!("  ✅ 移除 {} 重复书签", removed);
+                info!("  ✅ Removed {} duplicate bookmarks", removed);
             }
         }
         
@@ -4833,12 +4833,12 @@ impl SyncEngine {
         
         export_bookmarks_to_html(&all_bookmarks, &output)?;
         
-        info!("\n✅ 导出完成!");
-        info!("   📄 文件: {}", output);
-        info!("   📊 书签数: {}", final_count);
+        info!("\n✅ Export complete!");
+        info!("   📄 File: {}", output);
+        info!("   📊 Bookmarks: {}", final_count);
         
         if verbose {
-            info!("\n📊 来源统计:");
+            info!("\n📊 Source statistics:");
             for (browser, count) in &browser_stats {
                 info!("   {} : {}", browser, count);
             }
@@ -4853,7 +4853,7 @@ impl SyncEngine {
         browser_names: &str,
         dry_run: bool,
     ) -> Result<()> {
-        info!("🗑️  清空浏览器书签...");
+        info!("🗑️  Clearing browser bookmarks...");
         
         let browser_list: Vec<String> = browser_names
             .split(',')
@@ -4863,39 +4863,39 @@ impl SyncEngine {
         let target_adapters: Vec<_> = self.adapters.iter()
             .filter(|a| {
                 let name = a.browser_type().name().to_lowercase();
-                browser_list.iter().any(|b| name.contains(b))
+                browser_list.iter().any(|b| name.contains(b) || b == "all")
             })
             .collect();
         
         if target_adapters.is_empty() {
-            anyhow::bail!("未找到指定的浏览器");
+            anyhow::bail!("No matching browsers found");
         }
         
         for adapter in &target_adapters {
             let browser_name = adapter.browser_type().name();
             
             if dry_run {
-                info!("  🏃 {} : 将被清空 (dry-run)", browser_name);
+                info!("  🏃 {} : will be cleared (dry-run)", browser_name);
                 continue;
             }
             
             // Backup first
             match adapter.backup_bookmarks() {
                 Ok(backup_path) => {
-                    info!("  💾 {} : 备份已创建 {:?}", browser_name, backup_path);
+                    info!("  💾 {} : backup created {:?}", browser_name, backup_path);
                 }
                 Err(e) => {
-                    warn!("  ⚠️  {} : 备份失败 - {}", browser_name, e);
+                    warn!("  ⚠️  {} : backup failed - {}", browser_name, e);
                 }
             }
             
             // Write empty bookmarks
             match adapter.write_bookmarks(&[]) {
                 Ok(_) => {
-                    info!("  ✅ {} : 已清空", browser_name);
+                    info!("  ✅ {} : cleared", browser_name);
                 }
                 Err(e) => {
-                    error!("  ❌ {} : 清空失败 - {}", browser_name, e);
+                    error!("  ❌ {} : clear failed - {}", browser_name, e);
                 }
             }
         }
@@ -4909,14 +4909,14 @@ impl SyncEngine {
         browser_name: &str,
         backup_file: Option<&str>,
     ) -> Result<()> {
-        info!("🔄 恢复书签备份...");
+        info!("🔄 Restoring bookmark backup...");
         
         let browser_lower = browser_name.to_lowercase();
         
         // Find the adapter
         let adapter = self.adapters.iter()
             .find(|a| a.browser_type().name().to_lowercase().contains(&browser_lower))
-            .ok_or_else(|| anyhow::anyhow!("未找到浏览器: {}", browser_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Browser not found: {}", browser_name))?;
         
         let browser_type_name = adapter.browser_type().name();
         

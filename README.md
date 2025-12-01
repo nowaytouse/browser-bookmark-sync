@@ -82,8 +82,20 @@ browser-bookmark-sync export-html \
 -d, --deduplicate        Remove duplicate bookmarks
     --merge              Merge into flat structure (no browser folders)
     --include-html <FILE> Also import from existing HTML backup
+    --clear-after        Clear bookmarks from source browsers after export
 -v, --verbose            Show detailed output
 ```
+
+### Clear After Export
+
+The `--clear-after` option will delete all bookmarks from source browsers after successful export:
+
+```bash
+# Export and clear source bookmarks
+browser-bookmark-sync export-html -d --merge --clear-after
+```
+
+⚠️ **WARNING**: If browser sync is enabled (Firefox Sync, Chrome Sync, iCloud, etc.), deletion may be ineffective or cause unpredictable bookmark versions. Consider disabling sync before using this option.
 
 ## 🧠 Smart Organization
 

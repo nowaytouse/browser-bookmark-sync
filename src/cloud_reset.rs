@@ -64,29 +64,29 @@ pub fn clear_local_bookmarks(db_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 等待用户确认云端已同步
+/// Wait for user to confirm cloud sync is complete
 pub fn wait_for_cloud_sync() -> Result<()> {
     info!("");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📤 请执行以下步骤：");
+    info!("📤 Please follow these steps:");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     info!("");
-    info!("   1. 启动 Waterfox");
-    info!("   2. 等待同步图标旋转并停止（约30秒）");
-    info!("   3. 确认书签栏已清空");
-    info!("   4. 关闭 Waterfox");
+    info!("   1. Launch Waterfox");
+    info!("   2. Wait for sync icon to spin and stop (~30 seconds)");
+    info!("   3. Confirm bookmark bar is empty");
+    info!("   4. Close Waterfox");
     info!("");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     info!("");
     
-    print!("完成后按 Enter 继续...");
+    print!("Press Enter when done...");
     use std::io::{self, Write};
     io::stdout().flush().ok();
     
     let mut input = String::new();
     io::stdin().read_line(&mut input).ok();
     
-    info!("✅ 继续执行...");
+    info!("✅ Continuing...");
     
     Ok(())
 }
