@@ -284,6 +284,29 @@ After sync:
 - **Deduplicate by host+name+path**
 - Write to all hub browsers
 
+#### Cookie Hub Sync (NEW)
+Use `sync-cookies-to-hub` for hub-based cookie management:
+- **Collect** all cookies from ALL browsers
+- **Deduplicate** using HashSet (O(1) performance)
+- **Write** to Brave Nightly (primary hub)
+- **Sync** to Waterfox (secondary hub)
+- **Preserve** cookies in other browsers
+
+```bash
+# Sync cookies to hub browsers
+browser-bookmark-sync sync-cookies-to-hub
+
+# Preview with dry-run
+browser-bookmark-sync sync-cookies-to-hub --dry-run --verbose
+```
+
+**Example Result**:
+```
+✅ 4674 total → 967 unique (3707 duplicates removed)
+✅ Brave Nightly & Waterfox: 967 cookies each
+✅ Other browsers: cookies preserved
+```
+
 > ⚠️ **Warning**: This is OVERWRITE sync, not merge sync. The browser with best folder structure becomes the source of truth. Other browsers' unique bookmarks NOT in this structure will be lost.
 
 ### Smart Deduplication

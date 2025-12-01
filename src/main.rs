@@ -106,8 +106,20 @@ enum Commands {
         verbose: bool,
     },
     
+    
     /// Synchronize cookies across browsers
     SyncCookies {
+        /// Dry run - show what would be synced without making changes
+        #[arg(short, long)]
+        dry_run: bool,
+        
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    
+    /// Sync cookies to hub browsers (collect all to Brave Nightly, then sync to Waterfox)
+    SyncCookiesToHub {
         /// Dry run - show what would be synced without making changes
         #[arg(short, long)]
         dry_run: bool,
@@ -386,6 +398,13 @@ async fn main() -> Result<()> {
             let mut engine = SyncEngine::new()?;
             engine.sync_cookies(dry_run, verbose).await?;
             info!("✅ Cookies synchronization complete!");
+        }
+        
+        Commands::SyncCookiesToHub { dry_run, verbose } => {
+            info!("🍪 Starting cookies sync to hub browsers...");
+            let mut engine = SyncEngine::new()?;
+            engine.sync_cookies_to_hub(dry_run, verbose).await?;
+            info!("✅ Cookies hub synchronization complete!");
         }
         
         Commands::SetHubs { browsers, no_history, no_cookies, clear_others, dry_run, verbose } => {

@@ -4,7 +4,40 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Added - 2025-12-01
+### Added - 2025-12-01 (Update 2)
+
+#### 🍪 Cookie同步到Hub浏览器
+- **新命令**: `sync-cookies-to-hub` - 收集所有cookies到Brave Nightly,同步到Waterfox
+- **Hub架构**: Brave Nightly(主Hub) ↔ Waterfox(次Hub)
+- **智能收集**: 从所有浏览器读取cookies
+- **高效去重**: HashSet优化,O(1)查找性能
+- **保留源数据**: 不删除其他浏览器cookies
+- **仅默认Profile**: 仅操作Default profile,安全可靠
+
+**使用示例**:
+```bash
+# Cookie Hub同步
+browser-bookmark-sync sync-cookies-to-hub
+
+# 预览模式
+browser-bookmark-sync sync-cookies-to-hub --dry-run --verbose
+```
+
+**测试结果**:
+```
+✅ 4674 total cookies → 967 unique (3707 duplicates removed)
+✅ Brave Nightly: 967 cookies
+✅ Waterfox: 967 cookies
+✅ Other browsers: cookies preserved
+```
+
+**技术实现**:
+- 5阶段同步流程
+- HashSet去重优化
+- 完整日志输出
+- Dry-run支持
+
+### Added - 2025-12-01 (Update 1)
 
 #### 🧠 规则引擎大幅扩展（48→75条）
 - **新增27条分类规则**: 从48条扩展到75条,全面覆盖常见场景

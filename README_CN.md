@@ -95,9 +95,34 @@ browser-bookmark-sync cleanup --remove-duplicates
 # 移除空文件夹
 browser-bookmark-sync cleanup --remove-empty-folders
 
+# 同步Cookie到Hub浏览器
+browser-bookmark-sync sync-cookies-to-hub
+
+# 预览Cookie同步
+browser-bookmark-sync sync-cookies-to-hub --dry-run --verbose
+
 # 完整清理
 browser-bookmark-sync cleanup --remove-duplicates --remove-empty-folders
 ```
+
+### Cookie同步到Hub
+
+新增功能:将所有浏览器cookies收集到Brave Nightly,再同步到Waterfox
+
+```bash
+# Cookie Hub同步 (Brave Nightly ↔ Waterfox)
+browser-bookmark-sync sync-cookies-to-hub
+
+# 预览同步
+browser-bookmark-sync sync-cookies-to-hub --dry-run
+```
+
+**特点**:
+- 📥 从所有浏览器收集cookies
+- 🔄 自动去重(HashSet优化)
+- 🎯 写入Brave Nightly(主Hub)
+- ↔️ 同步到Waterfox(次Hub)
+- ✅ 保留其他浏览器cookies
 
 ## 🧠 规则引擎
 

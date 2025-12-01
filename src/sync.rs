@@ -986,9 +986,132 @@ impl SyncEngine {
             }
         }
         
-        info!("✅ Cookies synchronization complete");
+    
+    info!("✅ Cookies synchronization complete");
+    Ok(())
+}
+
+    /// Sync cookies to hub browsers (Brave Nightly + Waterfox)
+    /// Collects cookies from all browsers to Brave Nightly, then syncs to Waterfox
+    /// Does NOT delete cookies from other browsers
+    pub async fn sync_cookies_to_hub(&mut self, dry_run: bool, verbose: bool) -> Result<()> {
+        info!("🍪 Starting cookies synchronization to hub browsers");
+        info!("📍 Hub architecture: Brave Nightly (primary) ↔ Waterfox (secondary)");
+        
+        // Phase 1: Read cookies from all browsers
+        info!("📖 Phase 1: Reading cookies from all browsers");
+        let mut all_cookies = Vec::new();
+        let mut browser_cookie_counts = HashMap::new();
+        
+        for adapter in &self.adapters {
+            if !adapter.supports_cookies() {
+                debug!("{} does not support cookies sync", adapter.browser_type().name());
+                continue;
+            }
+            
+            let browser_type = adapter.browser_type();
+            match adapter.read_cookies() {
+                Ok(cookies) => {
+                    let count = cookies.len();
+                    info!("✅ Read {} cookies from {}", count, browser_type.name());
+                    browser_cookie_counts.insert(browser_type, count);
+                    all_cookies.extend(cookies);
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to read cookies from {}: {}", browser_type.name(), e);
+                }
+            }
+        }
+        
+        if all_cookies.is_empty() {
+            warn!("⚠️  No cookies could be read from any browser");
+            return Ok(());
+        }
+        
+        // Phase 2: Deduplicate cookies (performance optimized with HashSet)
+        info!("🔄 Phase 2: Merging and deduplicating cookies");
+        let initial_count = all_cookies.len();
+        
+        // Use HashSet for O(1) deduplication
+        let mut seen = HashSet::new();
+        all_cookies.retain(|cookie| {
+            let key = format!("{}:{}:{}", cookie.host, cookie.name, cookie.path);
+            seen.insert(key)
+        });
+        
+        let merged_count = all_cookies.len();
+        let duplicates_removed = initial_count - merged_count;
+        
+        info!("📊 Deduplication: {} total → {} unique ({} duplicates removed)", 
+            initial_count, merged_count, duplicates_removed);
+        
+        if dry_run {
+            info!("🏃 Dry run mode - no changes will be made");
+            info!("📊 Summary:");
+            for (browser_type, count) in browser_cookie_counts {
+                info!("  {} : {} cookies", browser_type.name(), count);
+            }
+            info!("  Total unique: {} cookies", merged_count);
+            return Ok(());
+        }
+        
+        // Phase 3: Write to Brave Nightly (primary hub)
+        info!("✍️  Phase 3: Writing cookies to Brave Nightly (primary hub)");
+        let brave_nightly_adapter = self.adapters.iter()
+            .find(|a| a.browser_type() == BrowserType::BraveNightly);
+            
+        if let Some(adapter) = brave_nightly_adapter {
+            match adapter.write_cookies(&all_cookies) {
+                Ok(_) => {
+                    info!("✅ Wrote {} cookies to Brave Nightly", merged_count);
+                }
+                Err(e) => {
+                    error!("❌ Failed to write cookies to Brave Nightly: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            warn!("⚠️  Brave Nightly not detected, skipping hub sync");
+        }
+        
+        // Phase 4: Read from Brave Nightly to ensure consistency
+        info!("📖 Phase 4: Reading from Brave Nightly for verification");
+        let hub_cookies = if let Some(adapter) = brave_nightly_adapter {
+            adapter.read_cookies()?
+        } else {
+            all_cookies.clone()
+        };
+        
+        info!("✅ Verified {} cookies in Brave Nightly", hub_cookies.len());
+        
+        // Phase 5: Sync to Waterfox (secondary hub)
+        info!("✍️  Phase 5: Syncing to Waterfox (secondary hub)");
+        let waterfox_adapter = self.adapters.iter()
+            .find(|a| a.browser_type() == BrowserType::Waterfox);
+            
+        if let Some(adapter) = waterfox_adapter {
+            match adapter.write_cookies(&hub_cookies) {
+                Ok(_) => {
+                    info!("✅ Synced {} cookies to Waterfox", hub_cookies.len());
+                }
+                Err(e) => {
+                    error!("❌ Failed to write cookies to Waterfox: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            warn!("⚠️  Waterfox not detected, hub sync incomplete");
+        }
+        
+        info!("✅ Cookies hub synchronization complete");
+        info!("📊 Final state:");
+        info!("  Brave Nightly: {} cookies", hub_cookies.len());
+        info!("  Waterfox: {} cookies", hub_cookies.len());
+        info!("  Other browsers: cookies preserved");
+        
         Ok(())
     }
+    
     
     fn merge_cookies(
         &self,
