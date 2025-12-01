@@ -43,6 +43,63 @@ browser-bookmark-sync sync --auto-close-browsers
 browser-bookmark-sync sync --auto-close-browsers --dry-run
 ```
 
+### Added - 2025-12-01 (Update 4)
+
+#### 🔄 4种同步模式 (全面改进同步逻辑)
+
+**全新同步模式系统**:
+1. **双向增量同步** (`bidirectional-incremental` / `bi-inc`)
+   - 检测所有hub浏览器的变更
+   - 双向智能合并
+   - 冲突解决(最新时间戳优先)
+   - 状态持久化(~/.browser-sync-state.json)
+
+2. **双向全量同步** (`bidirectional-full` / `bi-full`)
+   - 读取所有hub浏览器数据
+   - Base & Merge策略(结构最优先)
+   - 全量覆盖同步
+
+3. **指定浏览器增量同步** (`specified-incremental` / `spec-inc`)
+   - 仅对指定浏览器检测变更
+   - 不影响其他浏览器
+   - 增量合并
+
+4. **指定浏览器全量同步** (`specified-full` / `spec-full`)
+   - 仅对指定浏览器全量同步
+   - 不清空其他浏览器
+   - 精确控制同步范围
+
+**兼容性**: 保留旧命令`incremental`/`full`作为别名
+
+**使用示例**:
+```bash
+# 双向增量(默认,推荐)
+browser-bookmark-sync sync
+browser-bookmark-sync sync --mode bi-inc
+
+# 双向全量(原Base & Merge)
+browser-bookmark-sync sync --mode bi-full
+
+# 仅同步Safari(增量)
+browser-bookmark-sync sync -b safari --mode spec-inc
+
+# 仅同步Safari(全量)
+browser-bookmark-sync sync -b safari --mode spec-full
+
+# 自动关闭浏览器后双向全量同步
+browser-bookmark-sync sync --mode bi-full --auto-close-browsers
+```
+
+#### 🏗️ 增量同步基础框架
+- **新增模块**: `incremental_sync.rs`
+- **功能**:
+  - `SyncState`: 同步状态管理
+  - `detect_changes()`: 变更检测(Added/Modified/Deleted)
+  - `merge_changes()`: 冲突解决
+  - 状态持久化到`~/.browser-sync-state.json`
+
+**状态**: 基础框架完成,完整增量逻辑开发中
+
 ### Added - 2025-12-01 (Update 2)
 
 #### 🍪 Cookie同步到Hub浏览器

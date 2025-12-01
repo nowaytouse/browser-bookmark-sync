@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::info;
+use tracing::{info, warn};
 
 mod browsers;
 mod sync;
@@ -11,9 +11,9 @@ mod firefox_sync_api;
 mod cloud_reset;
 mod cleanup;
 mod browser_utils;
-mod incremental_sync;
 
-use sync::{SyncEngine, SyncMode};
+
+use sync::SyncEngine;
 use scheduler::SchedulerConfig;
 
 #[derive(Parser)]
@@ -28,6 +28,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Full sync between hub browsers (bookmarks + history + cookies)
+    #[command(alias = "s")]
     Sync {
         /// Hub browsers (comma-separated). Use "all" for all browsers
         #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
@@ -74,6 +75,7 @@ enum Commands {
     },
     
     /// Validate bookmark integrity across all browsers
+    #[command(alias = "v", alias = "check")]
     Validate {
         /// Show detailed validation report
         #[arg(short, long)]
@@ -81,6 +83,7 @@ enum Commands {
     },
     
     /// List all detected browsers and their bookmark locations
+    #[command(alias = "l", alias = "ls")]
     List,
     
     /// Import bookmarks from Safari HTML export
@@ -186,6 +189,7 @@ enum Commands {
     },
     
     /// Clean up bookmarks (remove duplicates and/or empty folders)
+    #[command(alias = "c", alias = "clean")]
     Cleanup {
         /// Target browsers (comma-separated, default: all browsers)
         #[arg(short = 'b', long)]
@@ -209,6 +213,7 @@ enum Commands {
     },
     
     /// Organize homepage bookmarks into dedicated folder
+    #[command(alias = "o", alias = "org")]
     Organize {
         /// Target browsers (comma-separated, default: all browsers)
         #[arg(short = 'b', long)]
@@ -224,6 +229,7 @@ enum Commands {
     },
     
     /// Smart organize bookmarks using rule engine (auto-classify by URL patterns)
+    #[command(alias = "so", alias = "smart")]
     SmartOrganize {
         /// Target browsers (comma-separated, default: all browsers)
         #[arg(short = 'b', long)]
@@ -280,6 +286,7 @@ enum Commands {
     },
     
     /// Analyze bookmarks for anomalies (bulk imports, history pollution, NSFW)
+    #[command(alias = "a")]
     Analyze {
         /// Target browsers (comma-separated, default: all browsers)
         #[arg(short = 'b', long)]
@@ -309,6 +316,50 @@ enum Commands {
         #[arg(long)]
         include_full: bool,
     },
+    
+    /// Export bookmarks to HTML file (RECOMMENDED - let users import manually)
+    #[command(alias = "export", alias = "e")]
+    ExportHtml {
+        /// Output HTML file path
+        #[arg(short = 'o', long, default_value = "~/Desktop/bookmarks_export.html")]
+        output: String,
+        
+        /// Source browsers (comma-separated, default: all)
+        #[arg(short = 'b', long, default_value = "all")]
+        browsers: String,
+        
+        /// Merge all bookmarks into flat structure (no browser folders)
+        #[arg(long)]
+        merge: bool,
+        
+        /// Remove duplicate bookmarks
+        #[arg(long, short = 'd')]
+        deduplicate: bool,
+        
+        /// Also import from existing HTML backup files
+        #[arg(long)]
+        include_html: Option<String>,
+        
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    
+    /// Clear bookmarks from specified browsers (DEBUG ONLY - use with caution!)
+    #[command(alias = "clear")]
+    ClearBookmarks {
+        /// Target browsers (comma-separated)
+        #[arg(short = 'b', long)]
+        browsers: String,
+        
+        /// Skip confirmation
+        #[arg(short = 'y', long)]
+        yes: bool,
+        
+        /// Dry run - show what would be cleared
+        #[arg(short, long)]
+        dry_run: bool,
+    },
 }
 
 #[tokio::main]
@@ -325,11 +376,40 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Sync { browsers, mode, clear_others, dry_run, verbose, firefox_sync, auto_close_browsers } => {
-            let sync_mode = match mode.to_lowercase().as_str() {
-                "incremental" | "inc" => SyncMode::Incremental,
-                "full" => SyncMode::Full,
+            // 解析同步模式
+            let (is_bidirectional, is_incremental) = match mode.to_lowercase().as_str() {
+                "bidirectional-incremental" | "bi-inc" => {
+                    info!("🔄 模式: 双向增量同步 (检测变更,双向合并)");
+                    (true, true)
+                }
+                "bidirectional-full" | "bi-full" => {
+                    info!("🔄 模式: 双向全量同步 (读取所有,双向合并)");
+                    (true, false)
+                }
+                "specified-incremental" | "spec-inc" => {
+                    info!("🔄 模式: 指定浏览器增量同步");
+                    (false, true)
+                }
+                "specified-full" | "spec-full" => {
+                    info!("🔄 模式: 指定浏览器全量同步");
+                    (false, false)
+                }
+                // 兼容旧命令
+                "incremental" | "inc" => {
+                    info!("🔄 模式: 双向增量同步 (兼容模式)");
+                    (true, true)
+                }
+                "full" => {
+                    info!("🔄 模式: 双向全量同步 (兼容模式)");
+                    (true, false)
+                }
                 _ => {
-                    eprintln!("❌ Invalid sync mode: {}. Use 'incremental' or 'full'", mode);
+                    eprintln!("❌ Invalid sync mode: {}", mode);
+                    eprintln!("Valid modes:");
+                    eprintln!("  - bidirectional-incremental: 双向增量同步");
+                    eprintln!("  - bidirectional-full: 双向全量同步");
+                    eprintln!("  - specified-incremental: 指定浏览器增量同步");
+                    eprintln!("  - specified-full: 指定浏览器全量同步");
                     std::process::exit(1);
                 }
             };
@@ -347,7 +427,7 @@ async fn main() -> Result<()> {
                 }
             };
             
-            info!("🔄 Starting {:?} sync between hub browsers: {}", sync_mode, browsers);
+            info!("🎯 目标浏览器: {}", browsers);
             
             // Auto-close browsers if requested
             if auto_close_browsers && !dry_run {
@@ -356,17 +436,57 @@ async fn main() -> Result<()> {
             }
             
             let mut engine = SyncEngine::new()?;
-            // Full sync: bookmarks + history + reading list + cookies
-            engine.set_hub_browsers_with_firefox_sync(
-                &browsers, 
-                true, 
-                true, 
-                true, 
-                clear_others, 
-                dry_run, 
-                verbose,
-                firefox_sync_strategy
-            ).await?;
+            
+            if is_bidirectional {
+                // 双向同步 (原有逻辑)
+                if is_incremental {
+                    // 双向增量: 使用增量sync
+                    info!("🔄 执行双向增量同步...");
+                    info!("  (增量检测功能开发中,当前使用全量逻辑)");
+                    engine.set_hub_browsers_with_firefox_sync(
+                        &browsers, 
+                        true, true, true, 
+                        clear_others, 
+                        dry_run, verbose,
+                        firefox_sync_strategy
+                    ).await?;
+                } else {
+                    // 双向全量: 当前的Base & Merge逻辑
+                    info!("🔄 执行双向全量同步 (Base & Merge)...");
+                    engine.set_hub_browsers_with_firefox_sync(
+                        &browsers, 
+                        true, true, true, 
+                        clear_others, 
+                        dry_run, verbose,
+                        firefox_sync_strategy
+                    ).await?;
+                }
+            } else {
+                // 指定浏览器同步
+                if is_incremental {
+                    // 指定增量
+                    info!("🔄 执行指定浏览器增量同步...");
+                    info!("  (增量检测功能开发中,当前使用全量逻辑)");
+                    engine.set_hub_browsers_with_firefox_sync(
+                        &browsers, 
+                        true, true, true, 
+                        false,  // 不清空其他
+                        dry_run, verbose,
+                        firefox_sync_strategy
+                    ).await?;
+                } else {
+                    // 指定全量
+                    info!("🔄 执行指定浏览器全量同步...");
+                    engine.set_hub_browsers_with_firefox_sync(
+                        &browsers, 
+                        true, true, true, 
+                        false,  // 不清空其他
+                        dry_run, verbose,
+                        firefox_sync_strategy
+                    ).await?;
+                }
+            }
+            
             info!("✅ Synchronization complete!");
         }
         
@@ -650,7 +770,99 @@ async fn main() -> Result<()> {
             sync::create_master_backup(&output, include_full).await?;
             info!("✅ 主备份创建完成!");
         }
+        
+        Commands::ExportHtml { output, browsers, merge, deduplicate, include_html, verbose } => {
+            info!("📤 导出书签到HTML文件");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("📄 输出文件: {}", output);
+            info!("🌐 来源浏览器: {}", browsers);
+            if merge {
+                info!("🔀 模式: 合并到单一列表");
+            }
+            if deduplicate {
+                info!("🧹 去重复: 启用");
+            }
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            
+            let engine = SyncEngine::new()?;
+            
+            // If include_html is specified, first import from HTML
+            let mut extra_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+            if let Some(html_path) = &include_html {
+                let expanded_path = if html_path.starts_with("~/") {
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    html_path.replacen("~", &home, 1)
+                } else {
+                    html_path.clone()
+                };
+                
+                info!("📥 导入已有HTML备份: {}", expanded_path);
+                match sync::import_bookmarks_from_html(&expanded_path) {
+                    Ok(bookmarks) => {
+                        let count = bookmarks.iter().map(|b| count_bookmark_tree(b)).sum::<usize>();
+                        info!("  ✅ 导入 {} 书签", count);
+                        extra_bookmarks = bookmarks;
+                    }
+                    Err(e) => {
+                        warn!("  ⚠️  导入失败: {}", e);
+                    }
+                }
+            }
+            
+            let count = engine.export_to_html_with_extra(
+                Some(&browsers),
+                &output,
+                merge,
+                deduplicate,
+                verbose,
+                extra_bookmarks,
+            ).await?;
+            
+            info!("\n🎉 导出完成! 共 {} 书签", count);
+            info!("");
+            info!("💡 提示: 请手动将此HTML文件导入到目标浏览器");
+            info!("   这样可以避免被浏览器同步机制覆盖");
+        }
+        
+        Commands::ClearBookmarks { browsers, yes, dry_run } => {
+            info!("🗑️  清空浏览器书签");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("⚠️  警告: 此操作将清空指定浏览器的所有书签!");
+            info!("🎯 目标浏览器: {}", browsers);
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            
+            if !yes && !dry_run {
+                print!("确认继续？(y/N): ");
+                use std::io::{self, Write};
+                io::stdout().flush().ok();
+                
+                let mut input = String::new();
+                io::stdin().read_line(&mut input).ok();
+                
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    info!("❌ 已取消");
+                    return Ok(());
+                }
+            }
+            
+            let mut engine = SyncEngine::new()?;
+            engine.clear_bookmarks(&browsers, dry_run).await?;
+            
+            if dry_run {
+                info!("✅ 预览完成 (dry-run模式)");
+            } else {
+                info!("✅ 清空完成!");
+            }
+        }
     }
 
     Ok(())
+}
+
+fn count_bookmark_tree(bookmark: &crate::browsers::Bookmark) -> usize {
+    let mut count = if bookmark.url.is_some() { 1 } else { 0 };
+    for child in &bookmark.children {
+        count += count_bookmark_tree(child);
+    }
+    count
 }

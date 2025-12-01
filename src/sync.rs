@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::io::Write;
 use tracing::{info, warn, error, debug};
 use sha2::{Sha256, Digest};
 
@@ -17,13 +18,11 @@ struct BookmarkLocation {
 /// Path to a bookmark in the tree (sequence of indices)
 type BookmarkPath = Vec<usize>;
 
-/// Sync mode: incremental or full
+/// Sync mode
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SyncMode {
     /// Incremental sync - only sync changes since last sync
     Incremental,
-    /// Full sync - sync all data
-    Full,
 }
 
 /// Sync statistics
@@ -1005,7 +1004,9 @@ impl SyncEngine {
         
         for adapter in &self.adapters {
             if !adapter.supports_cookies() {
-                debug!("{} does not support cookies sync", adapter.browser_type().name());
+                if verbose {
+                    debug!("{} does not support cookies sync", adapter.browser_type().name());
+                }
                 continue;
             }
             
@@ -1015,6 +1016,11 @@ impl SyncEngine {
                     let count = cookies.len();
                     info!("✅ Read {} cookies from {}", count, browser_type.name());
                     browser_cookie_counts.insert(browser_type, count);
+                    if verbose && count > 0 {
+                        // 显示前5个cookie的域名
+                        let sample: Vec<_> = cookies.iter().take(5).map(|c| c.host.as_str()).collect();
+                        debug!("   Sample hosts: {}", sample.join(", "));
+                    }
                     all_cookies.extend(cookies);
                 }
                 Err(e) => {
@@ -4696,6 +4702,207 @@ impl SyncEngine {
     
     // deep_clean_bookmarks 已移除 - 自动删除功能误删风险太高
     
+    /// Export all bookmarks from specified browsers to HTML file
+    /// This is the RECOMMENDED way to export bookmarks - let users import manually
+    pub async fn export_to_html(
+        &self,
+        browser_names: Option<&str>,
+        output_path: &str,
+        merge: bool,
+        deduplicate: bool,
+        verbose: bool,
+    ) -> Result<usize> {
+        self.export_to_html_with_extra(browser_names, output_path, merge, deduplicate, verbose, Vec::new()).await
+    }
+    
+    /// Export all bookmarks with additional bookmarks from external sources
+    pub async fn export_to_html_with_extra(
+        &self,
+        browser_names: Option<&str>,
+        output_path: &str,
+        merge: bool,
+        deduplicate: bool,
+        verbose: bool,
+        extra_bookmarks: Vec<Bookmark>,
+    ) -> Result<usize> {
+        info!("📤 导出书签到HTML文件...");
+        
+        // Determine target browsers
+        let target_adapters: Vec<_> = if let Some(names) = browser_names {
+            let browser_list: Vec<String> = names
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .collect();
+            
+            self.adapters.iter()
+                .filter(|a| {
+                    let name = a.browser_type().name().to_lowercase();
+                    let name_normalized = name.replace(' ', "-").replace('_', "-");
+                    browser_list.iter().any(|b| {
+                        let b_normalized = b.replace(' ', "-").replace('_', "-");
+                        // Exact match first
+                        name_normalized == b_normalized ||
+                        // Then partial match
+                        name.contains(b) || b.contains(&name) ||
+                        // Special case for "nightly" variants
+                        (b.contains("nightly") && name.contains("nightly")) ||
+                        // All browsers
+                        (b == "all")
+                    })
+                })
+                .collect()
+        } else {
+            self.adapters.iter().collect()
+        };
+        
+        if target_adapters.is_empty() {
+            anyhow::bail!("未找到指定的浏览器");
+        }
+        
+        info!("🎯 目标浏览器:");
+        for adapter in &target_adapters {
+            info!("  - {}", adapter.browser_type().name());
+        }
+        
+        // Collect bookmarks from all browsers
+        let mut all_bookmarks: Vec<Bookmark> = Vec::new();
+        let mut browser_stats: Vec<(String, usize)> = Vec::new();
+        
+        // Add extra bookmarks first (from HTML imports etc.)
+        if !extra_bookmarks.is_empty() {
+            let extra_count = Self::count_all_bookmarks(&extra_bookmarks);
+            info!("  📥 额外导入: {} 书签", extra_count);
+            browser_stats.push(("HTML导入".to_string(), extra_count));
+            all_bookmarks.extend(extra_bookmarks);
+        }
+        
+        for adapter in &target_adapters {
+            let browser_name = adapter.browser_type().name();
+            match adapter.read_bookmarks() {
+                Ok(bookmarks) => {
+                    let count = Self::count_all_bookmarks(&bookmarks);
+                    info!("  ✅ {} : {} 书签", browser_name, count);
+                    browser_stats.push((browser_name.to_string(), count));
+                    
+                    if merge {
+                        // Merge into single list
+                        all_bookmarks.extend(bookmarks);
+                    } else {
+                        // Create a folder for each browser
+                        let browser_folder = Bookmark {
+                            id: format!("browser-{}", browser_name.to_lowercase().replace(' ', "-")),
+                            title: browser_name.to_string(),
+                            url: None,
+                            folder: true,
+                            children: bookmarks,
+                            date_added: Some(chrono::Utc::now().timestamp_millis()),
+                            date_modified: None,
+                        };
+                        all_bookmarks.push(browser_folder);
+                    }
+                }
+                Err(e) => {
+                    warn!("  ⚠️  {} : 读取失败 - {}", browser_name, e);
+                }
+            }
+        }
+        
+        let before_dedup = Self::count_all_bookmarks(&all_bookmarks);
+        info!("\n📊 收集完成: {} 书签", before_dedup);
+        
+        // Deduplicate if requested
+        if deduplicate {
+            info!("🧹 去重复中...");
+            Self::deduplicate_bookmarks_global(&mut all_bookmarks);
+            let after_dedup = Self::count_all_bookmarks(&all_bookmarks);
+            let removed = before_dedup.saturating_sub(after_dedup);
+            if removed > 0 {
+                info!("  ✅ 移除 {} 重复书签", removed);
+            }
+        }
+        
+        let final_count = Self::count_all_bookmarks(&all_bookmarks);
+        
+        // Export to HTML
+        let output = if output_path.starts_with("~/") {
+            let home = std::env::var("HOME").unwrap_or_default();
+            output_path.replacen("~", &home, 1)
+        } else {
+            output_path.to_string()
+        };
+        
+        export_bookmarks_to_html(&all_bookmarks, &output)?;
+        
+        info!("\n✅ 导出完成!");
+        info!("   📄 文件: {}", output);
+        info!("   📊 书签数: {}", final_count);
+        
+        if verbose {
+            info!("\n📊 来源统计:");
+            for (browser, count) in &browser_stats {
+                info!("   {} : {}", browser, count);
+            }
+        }
+        
+        Ok(final_count)
+    }
+    
+    /// Clear bookmarks from specified browsers (use with caution!)
+    pub async fn clear_bookmarks(
+        &mut self,
+        browser_names: &str,
+        dry_run: bool,
+    ) -> Result<()> {
+        info!("🗑️  清空浏览器书签...");
+        
+        let browser_list: Vec<String> = browser_names
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .collect();
+        
+        let target_adapters: Vec<_> = self.adapters.iter()
+            .filter(|a| {
+                let name = a.browser_type().name().to_lowercase();
+                browser_list.iter().any(|b| name.contains(b))
+            })
+            .collect();
+        
+        if target_adapters.is_empty() {
+            anyhow::bail!("未找到指定的浏览器");
+        }
+        
+        for adapter in &target_adapters {
+            let browser_name = adapter.browser_type().name();
+            
+            if dry_run {
+                info!("  🏃 {} : 将被清空 (dry-run)", browser_name);
+                continue;
+            }
+            
+            // Backup first
+            match adapter.backup_bookmarks() {
+                Ok(backup_path) => {
+                    info!("  💾 {} : 备份已创建 {:?}", browser_name, backup_path);
+                }
+                Err(e) => {
+                    warn!("  ⚠️  {} : 备份失败 - {}", browser_name, e);
+                }
+            }
+            
+            // Write empty bookmarks
+            match adapter.write_bookmarks(&[]) {
+                Ok(_) => {
+                    info!("  ✅ {} : 已清空", browser_name);
+                }
+                Err(e) => {
+                    error!("  ❌ {} : 清空失败 - {}", browser_name, e);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
     /// Restore bookmarks from backup
     pub async fn restore_backup(
         &mut self,
@@ -4882,4 +5089,138 @@ fn collect_urls_recursive(bookmarks: &[Bookmark], source: &str, result: &mut Vec
         }
         collect_urls_recursive(&bookmark.children, source, result);
     }
+}
+
+/// Export bookmarks to Netscape HTML format (standard bookmark format)
+pub fn export_bookmarks_to_html(bookmarks: &[Bookmark], output_path: &str) -> Result<()> {
+    use std::io::Write;
+    
+    let mut file = std::fs::File::create(output_path)?;
+    
+    // Write HTML header
+    writeln!(file, "<!DOCTYPE NETSCAPE-Bookmark-file-1>")?;
+    writeln!(file, "<!-- This is an automatically generated file.")?;
+    writeln!(file, "     It will be read and overwritten.")?;
+    writeln!(file, "     DO NOT EDIT! -->")?;
+    writeln!(file, "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">")?;
+    writeln!(file, "<TITLE>Bookmarks</TITLE>")?;
+    writeln!(file, "<H1>Bookmarks</H1>")?;
+    writeln!(file, "<DL><p>")?;
+    
+    // Write bookmarks recursively
+    write_bookmarks_html_recursive(&mut file, bookmarks, 1)?;
+    
+    writeln!(file, "</DL><p>")?;
+    
+    Ok(())
+}
+
+fn write_bookmarks_html_recursive<W: Write>(writer: &mut W, bookmarks: &[Bookmark], indent: usize) -> Result<()> {
+    let indent_str = "    ".repeat(indent);
+    
+    for bookmark in bookmarks {
+        if bookmark.folder {
+            // Write folder
+            let add_date = bookmark.date_added.unwrap_or(0) / 1000; // Convert to seconds
+            writeln!(writer, "{}<DT><H3 ADD_DATE=\"{}\">{}</H3>", 
+                indent_str, add_date, html_escape(&bookmark.title))?;
+            writeln!(writer, "{}<DL><p>", indent_str)?;
+            write_bookmarks_html_recursive(writer, &bookmark.children, indent + 1)?;
+            writeln!(writer, "{}</DL><p>", indent_str)?;
+        } else if let Some(url) = &bookmark.url {
+            // Write bookmark
+            let add_date = bookmark.date_added.unwrap_or(0) / 1000;
+            writeln!(writer, "{}<DT><A HREF=\"{}\" ADD_DATE=\"{}\">{}</A>", 
+                indent_str, html_escape(url), add_date, html_escape(&bookmark.title))?;
+        }
+    }
+    
+    Ok(())
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+     .replace('"', "&quot;")
+}
+
+/// Import bookmarks from HTML file
+pub fn import_bookmarks_from_html(html_path: &str) -> Result<Vec<Bookmark>> {
+    let content = std::fs::read_to_string(html_path)?;
+    parse_html_bookmarks(&content)
+}
+
+fn parse_html_bookmarks(html: &str) -> Result<Vec<Bookmark>> {
+    let mut bookmarks = Vec::new();
+    let mut id_counter = 0u64;
+    
+    // Simple flat parsing - just extract all bookmarks
+    for line in html.lines() {
+        let trimmed = line.trim();
+        
+        // Parse bookmark links
+        if (trimmed.contains("<DT><A") || trimmed.contains("<dt><a")) && 
+           (trimmed.contains("HREF=") || trimmed.contains("href=")) {
+            if let Some((url, title)) = extract_bookmark_info(trimmed) {
+                id_counter += 1;
+                let bookmark = Bookmark {
+                    id: format!("imported-{}", id_counter),
+                    title,
+                    url: Some(url),
+                    folder: false,
+                    children: Vec::new(),
+                    date_added: Some(chrono::Utc::now().timestamp_millis()),
+                    date_modified: None,
+                };
+                bookmarks.push(bookmark);
+            }
+        }
+    }
+    
+    info!("📖 HTML解析完成: {} 书签", bookmarks.len());
+    Ok(bookmarks)
+}
+
+fn extract_tag_content(line: &str, tag: &str) -> Option<String> {
+    let start_tag = format!("<{}", tag);
+    let end_tag = format!("</{}>", tag);
+    
+    if let Some(start_idx) = line.to_lowercase().find(&start_tag.to_lowercase()) {
+        if let Some(content_start) = line[start_idx..].find('>') {
+            let content_start = start_idx + content_start + 1;
+            if let Some(end_idx) = line.to_lowercase().find(&end_tag.to_lowercase()) {
+                let content = &line[content_start..end_idx];
+                return Some(html_unescape(content));
+            }
+        }
+    }
+    None
+}
+
+fn extract_bookmark_info(line: &str) -> Option<(String, String)> {
+    // Extract URL from HREF="..."
+    let href_start = line.to_lowercase().find("href=\"")?;
+    let url_start = href_start + 6;
+    let url_end = line[url_start..].find('"')? + url_start;
+    let url = html_unescape(&line[url_start..url_end]);
+    
+    // Extract title (content between > and </A>)
+    let title_start = line[url_end..].find('>')? + url_end + 1;
+    let title_end = line.to_lowercase().find("</a>")?;
+    let title = if title_start < title_end {
+        html_unescape(&line[title_start..title_end])
+    } else {
+        url.clone()
+    };
+    
+    Some((url, title))
+}
+
+fn html_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+     .replace("&lt;", "<")
+     .replace("&gt;", ">")
+     .replace("&quot;", "\"")
+     .replace("&#39;", "'")
 }
