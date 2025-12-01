@@ -1,171 +1,195 @@
-# 🔄 Browser Sync (macOS)
+# 🔖 Browser Bookmark Sync
 
-A powerful, macOS-only command-line tool for synchronizing and managing bookmarks, history, and reading lists across multiple browsers. It features a sophisticated **"Base & Merge"** sync strategy, an intelligent **Rule-based Organizer**, and advanced tools for handling cloud sync conflicts.
+A powerful cross-browser bookmark management tool for macOS. Merge, deduplicate, and export bookmarks from multiple browsers into a single HTML file.
 
-[中文文档](./README_CN.md)
+## ✨ Features
 
-## ✨ Core Features
+- **🌐 Multi-Browser Support**: Safari, Chrome, Brave, Brave Nightly, Waterfox, Firefox
+- **📤 HTML Export**: Export to standard Netscape HTML format (importable by all browsers)
+- **🧹 Smart Deduplication**: Remove duplicate bookmarks across all sources
+- **🧠 Auto-Classification**: 48 built-in rules to organize bookmarks by category
+- **🔍 Anomaly Detection**: Detect bulk imports, history pollution, NSFW content
+- **💾 Backup & Restore**: Full backup and restore capabilities
 
-- **macOS Native:** Deep integration with browser data files on macOS (SQLite, Plist).
-- **Advanced Sync Logic:** Uses a **"Base & Merge"** strategy where the browser with the most organized bookmark structure becomes the template for others.
-- **Smart Deduplication:** Automatically resolves duplicate bookmarks by prioritizing entries in deeper folders and those added more recently.
-- **Intelligent Organizer:** A powerful, priority-based engine with **90 built-in trilingual (EN/CN/JP) rules** to automatically classify bookmarks into folders. Extensible with custom JSON rules.
-- **Firefox Sync Integration:** Offers two strategies (`api` or `local`) to safely sync with Firefox Sync, preventing cloud data from overwriting local changes.
-- **Complete Data Management:** Provides a rich set of tools to `sync`, `cleanup`, `organize`, `validate`, `backup`, `restore`, and `schedule` operations.
-- **Cloud Reset Wizard:** A guided process (`cloud-reset`) to resolve complex Firefox Sync data conflicts.
-- **Cron-based Scheduling:** Run sync operations automatically in the background on a cron schedule.
-- **Auto-Close Browsers:** Automatically closes browsers before sync to ensure data safety (graceful quit + force kill).
+## 🚀 Quick Start
 
-## 🖥️ Supported Platforms
+### Installation
 
-**This tool is for macOS only.** It directly accesses browser-specific database and property list files.
-
-| Browser | Bookmarks | History | Reading List | Notes |
-| :--- | :---: | :---: | :---: | :--- |
-| **Waterfox** | ✅ | ✅ | - | Hub browser candidate |
-| **Brave Nightly** | ✅ | ✅ | - | Hub browser candidate |
-| **Brave** | ✅ | ✅ | - | |
-| **Chrome** | ✅ | ✅ | - | |
-| **Safari** | ✅ | ✅ | ✅ | |
-| **Firefox Nightly**| ✅ | ✅ | - | |
-
----
-
-## 🔬 How It Works
-
-### The "Base & Merge" Sync Strategy
-
-This tool **does not perform a simple merge**. To ensure a clean and organized result, it uses a "Base & Merge" strategy:
-
-1.  **Analyze:** It reads bookmark data from **all** specified browsers.
-2.  **Score:** It scores each browser's folder structure. A higher score is given to browsers with more folders and bookmarks, prioritizing organization.
-3.  **Select Base:** The browser with the **highest score** is chosen as the **"base"**. Its structure becomes the canonical source of truth for the sync.
-4.  **Merge & Deduplicate:** Bookmarks from other browsers are merged into the base structure. Duplicates are resolved using the smart deduplication logic.
-5.  **Overwrite:** The final, merged bookmark set is **written back to all hub browsers**, overwriting their previous bookmark data.
-
-> ⚠️ **IMPORTANT**: This is a one-way street. If a bookmark exists in a lower-scoring browser but not in the "base" browser, **it will be deleted** after the sync. This design choice prioritizes a single, clean structure over retaining scattered bookmarks.
-
-### Smart Deduplication Logic
-
-When duplicate URLs are found, the tool resolves the conflict with two rules:
-1.  **Depth Priority:** The bookmark located deeper within a folder structure is kept.
-2.  **Recency Priority:** If depths are equal, the bookmark that was added more recently is kept.
-
-### Firefox Sync: Dual Strategies
-
-To prevent conflicts with Mozilla's servers, the tool offers two ways to handle Firefox Sync after a local merge:
-
--   `--firefox-sync=api`: (Default) The tool acts as a **direct API client**. It authenticates with your Firefox Account and uploads the newly merged bookmark collection to Mozilla's servers, becoming the new source of truth in the cloud.
--   `--firefox-sync=local`: The tool **triggers the browser's own internal sync mechanism**. This is a less direct approach that asks the browser to perform the sync itself.
-
----
-
-## 🚀 Installation
-
-1.  **Prerequisites:** Ensure you have Rust and Cargo installed.
-2.  **Clone and Build:**
-
-    ```bash
-    git clone https://github.com/your-username/browser-bookmark-sync.git
-    cd browser-bookmark-sync
-    cargo build --release
-    ```
-3.  **Install (Optional):** Copy the executable to a location in your PATH.
-    ```bash
-    cp target/release/browser-bookmark-sync /usr/local/bin/
-    ```
-
-##  कमांड Usage (Commands)
-
-All commands are run via `browser-bookmark-sync <COMMAND>`.
-
-### Core Commands
-
-| Command | Description | Example |
-| :--- | :--- | :--- |
-| `sync` | The main command. Synchronizes bookmarks, history, and reading lists between hub browsers using the "Base & Merge" strategy. | `browser-bookmark-sync sync` |
-| `smart-organize`| **Automatically classifies all bookmarks** using the rule engine. | `browser-bookmark-sync smart-organize` |
-| `cleanup` | Removes duplicate bookmarks and/or empty folders without a full sync. | `browser-bookmark-sync cleanup --remove-duplicates` |
-| `schedule` | Starts the sync daemon to run tasks on a cron schedule. | `browser-bookmark-sync schedule --cron "0 * * * *"` |
-| `validate` | Checks data integrity, looking for duplicates or malformed entries. | `browser-bookmark-sync validate --detailed` |
-| `cloud-reset` | Starts a **guided wizard** to resolve Firefox Sync server data issues. | `browser-bookmark-sync cloud-reset` |
-| `list` | Lists all detected browsers and their data paths. | `browser-bookmark-sync list` |
-| `list-rules` | Displays all 75 built-in classification rules. | `browser-bookmark-sync list-rules` |
-
-### Common Options
-
--   `--dry-run`: Preview the changes without modifying any files. **Highly recommended for first-time use.**
--   `--browsers "brave,safari"`: Specifies which browsers to include in the operation.
--   `--firefox-sync <api|local>`: (For `sync`) Chooses the Firefox Sync strategy.
--   `-v, --verbose`: Enables detailed logging output.
-
-### Example Workflows
-
-#### First-Time Sync (Preview)
 ```bash
-# See what the sync would do without changing anything.
-browser-bookmark-sync sync --dry-run -v
+# Clone and build
+git clone https://github.com/user/browser-sync.git
+cd browser-sync
+cargo build --release
+
+# Add to PATH (optional)
+cp target/release/browser-bookmark-sync /usr/local/bin/
 ```
 
-#### Daily Sync
+### Basic Usage
+
 ```bash
-# Sync between the default hub browsers (Waterfox, Brave Nightly).
-browser-bookmark-sync sync
+# List detected browsers
+browser-bookmark-sync list
+
+# Export all bookmarks to HTML (RECOMMENDED)
+browser-bookmark-sync export-html -o ~/Desktop/my_bookmarks.html -d
+
+# Export specific browsers with deduplication
+browser-bookmark-sync export-html -b "safari,brave-nightly" -d --merge
+
+# Smart organize bookmarks
+browser-bookmark-sync smart-organize -b safari --dry-run --show-stats
 ```
 
-#### Full Re-organization
+## 📖 Commands
+
+| Command | Description |
+|---------|-------------|
+| `list` | List all detected browsers and bookmark locations |
+| `export-html` | Export bookmarks to HTML file (recommended) |
+| `validate` | Validate bookmark integrity |
+| `cleanup` | Remove duplicates and empty folders |
+| `smart-organize` | Auto-classify bookmarks by URL patterns |
+| `list-rules` | Show available classification rules |
+| `analyze` | Detect anomalies in bookmarks |
+| `master-backup` | Create comprehensive backup |
+| `restore-backup` | Restore from backup |
+| `clear-bookmarks` | Clear browser bookmarks (debug only) |
+
+## 📤 Export to HTML (Recommended Workflow)
+
+The recommended way to manage bookmarks is to export them to HTML and manually import into your target browser. This avoids sync conflicts.
+
 ```bash
-# Use the rule engine to file every bookmark into a category.
-browser-bookmark-sync smart-organize --show-stats
+# Step 1: Export all bookmarks with deduplication
+browser-bookmark-sync export-html \
+  -b "safari,brave-nightly,waterfox" \
+  -d --merge \
+  -o ~/Desktop/all_bookmarks.html
+
+# Step 2: Manually import the HTML file into your browser
+# - Safari: File → Import From → Bookmarks HTML File
+# - Chrome/Brave: Bookmarks → Import Bookmarks and Settings
+# - Firefox: Bookmarks → Manage Bookmarks → Import and Backup
 ```
 
-#### Run Sync Hourly
+### Export Options
+
 ```bash
-# Run the scheduler in the background. (Use a process manager like launchd for persistence)
-browser-bookmark-sync schedule --cron "0 * * * *" &
+-o, --output <FILE>      Output HTML file path
+-b, --browsers <LIST>    Source browsers (comma-separated, default: all)
+-d, --deduplicate        Remove duplicate bookmarks
+    --merge              Merge into flat structure (no browser folders)
+    --include-html <FILE> Also import from existing HTML backup
+-v, --verbose            Show detailed output
 ```
 
----
+## 🧠 Smart Organization
 
-## 🧠 Rule Engine for Organization
+Automatically classify bookmarks into 48 categories:
 
-The `smart-organize` command uses a powerful engine to automatically categorize your bookmarks.
-
--   **Priority-based:** Rules with higher priority are checked first. The first rule to match a bookmark wins.
--   **Multi-faceted Matching:** Rules can match based on a bookmark's URL, domain, path, or title.
--   **Bilingual:** All 75 built-in rules have both English and Chinese folder names.
--   **Extensible:** Provide your own rules via a JSON file.
-
-#### Custom Rules
-
-Create a `my-rules.json` file:
-```json
-[
-  {
-    "name": "work-tools",
-    "folder_name": "工作工具",
-    "folder_name_en": "Work Tools",
-    "url_patterns": ["jira", "confluence"],
-    "domain_patterns": ["atlassian.com"],
-    "priority": 110,
-    "description": "Atlassian stack for work."
-  }
-]
-```
-
-And use it:
 ```bash
-# Run the organization with your custom rules taking precedence.
-browser-bookmark-sync smart-organize --rules-file my-rules.json
+# Preview classification (dry-run)
+browser-bookmark-sync smart-organize -b safari --dry-run --show-stats
+
+# Apply classification
+browser-bookmark-sync smart-organize -b safari
+
+# Use custom rules
+browser-bookmark-sync smart-organize -r custom-rules.json
 ```
----
+
+### Built-in Categories
+
+- 🎬 Streaming Sites, Video Platforms
+- 🎮 Gaming, Game Stores
+- 💻 Development, GitHub, Stack Overflow
+- 📱 Social Media, Forums
+- 🛒 Shopping, E-commerce
+- 📰 News, Blogs
+- 🎨 Design, Creative Tools
+- And 40+ more...
+
+## 🔍 Anomaly Detection
+
+Detect potential issues in your bookmarks:
+
+```bash
+browser-bookmark-sync analyze -b safari
+```
+
+Detects:
+- **Bulk Imports**: Large numbers of bookmarks added at once
+- **History Pollution**: Bookmarks that look like browsing history
+- **NSFW Content**: Adult content markers
+
+## 💾 Backup & Restore
+
+```bash
+# Create master backup
+browser-bookmark-sync master-backup -o ~/Desktop/BookmarkBackup
+
+# Restore from backup
+browser-bookmark-sync restore-backup -b waterfox -f backup.sqlite
+```
+
+## 🌐 Supported Browsers
+
+| Browser | Bookmarks | History | Cookies |
+|---------|-----------|---------|---------|
+| Safari | ✅ | ✅ | ❌ |
+| Chrome | ✅ | ✅ | ✅ |
+| Brave | ✅ | ✅ | ✅ |
+| Brave Nightly | ✅ | ✅ | ✅ |
+| Waterfox | ✅ | ✅ | ✅ |
+| Firefox | ✅ | ✅ | ✅ |
 
 ## ⚠️ Important Notes
 
-1.  **CLOSE YOUR BROWSERS:** Browsers must be fully closed before running any sync or cleanup operations. The tool directly modifies database files that will be overwritten if the browser is open.
-2.  **AUTOMATIC BACKUPS:** Before any destructive operation, the tool automatically backs up your browser profiles to `~/Desktop/browser_backup_*`.
-3.  **DEFAULT HUBS:** The default "hub" browsers for sync are Waterfox and Brave Nightly. You can change this with the `--browsers` flag.
+1. **Close browsers before operations**: Some browsers lock their database files
+2. **Use HTML export**: Avoid direct browser writes to prevent sync conflicts
+3. **Backup first**: Always create backups before major operations
+4. **Manual import**: Import HTML files manually for best results
 
-## 📜 License
+## 📊 Example Output
 
-This project is licensed under the MIT License.
+```
+📤 导出书签到HTML文件
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 输出: ~/Desktop/bookmarks.html
+🌐 来源: safari,brave-nightly
+🔀 合并模式
+🧹 去重复
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ✅ Safari : 136054 书签
+  ✅ Brave Nightly : 42272 书签
+📊 收集完成: 178326 书签
+  ✅ 移除 154805 重复书签
+✅ 导出完成!
+   📄 文件: ~/Desktop/bookmarks.html
+   📊 书签数: 23521
+
+🎉 导出完成! 23521 书签
+💡 请手动导入到目标浏览器，避免被同步覆盖
+```
+
+## 🛠️ Development
+
+```bash
+# Run tests
+cargo test
+
+# Build release
+cargo build --release
+
+# Run with debug logging
+RUST_LOG=debug browser-bookmark-sync list
+```
+
+## 📄 License
+
+MIT License
+
+## 🤝 Contributing
+
+Contributions welcome! Please read the contributing guidelines first.

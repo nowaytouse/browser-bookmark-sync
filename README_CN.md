@@ -1,171 +1,195 @@
-# 🔄 Browser Sync (macOS) - 浏览器同步工具
+# 🔖 跨浏览器书签同步工具
 
-一款强大的、仅适用于 macOS 的命令行工具，用于在多个浏览器之间同步和管理书签、历史记录和阅读列表。它采用先进的 **“基准合并” (Base & Merge)** 同步策略、智能的 **规则引擎整理器** 以及用于处理云端同步冲突的高级工具。
+一款强大的 macOS 跨浏览器书签管理工具。合并、去重、导出多个浏览器的书签到单一 HTML 文件。
 
-[English Document](./README.md)
+## ✨ 特色功能
 
-## ✨ 核心功能
+- **🌐 多浏览器支持**: Safari、Chrome、Brave、Brave Nightly、Waterfox、Firefox
+- **📤 HTML 导出**: 导出为标准 Netscape HTML 格式（所有浏览器都可导入）
+- **🧹 智能去重**: 跨所有来源移除重复书签
+- **🧠 自动分类**: 48 条内置规则，按类别整理书签
+- **🔍 异常检测**: 检测批量导入、历史污染、NSFW 内容
+- **💾 备份恢复**: 完整的备份和恢复功能
 
-- **macOS 原生:** 与 macOS 上的浏览器数据文件（SQLite, Plist）进行深度集成。
-- **高级同步逻辑:** 采用 **“基准合并”** 策略，将书签结构最规整的浏览器作为模板，同步到其他浏览器。
-- **智能去重:** 根据书签所在文件夹的深度和添加时间，自动解决重复书签的冲突。
-- **智能整理器:** 一个强大的、基于优先级的引擎，内置 **90 条双语 (中/英/日) 规则**，可自动将书签分类到不同文件夹。支持通过自定义 JSON 文件进行扩展。
-- **Firefox Sync 集成:** 提供两种策略（`api` 或 `local`）来安全地与 Firefox Sync 同步，防止云端数据覆盖本地更改。
-- **完整数据管理:** 提供一整套丰富的工具，用于 `sync` (同步), `cleanup` (清理), `organize` (整理), `validate` (校验), `backup` (备份), `restore` (恢复) 和 `schedule` (定时任务)。
-- **云端重置向导:** 一个引导式的流程 (`cloud-reset`)，用于解决复杂的 Firefox Sync 数据冲突。
-- **Cron 定时任务:** 基于 Cron 表达式，在后台自动执行同步操作。
-- **浏览器自动关闭:** 同步前自动关闭浏览器，确保数据安全(支持优雅关闭+强制kill)。
+## 🚀 快速开始
 
-## 🖥️ 支持的平台
+### 安装
 
-**本工具仅适用于 macOS。** 它需要直接访问特定于浏览器的数据库和属性列表文件。
-
-| 浏览器 | 书签 | 历史记录 | 阅读列表 | 备注 |
-| :--- | :---: | :---: | :---: | :--- |
-| **Waterfox** | ✅ | ✅ | - | 可作为核心浏览器 |
-| **Brave Nightly** | ✅ | ✅ | - | 可作为核心浏览器 |
-| **Brave** | ✅ | ✅ | - | |
-| **Chrome** | ✅ | ✅ | - | |
-| **Safari** | ✅ | ✅ | ✅ | |
-| **Firefox Nightly**| ✅ | ✅ | - | |
-
----
-
-## 🔬 工作原理
-
-### “基准合并” (Base & Merge) 同步策略
-
-本工具**并非执行简单的双向合并**。为确保结果清晰有序，它采用 “基准合并” 策略：
-
-1.  **分析 (Analyze):** 读取**所有**指定浏览器中的书签数据。
-2.  **评分 (Score):** 对每个浏览器的文件夹结构进行评分。拥有更多文件夹和书签的浏览器会获得更高的分数，这优先考虑了“组织性”。
-3.  **选择基准 (Select Base):** 得分**最高**的浏览器被选为 **“基准” (base)**。其结构将成为本次同步的唯一真实来源。
-4.  **合并与去重 (Merge & Deduplicate):** 将其他浏览器的书签合并到基准结构中。重复项将通过智能去重逻辑解决。
-5.  **覆盖 (Overwrite):** 最终合并完成的书签集将被**写回到所有核心浏览器 (hub browsers)**，覆盖它们之前的书签数据。
-
-> ⚠️ **重要提示**: 这是一个单向过程。如果一个书签存在于得分较低的浏览器中，但不存在于“基准”浏览器中，那么在同步后它将**被删除**。此设计旨在优先保证单一、清晰的结构，而不是保留分散各处的书签。
-
-### 智能去重逻辑
-
-当发现重复的 URL 时，工具会使用以下两条规则来解决冲突：
-1.  **深度优先:** 保留位于更深层文件夹结构中的书签。
-2.  **时间优先:** 如果文件夹深度相同，则保留最近添加的书签。
-
-### Firefox Sync: 双重策略
-
-为防止与 Mozilla 服务器发生冲突，本工具在本地合并后，提供两种方式来处理 Firefox Sync：
-
--   `--firefox-sync=api`: (默认) 工具将作为**直接的 API 客户端**。它会使用您的 Firefox 账户进行身份验证，并将新合并的书签集上传到 Mozilla 服务器，使其成为云端新的唯一真实来源。
--   `--firefox-sync=local`: 工具会**触发浏览器自身的内部同步机制**。这是一种较为间接的方式，由浏览器自己执行同步。
-
----
-
-## 🚀 安装
-
-1.  **环境准备:** 确保您已安装 Rust 和 Cargo。
-2.  **克隆并构建:**
-
-    ```bash
-    git clone https://github.com/your-username/browser-bookmark-sync.git
-    cd browser-bookmark-sync
-    cargo build --release
-    ```
-3.  **安装 (可选):** 将可执行文件复制到您的 PATH 路径下。
-    ```bash
-    cp target/release/browser-bookmark-sync /usr/local/bin/
-    ```
-
-## 📖 命令用法 (Commands)
-
-所有命令都通过 `browser-bookmark-sync <COMMAND>` 运行。
-
-### 核心命令
-
-| 命令 | 描述 | 示例 |
-| :--- | :--- | :--- |
-| `sync` | 主命令。使用“基准合并”策略同步核心浏览器之间的书签、历史记录和阅读列表。 | `browser-bookmark-sync sync` |
-| `smart-organize`| **使用规则引擎自动分类所有书签**。 | `browser-bookmark-sync smart-organize` |
-| `cleanup` | 在不进行完全同步的情况下，删除重复书签和/或空文件夹。 | `browser-bookmark-sync cleanup --remove-duplicates` |
-| `schedule` | 启动守护进程，按 cron 计划执行同步任务。 | `browser-bookmark-sync schedule --cron "0 * * * *"` |
-| `validate` | 检查数据完整性，寻找重复或格式错误的数据。 | `browser-bookmark-sync validate --detailed` |
-| `cloud-reset` | 启动一个**引导式向导**来解决 Firefox Sync 服务器数据问题。 | `browser-bookmark-sync cloud-reset` |
-| `list` | 列出所有检测到的浏览器及其数据路径。 | `browser-bookmark-sync list` |
-| `list-rules` | 显示所有 75 条内置的分类规则。 | `browser-bookmark-sync list-rules` |
-
-### 通用选项
-
--   `--dry-run`: 预览更改，但不会修改任何文件。**强烈建议首次使用时开启此项。**
--   `--browsers "brave,safari"`: 指定要操作的浏览器。
--   `--firefox-sync <api|local>`: (用于 `sync`) 选择 Firefox Sync 同步策略。
--   `-v, --verbose`: 启用详细的日志输出。
-
-### 工作流示例
-
-#### 首次同步 (预览)
 ```bash
-# 查看在不更改任何内容的情况下，同步会执行哪些操作。
-browser-bookmark-sync sync --dry-run -v
+# 克隆并编译
+git clone https://github.com/user/browser-sync.git
+cd browser-sync
+cargo build --release
+
+# 添加到 PATH（可选）
+cp target/release/browser-bookmark-sync /usr/local/bin/
 ```
 
-#### 日常同步
+### 基本用法
+
 ```bash
-# 在默认的核心浏览器 (Waterfox, Brave Nightly) 之间同步。
-browser-bookmark-sync sync
+# 列出检测到的浏览器
+browser-bookmark-sync list
+
+# 导出所有书签到 HTML（推荐）
+browser-bookmark-sync export-html -o ~/Desktop/my_bookmarks.html -d
+
+# 导出指定浏览器并去重
+browser-bookmark-sync export-html -b "safari,brave-nightly" -d --merge
+
+# 智能分类书签
+browser-bookmark-sync smart-organize -b safari --dry-run --show-stats
 ```
 
-#### 完全重新整理
+## 📖 命令列表
+
+| 命令 | 说明 |
+|------|------|
+| `list` | 列出所有检测到的浏览器及书签位置 |
+| `export-html` | 导出书签到 HTML 文件（推荐） |
+| `validate` | 验证书签完整性 |
+| `cleanup` | 删除重复书签和空文件夹 |
+| `smart-organize` | 按 URL 模式自动分类书签 |
+| `list-rules` | 显示可用的分类规则 |
+| `analyze` | 检测书签异常 |
+| `master-backup` | 创建综合备份 |
+| `restore-backup` | 从备份恢复 |
+| `clear-bookmarks` | 清空浏览器书签（仅调试用） |
+
+## 📤 导出到 HTML（推荐工作流）
+
+推荐的书签管理方式是导出到 HTML，然后手动导入到目标浏览器。这样可以避免同步冲突。
+
 ```bash
-# 使用规则引擎将每个书签归类。
-browser-bookmark-sync smart-organize --show-stats
+# 第一步：导出所有书签并去重
+browser-bookmark-sync export-html \
+  -b "safari,brave-nightly,waterfox" \
+  -d --merge \
+  -o ~/Desktop/all_bookmarks.html
+
+# 第二步：手动将 HTML 文件导入到浏览器
+# - Safari: 文件 → 导入自 → 书签 HTML 文件
+# - Chrome/Brave: 书签 → 导入书签和设置
+# - Firefox: 书签 → 管理书签 → 导入和备份
 ```
 
-#### 每小时同步一次
+### 导出选项
+
 ```bash
-# 在后台运行调度器。(建议使用如 launchd 等进程管理器以确保持久运行)
-browser-bookmark-sync schedule --cron "0 * * * *" &
+-o, --output <文件>      输出 HTML 文件路径
+-b, --browsers <列表>    来源浏览器（逗号分隔，默认: all）
+-d, --deduplicate        移除重复书签
+    --merge              合并为扁平结构（不按浏览器分文件夹）
+    --include-html <文件> 同时导入已有 HTML 备份
+-v, --verbose            显示详细输出
 ```
 
----
+## 🧠 智能分类
 
-## 🧠 用于整理的规则引擎
+自动将书签分类到 48 个类别：
 
-`smart-organize` 命令使用强大的引擎来自动分类您的书签。
-
--   **基于优先级:** 优先级更高的规则会首先被检查。第一个匹配成功的规则将决定书签的分类。
--   **多维匹配:** 规则可以根据书签的 URL、域名、路径或标题进行匹配。
--   **双语支持:** 所有 75 条内置规则都包含中文和英文的文件夹名称。
--   **可扩展:** 您可以通过 JSON 文件提供自己的规则。
-
-#### 自定义规则
-
-创建一个 `my-rules.json` 文件:
-```json
-[
-  {
-    "name": "work-tools",
-    "folder_name": "工作工具",
-    "folder_name_en": "Work Tools",
-    "url_patterns": ["jira", "confluence"],
-    "domain_patterns": ["atlassian.com"],
-    "priority": 110,
-    "description": "用于工作的 Atlassian 工具栈。"
-  }
-]
-```
-
-然后使用它:
 ```bash
-# 使用您的自定义规则运行整理，它将拥有更高优先级。
-browser-bookmark-sync smart-organize --rules-file my-rules.json
+# 预览分类（dry-run）
+browser-bookmark-sync smart-organize -b safari --dry-run --show-stats
+
+# 应用分类
+browser-bookmark-sync smart-organize -b safari
+
+# 使用自定义规则
+browser-bookmark-sync smart-organize -r custom-rules.json
 ```
----
 
-## ⚠️ 重要说明
+### 内置分类
 
-1.  **关闭您的浏览器:** 在运行任何同步或清理操作之前，必须完全关闭浏览器。本工具会直接修改数据库文件，如果浏览器正在运行，这些更改将被覆盖。
-2.  **自动备份:** 在执行任何破坏性操作之前，工具会自动将您的浏览器配置文件备份到 `~/Desktop/browser_backup_*`。
-3.  **默认核心浏览器:** 默认用于同步的“核心”浏览器是 Waterfox 和 Brave Nightly。您可以使用 `--browsers` 标志进行更改。
+- 🎬 流媒体、视频平台
+- 🎮 游戏、游戏商店
+- 💻 开发、GitHub、Stack Overflow
+- 📱 社交媒体、论坛
+- 🛒 购物、电商
+- 📰 新闻、博客
+- 🎨 设计、创意工具
+- 还有 40+ 更多分类...
 
-## 📜 许可证
+## 🔍 异常检测
 
-本项目基于 MIT 许可证授权。
+检测书签中的潜在问题：
+
+```bash
+browser-bookmark-sync analyze -b safari
+```
+
+检测内容：
+- **批量导入**: 一次性添加的大量书签
+- **历史污染**: 看起来像浏览历史的书签
+- **NSFW 内容**: 成人内容标记
+
+## 💾 备份与恢复
+
+```bash
+# 创建主备份
+browser-bookmark-sync master-backup -o ~/Desktop/BookmarkBackup
+
+# 从备份恢复
+browser-bookmark-sync restore-backup -b waterfox -f backup.sqlite
+```
+
+## 🌐 支持的浏览器
+
+| 浏览器 | 书签 | 历史 | Cookies |
+|--------|------|------|---------|
+| Safari | ✅ | ✅ | ❌ |
+| Chrome | ✅ | ✅ | ✅ |
+| Brave | ✅ | ✅ | ✅ |
+| Brave Nightly | ✅ | ✅ | ✅ |
+| Waterfox | ✅ | ✅ | ✅ |
+| Firefox | ✅ | ✅ | ✅ |
+
+## ⚠️ 重要提示
+
+1. **操作前关闭浏览器**: 某些浏览器会锁定数据库文件
+2. **使用 HTML 导出**: 避免直接写入浏览器以防止同步冲突
+3. **先备份**: 重大操作前务必创建备份
+4. **手动导入**: 手动导入 HTML 文件效果最佳
+
+## 📊 输出示例
+
+```
+📤 导出书签到HTML文件
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 输出: ~/Desktop/bookmarks.html
+🌐 来源: safari,brave-nightly
+🔀 合并模式
+🧹 去重复
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ✅ Safari : 136054 书签
+  ✅ Brave Nightly : 42272 书签
+📊 收集完成: 178326 书签
+  ✅ 移除 154805 重复书签
+✅ 导出完成!
+   📄 文件: ~/Desktop/bookmarks.html
+   📊 书签数: 23521
+
+🎉 导出完成! 23521 书签
+💡 请手动导入到目标浏览器，避免被同步覆盖
+```
+
+## 🛠️ 开发
+
+```bash
+# 运行测试
+cargo test
+
+# 编译发布版
+cargo build --release
+
+# 带调试日志运行
+RUST_LOG=debug browser-bookmark-sync list
+```
+
+## 📄 许可证
+
+MIT License
+
+## 🤝 贡献
+
+欢迎贡献！请先阅读贡献指南。

@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2025-12-01
+
+### Changed
+- **CLI重构**: 精简命令，移除冗余功能，保留核心功能
+- **推荐工作流**: 导出HTML → 手动导入（避免同步覆盖）
+- **文档更新**: 完善中英文README，详细介绍功能和使用方法
+
+### Added
+- `export-html` 命令: 导出书签到标准Netscape HTML格式
+- `clear-bookmarks` 命令: 清空浏览器书签（调试用）
+- HTML导入功能: `--include-html` 参数合并已有备份
+- 智能浏览器匹配: 支持 `brave-nightly` 等名称
+
+### Removed
+- `sync` 命令: 直接写入浏览器风险太高，被 `export-html` 替代
+- `set-hubs` / `import-safari` / `sync-*` 等命令: 简化功能范围
+- `migrate-to-safari` / `cloud-reset` / `schedule` 命令: 风险高
+
+### Fixed
+- 浏览器名称匹配逻辑（brave-nightly正确匹配Brave Nightly）
+- HTML解析器支持扁平格式书签文件
+
+---
+
 ## [Unreleased]
 
 ### Added - 2025-12-01 (Update 3)
