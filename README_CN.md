@@ -51,7 +51,8 @@ browser-bookmark-sync smart-organize -b safari --dry-run --show-stats
 | `cleanup` | 删除重复书签和空文件夹 |
 | `smart-organize` | 按 URL 模式自动分类书签 |
 | `list-rules` | 显示可用的分类规则 |
-| `analyze` | 检测书签异常 |
+| `sync-history` | 同步浏览器历史记录 |
+| `analyze` | 分析书签（NSFW检测） |
 | `master-backup` | 创建综合备份 |
 | `restore-backup` | 从备份恢复 |
 | `clear-bookmarks` | 清空浏览器书签（仅调试用） |
@@ -110,18 +111,33 @@ browser-bookmark-sync smart-organize -r custom-rules.json
 - 🎨 设计、创意工具
 - 还有 40+ 更多分类...
 
-## 🔍 异常检测
+## 🔄 历史记录同步
 
-检测书签中的潜在问题：
+在Hub浏览器之间同步浏览历史：
+
+```bash
+# 同步最近30天的历史
+browser-bookmark-sync sync-history -b "waterfox,brave-nightly"
+
+# 同步最近7天
+browser-bookmark-sync sync-history -b "waterfox,brave-nightly" -d 7
+
+# 预览模式
+browser-bookmark-sync sync-history --dry-run
+```
+
+## 🔍 书签分析
+
+分析书签中的重复和NSFW内容：
 
 ```bash
 browser-bookmark-sync analyze -b safari
 ```
 
 检测内容：
-- **批量导入**: 一次性添加的大量书签
-- **历史污染**: 看起来像浏览历史的书签
-- **NSFW 内容**: 成人内容标记
+- **重复URL**: 同一URL被多次收藏
+- **空文件夹**: 没有书签的文件夹
+- **NSFW内容**: 成人内容统计（仅信息）
 
 ## 💾 备份与恢复
 

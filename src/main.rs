@@ -120,7 +120,27 @@ enum Commands {
     /// 📜 列出可用的分类规则
     ListRules,
     
-    /// 🔍 分析书签异常 (批量导入/历史污染/NSFW)
+    /// 🔄 同步浏览器历史记录 (双向增量同步)
+    #[command(alias = "sh", alias = "history")]
+    SyncHistory {
+        /// Hub浏览器 (逗号分隔, 默认: waterfox,brave-nightly)
+        #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
+        browsers: String,
+        
+        /// 同步天数 (默认: 30天)
+        #[arg(short = 'd', long, default_value = "30")]
+        days: i32,
+        
+        /// 预览模式 - 不实际修改
+        #[arg(long)]
+        dry_run: bool,
+        
+        /// 详细输出
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    
+    /// 🔍 分析书签 (NSFW检测)
     #[command(alias = "a")]
     Analyze {
         /// 目标浏览器 (逗号分隔, 默认: all)
@@ -255,8 +275,21 @@ async fn main() -> Result<()> {
             SyncEngine::print_builtin_rules();
         }
         
+        Commands::SyncHistory { browsers, days, dry_run, verbose } => {
+            info!("🔄 同步浏览器历史记录");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            info!("🌐 Hub浏览器: {}", browsers);
+            info!("📅 同步范围: 最近{}天", days);
+            if dry_run { info!("🏃 预览模式"); }
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            
+            let mut engine = SyncEngine::new()?;
+            engine.sync_history(Some(days), dry_run, verbose).await?;
+            info!("✅ 历史记录同步完成!");
+        }
+        
         Commands::Analyze { browsers } => {
-            info!("🔍 分析书签异常...");
+            info!("🔍 分析书签...");
             let engine = SyncEngine::new()?;
             engine.analyze_bookmarks(browsers.as_deref()).await?;
         }

@@ -51,7 +51,8 @@ browser-bookmark-sync smart-organize -b safari --dry-run --show-stats
 | `cleanup` | Remove duplicates and empty folders |
 | `smart-organize` | Auto-classify bookmarks by URL patterns |
 | `list-rules` | Show available classification rules |
-| `analyze` | Detect anomalies in bookmarks |
+| `sync-history` | Sync browsing history between hub browsers |
+| `analyze` | Analyze bookmarks (NSFW detection) |
 | `master-backup` | Create comprehensive backup |
 | `restore-backup` | Restore from backup |
 | `clear-bookmarks` | Clear browser bookmarks (debug only) |
@@ -110,18 +111,33 @@ browser-bookmark-sync smart-organize -r custom-rules.json
 - 🎨 Design, Creative Tools
 - And 40+ more...
 
-## 🔍 Anomaly Detection
+## 🔄 History Sync
 
-Detect potential issues in your bookmarks:
+Sync browsing history between hub browsers:
+
+```bash
+# Sync last 30 days of history
+browser-bookmark-sync sync-history -b "waterfox,brave-nightly"
+
+# Sync last 7 days
+browser-bookmark-sync sync-history -b "waterfox,brave-nightly" -d 7
+
+# Preview mode
+browser-bookmark-sync sync-history --dry-run
+```
+
+## 🔍 Bookmark Analysis
+
+Analyze bookmarks for duplicates and NSFW content:
 
 ```bash
 browser-bookmark-sync analyze -b safari
 ```
 
 Detects:
-- **Bulk Imports**: Large numbers of bookmarks added at once
-- **History Pollution**: Bookmarks that look like browsing history
-- **NSFW Content**: Adult content markers
+- **Duplicate URLs**: Same URL bookmarked multiple times
+- **Empty Folders**: Folders with no bookmarks
+- **NSFW Content**: Adult content statistics (info only)
 
 ## 💾 Backup & Restore
 
