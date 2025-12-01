@@ -81,6 +81,7 @@ browser-bookmark-sync export-html \
 -b, --browsers <LIST>    Source browsers (comma-separated, default: all)
 -d, --deduplicate        Remove duplicate bookmarks
     --merge              Merge into flat structure (no browser folders)
+    --clean-empty        Remove empty folders before export
     --include-html <FILE> Also import from existing HTML backup
     --clear-after        Clear bookmarks from source browsers after export
 -v, --verbose            Show detailed output

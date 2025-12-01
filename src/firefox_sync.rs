@@ -1,7 +1,5 @@
-/// Firefox Sync集成模块
-/// 
-/// 目的：在修改本地书签后，触发Firefox Sync立即同步到云端
-/// 避免云端旧数据覆盖本地修改
+//! Firefox Sync integration module - reserved for future cloud sync feature
+#![allow(dead_code)]
 
 use anyhow::{Result, Context};
 use std::path::{Path, PathBuf};

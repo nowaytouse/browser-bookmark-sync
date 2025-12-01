@@ -81,6 +81,7 @@ browser-bookmark-sync export-html \
 -b, --browsers <列表>    来源浏览器（逗号分隔，默认: all）
 -d, --deduplicate        移除重复书签
     --merge              合并为扁平结构（不按浏览器分文件夹）
+    --clean-empty        导出前移除空文件夹
     --include-html <文件> 同时导入已有 HTML 备份
     --clear-after        导出后清空来源浏览器的书签
 -v, --verbose            显示详细输出

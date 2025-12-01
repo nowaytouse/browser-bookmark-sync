@@ -48,6 +48,10 @@ enum Commands {
         #[arg(long, short = 'd')]
         deduplicate: bool,
         
+        /// Remove empty folders before export
+        #[arg(long)]
+        clean_empty: bool,
+        
         /// Also import from existing HTML backup file
         #[arg(long)]
         include_html: Option<String>,
@@ -221,13 +225,14 @@ async fn main() -> Result<()> {
             engine.list_browsers()?;
         }
         
-        Commands::ExportHtml { output, browsers, merge, deduplicate, include_html, clear_after, verbose } => {
+        Commands::ExportHtml { output, browsers, merge, deduplicate, clean_empty, include_html, clear_after, verbose } => {
             info!("Exporting bookmarks to HTML");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             info!("Output: {}", output);
             info!("Source: {}", browsers);
             if merge { info!("Mode: Merged (flat structure)"); }
             if deduplicate { info!("Deduplicate: Yes"); }
+            if clean_empty { info!("Clean empty folders: Yes"); }
             if clear_after { 
                 warn!("Clear after: YES (will delete original bookmarks!)"); 
             }
@@ -253,7 +258,7 @@ async fn main() -> Result<()> {
             }
             
             let count = engine.export_to_html_with_extra(
-                Some(&browsers), &output, merge, deduplicate, verbose, extra_bookmarks
+                Some(&browsers), &output, merge, deduplicate, clean_empty, verbose, extra_bookmarks
             ).await?;
             
             info!("");

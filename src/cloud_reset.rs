@@ -1,9 +1,5 @@
-/// 云端重置模块
-/// 
-/// 核心思路：利用Firefox Sync的正常行为
-/// 1. 清空本地书签 → Sync上传"空"到云端
-/// 2. 等待云端清空
-/// 3. 写入新书签 → Sync上传新数据到云端
+//! Cloud reset module - reserved for future cloud sync feature
+#![allow(dead_code)]
 
 use anyhow::{Result, Context};
 use std::path::Path;

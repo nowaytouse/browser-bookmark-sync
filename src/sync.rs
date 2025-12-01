@@ -1,3 +1,6 @@
+// Allow dead code for reserved/future features (sync, reading list, cookies, migration)
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -18,14 +21,16 @@ struct BookmarkLocation {
 /// Path to a bookmark in the tree (sequence of indices)
 type BookmarkPath = Vec<usize>;
 
-/// Sync mode
+/// Sync mode (reserved for future incremental sync feature)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SyncMode {
     /// Incremental sync - only sync changes since last sync
     Incremental,
 }
 
-/// Sync statistics
+/// Sync statistics (reserved for future sync feature)
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct SyncStats {
     pub bookmarks_synced: usize,
@@ -36,6 +41,7 @@ pub struct SyncStats {
 
 pub struct SyncEngine {
     adapters: Vec<Box<dyn BrowserAdapter + Send + Sync>>,
+    #[allow(dead_code)]
     last_sync_time: Option<i64>,
 }
 
@@ -4712,7 +4718,7 @@ impl SyncEngine {
         deduplicate: bool,
         verbose: bool,
     ) -> Result<usize> {
-        self.export_to_html_with_extra(browser_names, output_path, merge, deduplicate, verbose, Vec::new()).await
+        self.export_to_html_with_extra(browser_names, output_path, merge, deduplicate, false, verbose, Vec::new()).await
     }
     
     /// Export all bookmarks with additional bookmarks from external sources
@@ -4722,6 +4728,7 @@ impl SyncEngine {
         output_path: &str,
         merge: bool,
         deduplicate: bool,
+        clean_empty: bool,
         verbose: bool,
         extra_bookmarks: Vec<Bookmark>,
     ) -> Result<usize> {
@@ -4818,6 +4825,20 @@ impl SyncEngine {
             let removed = before_dedup.saturating_sub(after_dedup);
             if removed > 0 {
                 info!("  ✅ Removed {} duplicate bookmarks", removed);
+            }
+        }
+        
+        // Clean empty folders if requested
+        if clean_empty {
+            info!("🧹 Cleaning empty folders...");
+            let mut total_empty_removed = 0;
+            loop {
+                let removed = Self::cleanup_empty_folders(&mut all_bookmarks);
+                if removed == 0 { break; }
+                total_empty_removed += removed;
+            }
+            if total_empty_removed > 0 {
+                info!("  ✅ Removed {} empty folders", total_empty_removed);
             }
         }
         

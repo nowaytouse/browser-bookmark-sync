@@ -14,6 +14,8 @@ pub struct Bookmark {
     pub date_modified: Option<i64>,
 }
 
+// Reserved for future cookie sync feature
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cookie {
     pub host: String,
@@ -25,6 +27,8 @@ pub struct Cookie {
     pub is_http_only: bool,
 }
 
+// Reserved for future reading list sync feature
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadingListItem {
     pub url: String,
@@ -71,13 +75,16 @@ pub trait BrowserAdapter: Send + Sync {
     fn backup_bookmarks(&self) -> Result<PathBuf>;
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool>;
     
-    // Reading list support
+    // Reading list support (reserved for future)
+    #[allow(dead_code)]
     fn supports_reading_list(&self) -> bool {
         false
     }
+    #[allow(dead_code)]
     fn read_reading_list(&self) -> Result<Vec<ReadingListItem>> {
         Ok(vec![])
     }
+    #[allow(dead_code)]
     fn write_reading_list(&self, _items: &[ReadingListItem]) -> Result<()> {
         Ok(())
     }
@@ -93,13 +100,16 @@ pub trait BrowserAdapter: Send + Sync {
         Ok(())
     }
     
-    // Cookies support
+    // Cookies support (reserved for future)
+    #[allow(dead_code)]
     fn supports_cookies(&self) -> bool {
         false
     }
+    #[allow(dead_code)]
     fn read_cookies(&self) -> Result<Vec<Cookie>> {
         Ok(vec![])
     }
+    #[allow(dead_code)]
     fn write_cookies(&self, _cookies: &[Cookie]) -> Result<()> {
         Ok(())
     }
@@ -1702,8 +1712,9 @@ fn write_firefox_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Re
     Ok(())
 }
 
-// Safari reading list helper functions
+// Safari reading list helper functions (reserved for future)
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem>> {
     let mut items = Vec::new();
     
@@ -1750,6 +1761,7 @@ fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn update_safari_reading_list(_plist: &mut plist::Value, _items: &[ReadingListItem]) -> Result<()> {
     // This is a simplified implementation
     // In reality, we need to preserve the existing structure and only update the reading list section
@@ -1985,7 +1997,8 @@ fn write_safari_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Res
     Ok(())
 }
 
-// Firefox/Waterfox cookies helper functions
+// Firefox/Waterfox cookies helper functions (reserved for future)
+#[allow(dead_code)]
 fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
     use rusqlite::{Connection, OpenFlags};
     
@@ -2022,6 +2035,7 @@ fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
     Ok(cookies)
 }
 
+#[allow(dead_code)]
 fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
     use rusqlite::Connection;
     
@@ -2055,7 +2069,8 @@ fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Resul
     Ok(())
 }
 
-// Chromium cookies helper functions
+// Chromium cookies helper functions (reserved for future)
+#[allow(dead_code)]
 fn read_chromium_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
     use rusqlite::{Connection, OpenFlags};
     
@@ -2092,6 +2107,7 @@ fn read_chromium_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
     Ok(cookies)
 }
 
+#[allow(dead_code)]
 fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
     use rusqlite::Connection;
     

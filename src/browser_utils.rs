@@ -1,3 +1,6 @@
+// Browser utilities - reserved for future browser control features
+#![allow(dead_code)]
+
 use anyhow::Result;
 use std::process::Command;
 use std::thread;

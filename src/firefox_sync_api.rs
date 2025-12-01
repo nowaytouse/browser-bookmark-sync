@@ -1,7 +1,5 @@
-/// Firefox Sync API完整实现
-/// 
-/// 直接与Firefox Sync云端通信，上传书签数据
-/// 这是唯一能真正解决冲突的方案
+//! Firefox Sync API - reserved for future cloud sync feature
+#![allow(dead_code)]
 
 use anyhow::{Result, Context, bail};
 use serde::{Deserialize, Serialize};
