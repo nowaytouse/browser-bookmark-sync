@@ -13,10 +13,11 @@ A powerful cross-browser synchronization tool for bookmarks, history, and cookie
 - **Comprehensive Validation** - Pre-sync and post-sync integrity checks
 
 ### 🧠 Smart Organization (Rule Engine)
-- **18 Built-in Classification Rules** - Automatically categorize bookmarks by URL patterns
+- **48 Built-in Classification Rules** - Automatically categorize bookmarks by URL patterns
 - **Custom Rules Support** - Load your own rules from JSON files
 - **Multi-dimensional Matching** - URL, domain, path, and title pattern matching
 - **Priority-based Processing** - Higher priority rules match first
+- **Re-classification Support** - Automatically re-classify "Uncategorized" bookmarks
 
 ### 🎯 Hub Browser Architecture
 - **Designate Primary Browsers** - Sync between hub browsers, optionally clean others
@@ -102,28 +103,46 @@ browser-bookmark-sync cleanup --remove-duplicates --remove-empty-folders
 
 The intelligent classification engine automatically organizes bookmarks into categories based on URL patterns, domains, paths, and titles.
 
-### Built-in Categories
+### Built-in Categories (48 Rules)
 
 | Priority | Category | Folder Name | Description |
 |----------|----------|-------------|-------------|
 | 100 | **Login** | 登录入口 | Login pages, SSO, OAuth endpoints |
+| 95 | **NSFW** | NSFW内容 | Adult content (auto-detected) |
 | 90 | **Social** | 社交媒体 | Twitter, Facebook, Instagram, etc. |
+| 88 | **Discord** | Discord社群 | Discord servers and invites |
 | 85 | **Video** | 视频流媒体 | YouTube, Netflix, Bilibili, etc. |
 | 80 | **Dev** | 开发工具 | GitHub, StackOverflow, npm, etc. |
 | 75 | **Shopping** | 购物网站 | Amazon, Taobao, eBay, etc. |
+| 72 | **Anime** | 动漫二次元 | MyAnimeList, Anilist, manga sites |
 | 70 | **News** | 新闻资讯 | CNN, BBC, Reuters, etc. |
+| 68 | **Streaming** | 直播平台 | Twitch, live streaming platforms |
 | 65 | **Docs** | 文档参考 | Wikipedia, ReadTheDocs, etc. |
 | 60 | **Cloud** | 云存储 | Google Drive, Dropbox, etc. |
+| 56 | **DevTools** | 开发者工具 | JetBrains, VS Code, IDEs |
 | 55 | **Email** | 邮箱通讯 | Gmail, Outlook, etc. |
+| 52 | **ImageHost** | 图床托管 | Imgur, ibb.co, image hosting |
 | 50 | **Finance** | 金融理财 | PayPal, banks, investment sites |
+| 48 | **Directories** | 导航目录 | Link aggregators, directories |
+| 46 | **Chinese** | 中文平台 | Baidu, Zhihu, Bilibili, etc. |
 | 45 | **AI** | AI工具 | ChatGPT, Claude, Midjourney, etc. |
-| 40 | **Design** | 设计创意 | Figma, Canva, Dribbble, etc. |
-| 35 | **Education** | 教育学习 | Coursera, Udemy, etc. |
+| 44 | **Creative** | 设计素材 | Adobe, icons, fonts, design |
+| 42 | **Security** | 安全隐私 | VPN, privacy tools, antivirus |
+| 40 | **Hardware** | 硬件技术 | NVIDIA, AMD, tech reviews |
+| 38 | **Linux** | Linux开源 | Arch, Ubuntu, open source |
+| 36 | **Microsoft** | 微软服务 | Microsoft products and services |
+| 34 | **Apple** | 苹果服务 | Apple products and services |
+| 32 | **Google** | 谷歌服务 | Google products and services |
 | 30 | **Music** | 音乐音频 | Spotify, Apple Music, etc. |
+| 28 | **Torrents** | 下载资源 | Torrent sites, downloads |
 | 25 | **Gaming** | 游戏娱乐 | Steam, Epic Games, etc. |
+| 22 | **Extensions** | 浏览器扩展 | Browser extensions, themes |
 | 20 | **Forum** | 论坛社区 | Reddit, Quora, V2EX, etc. |
-| 15 | **Admin** | 管理后台 | Admin panels, dashboards |
-| 10 | **API** | API服务 | API endpoints, web services |
+| 18 | **Tools** | 在线工具 | Online utilities, converters |
+| 16 | **Productivity** | 效率工具 | Notion, Trello, note-taking |
+| 14 | **GameCommunity** | 游戏社区 | Steam community, mods, wikis |
+| 10 | **Blogs** | 博客站点 | WordPress, Medium, blogs |
+| 8 | **Hosting** | 托管项目 | GitHub Pages, Vercel, Netlify |
 
 ### Custom Rules
 

@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added - 2025-12-01
+
+#### 🧠 规则引擎大幅扩展（48→75条）
+- **新增27条分类规则**: 从48条扩展到75条,全面覆盖常见场景
+- **技术类新增** (7条):
+  - DevOps & CI/CD (优先级76): Jenkins、GitLab CI、CircleCI等
+  - 数据库服务 (优先级74): PostgreSQL、MongoDB、Redis等
+  - 区块链加密 (优先级54): 以太坊、比特币、NFT、DeFi等
+  - 服务器监控 (优先级58): Grafana、Prometheus、Datadog等
+  - API工具 (优先级62): Postman、Swagger、Insomnia等
+  - 容器云原生 (优先级66): Docker、Kubernetes、K8s等
+  - 开源许可 (优先级33): choosealicense.com、开源协议等
+
+- **生活服务新增** (6条):
+  - 旅游出行 (优先级41): Booking、Airbnb、携程等
+  - 外卖美食 (优先级39): UberEats、美团、饿了么等
+  - 地图导航 (优先级53): Google Maps、高德地图等
+  - 健康医疗 (优先级47): WebMD、Mayo Clinic等
+  - 天气服务 (优先级31): 天气预报服务
+  - 求职招聘 (优先级43): LinkedIn、Indeed、BOSS直聘等
+
+- **媒体内容新增** (5条):
+  - 播客节目 (优先级37): Apple Podcasts、Spotify Podcasts等
+  - 电子书阅读 (优先级29): Kindle、Goodreads、Z-Library等
+  - 漫画在线 (优先级27): Webtoons、漫画站等
+  - 摄影图片 (优先级23): 500px、Flickr、摄影平台
+  - 体育运动 (优先级21): ESPN、NBA、体育赛事
+
+- **电商细分新增** (3条):
+  - 二手交易 (优先级19): eBay、闲鱼、二手市场
+  - 团购优惠 (优先级17): Groupon、什么值得买等
+  - 价格比较 (优先级13): 价格跟踪、比价平台
+
+- **特殊场景新增** (4条):
+  - 短链接服务 (优先级12): bit.ly、短链接服务
+  - 本地开发 (优先级11): localhost、本地服务器
+  - 翻译服务 (优先级49): Google翻译、DeepL、有道等
+  - 字体资源 (优先级25): Google Fonts、字体下载
+
+- **本地化新增** (2条):
+  - 日本服务 (优先级51): nicovideo.jp、pixiv.net、DMM等
+  - 韩国服务 (优先级51): naver.com、kakao.com等
+
+**目标**: 最大限度减少「未分类」书签,提升自动化分类准确度
+
+**文档更新**:
+- 更新 `README_CN.md`: 规则数量48→75条,新增规则表格
+- 添加 🆕 标识标记新增规则
+
 ### Fixed - 2024-11-30 (Update 4)
 
 #### 🔧 主页整理功能修复

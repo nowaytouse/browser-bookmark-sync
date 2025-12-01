@@ -206,8 +206,9 @@ fn normalize_url(url: &str) -> String {
 // - deep_clean_bookmarks
 // ============================================================
 
-/// 清理统计（保留结构用于兼容）
+/// 清理统计（保留结构用于兼容，自动清理功能已禁用）
 #[derive(Debug, Default)]
+#[allow(dead_code)]  // 保留用于API兼容性，自动清理功能已禁用
 pub struct CleanupStats {
     pub bulk_removed: usize,
     pub history_removed: usize,
@@ -215,6 +216,7 @@ pub struct CleanupStats {
     pub empty_removed: usize,
 }
 
+#[allow(dead_code)]  // 保留用于API兼容性
 impl CleanupStats {
     pub fn total_removed(&self) -> usize {
         self.bulk_removed + self.history_removed + self.empty_removed

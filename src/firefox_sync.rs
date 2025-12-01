@@ -268,6 +268,7 @@ impl FirefoxSyncHandler {
     }
     
     /// 检查是否启用了Sync
+    #[allow(dead_code)]  // 公开API，预留给未来使用
     pub fn is_sync_enabled(&self) -> bool {
         self.config.sync_enabled
     }
@@ -275,8 +276,6 @@ impl FirefoxSyncHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    
     #[test]
     fn test_sync_detection() {
         // 测试需要真实的profile路径

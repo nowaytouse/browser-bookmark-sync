@@ -2002,12 +2002,17 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "developer.mozilla.org", "devdocs.io", "docs.rs",
                 // 开源代码托管
                 "codeberg.org", "sourceforge.net", "sr.ht", "gitea.com",
+                "gitlab.gnome.org", "gitlab.freedesktop.org", "invent.kde.org",
+                "git.sr.ht", "0xacab.org", "framagit.org",
                 // 浏览器扩展/脚本
                 "greasyfork.org", "openuserjs.org", "userscripts-mirror.org",
                 "addons.mozilla.org", "chrome.google.com/webstore",
                 "mybrowseraddon.com", "webextension.org",
                 // Colab/Jupyter
-                "colab.research.google.com", "jupyter.org", "kaggle.com"
+                "colab.research.google.com", "jupyter.org", "kaggle.com",
+                // 新增
+                "gist.github.com", "readthedocs.io", "gitbook.io",
+                "dev.to", "hashnode.dev", "hackernoon.com"
             ],
             vec!["/api/", "/docs/", "/documentation", "/developer", "/sdk"],
             vec!["api 文档", "api doc", "developer", "开发者"],
@@ -2073,6 +2078,7 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             vec![],
             vec![
                 "drive.google.com", "dropbox.com", "onedrive.live.com", "box.com",
+                "mega.nz", "mega.io", "swisstransfer.com",
                 "icloud.com", "pan.baidu.com", "weiyun.com", "115.com", "mega.nz"
             ],
             vec!["/drive", "/files", "/storage"],
@@ -2207,10 +2213,11 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             "forum",
             "论坛社区",
             "Forums & Communities",
-            vec!["forum.", "bbs.", "community."],
+            vec!["forum.", "bbs.", "community.", "forums."],
             vec![
                 "reddit.com", "quora.com", "zhihu.com", "tieba.baidu.com",
-                "v2ex.com", "segmentfault.com", "juejin.cn"
+                "v2ex.com", "segmentfault.com", "juejin.cn",
+                "forums.mydigitallife.net", "bbs.pcbeta.com"
             ],
             vec!["/forum", "/community", "/discuss", "/topic"],
             vec!["论坛", "社区", "讨论", "forum", "community", "discuss"],
@@ -2254,10 +2261,13 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "apps.apple.com", "play.google.com", "apps.microsoft.com",
                 "f-droid.org", "apkpure.com", "apkmirror.com",
                 "apps.kde.org", "flathub.org", "snapcraft.io",
-                "modrinth.com", "curseforge.com", "itch.io"
+                "modrinth.com", "curseforge.com", "itch.io",
+                // 新增
+                "alternativeto.net", "softpedia.com", "majorgeeks.com",
+                "filehippo.com", "softonic.com", "cnet.com/download"
             ],
-            vec!["/app/", "/apps/", "/store/"],
-            vec!["app store", "应用商店", "下载"],
+            vec!["/app/", "/apps/", "/store/", "/download/"],
+            vec!["app store", "应用商店", "下载", "software"],
             55,
             "App stores and software distribution"
         ),
@@ -2272,10 +2282,13 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "archive.org", "web.archive.org", "archive.is", "archive.ph",
                 "rentry.co", "rentry.org", "pastebin.com", "paste.ee",
                 "ghostbin.com", "hastebin.com", "dpaste.org",
-                "start.me", "linktr.ee"
+                "start.me", "linktr.ee",
+                // 新增
+                "notion.site", "coda.io", "airtable.com",
+                "docs.google.com", "sheets.google.com"
             ],
-            vec!["/archive", "/paste"],
-            vec!["archive", "存档", "备份"],
+            vec!["/archive", "/paste", "/doc/", "/document/"],
+            vec!["archive", "存档", "备份", "文档"],
             45,
             "Web archives and paste services"
         ),
@@ -2349,7 +2362,7 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "pixiv.net", "iwara.tv", "kemono.party", "coomer.party",
                 "onlyfans.com", "fansly.com", "patreon.com/nsfw",
                 "f95zone.to", "ulmf.org", "dlsite.com",
-                "e621.net", "kemono.cr", "baraag.net", "tbib.org"
+                "e621.net", "kemono.cr", "kemono.su", "baraag.net", "tbib.org"
             ],
             vec!["/porn", "/adult", "/xxx", "/nsfw", "/hentai", "/video/porn"],
             vec!["porn", "hentai", "nsfw", "adult", "xxx", "18+", "r18", "r-18"],
@@ -2365,7 +2378,7 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             vec![],
             vec![
                 "discord.gg", "discord.com/invite", "discordapp.com/invite",
-                "discord.me", "disboard.org", "top.gg"
+                "discord.me", "disboard.org", "top.gg", "discordapp.com"
             ],
             vec!["/invite/"],
             vec!["discord", "server", "invite"],
@@ -2385,7 +2398,8 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "crunchyroll.com", "funimation.com", "9anime.to",
                 "gogoanime.io", "animixplay.to", "zoro.to",
                 "theindex.moe", "everythingmoe.com", "everythingmoe.org",
-                "wotaku.wiki", "asmr.one", "aidn.jp"
+                "wotaku.wiki", "asmr.one", "aidn.jp", "simkl.com",
+                "newgrounds.com", "deviantart.com", "artstation.com"
             ],
             vec!["/anime/", "/manga/"],
             vec!["anime", "manga", "动漫", "漫画", "番剧"],
@@ -2422,8 +2436,8 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "mullvad.net", "protonvpn.com", "nordvpn.com", "expressvpn.com",
                 "adguard.com", "adguard-dns.io", "rethinkdns.com",
                 "virustotal.com", "malwarebytes.com", "eff.org",
-                "privacytools.io", "privacyguides.org",
-                "grc.com", "haveibeenpwned.com"
+                "privacytools.io", "privacyguides.org", "proton.me",
+                "grc.com", "haveibeenpwned.com", "objective-see.org"
             ],
             vec!["/security", "/privacy", "/vpn"],
             vec!["vpn", "proxy", "privacy", "security", "安全", "隐私"],
@@ -2443,7 +2457,9 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "linuxmint.com", "manjaro.org", "opensuse.org",
                 "gnome.org", "kde.org", "apps.kde.org",
                 "flathub.org", "snapcraft.io", "appimage.org",
-                "gnu.org", "fsf.org", "opensource.org"
+                "gnu.org", "fsf.org", "opensource.org",
+                "gitlab.gnome.org", "wiki.gnome.org", "apps.gnome.org",
+                "invent.kde.org", "cdn.kde.org", "krita-artists.org", "0xacab.org"
             ],
             vec!["/linux", "/gnu"],
             vec!["linux", "gnu", "开源", "open source"],
@@ -2550,7 +2566,8 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             vec![
                 "nasa.gov", "arxiv.org", "nature.com", "science.org",
                 "nih.gov", "si.edu", "libretexts.org",
-                "wolframalpha.com", "mathworld.wolfram.com"
+                "wolframalpha.com", "mathworld.wolfram.com",
+                "loc.gov", "ncatlab.org"
             ],
             vec!["/research", "/paper", "/article"],
             vec!["research", "science", "paper", "study"],
@@ -2584,7 +2601,7 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             vec![
                 "add0n.com", "webextension.org", "mybrowseraddon.com",
                 "userstyles.world", "betterdiscord.app",
-                "draculatheme.com", "sindresorhus.com"
+                "draculatheme.com", "sindresorhus.com", "openuserjs.org"
             ],
             vec!["/extension", "/addon", "/theme"],
             vec!["extension", "addon", "theme", "扩展", "插件"],
@@ -2603,9 +2620,13 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "jsonformatter.org", "base64decode.org",
                 "time.is", "weather.com", "viewdns.info",
                 "ss64.com", "softwareok.com", "nirsoft.net",
-                "majorgeeks.com"
+                "majorgeeks.com", "wolframalpha.com", "toptal.com",
+                "neal.fun", "codepen.io",
+                // 新增
+                "builtwith.com", "fontmeme.com", "theuselessweb.com",
+                "pointlesssites.com", "perchance.org", "pudding.cool"
             ],
-            vec!["/tool", "/convert", "/generate"],
+            vec!["/tool", "/convert", "/generate", "/tools"],
             vec!["tool", "converter", "generator", "工具"],
             18,
             "Online tools and utilities"
@@ -2637,13 +2658,611 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             vec![
                 "steamcommunity.com", "steamdb.info", "steambase.io",
                 "crackwatch.com", "pcgamingwiki.com",
-                "nexusmods.com", "moddb.com",
-                "lichess.org", "chess.com"
+                "nexusmods.com", "moddb.com", "gamebanana.com",
+                "lichess.org", "chess.com", "emulation.gametechwiki.com",
+                "cs.rin.ru", "store.steampowered.com", "gamejolt.com", "modlist.in", "geode-sdk.org"
             ],
             vec!["/community", "/mod", "/guide"],
             vec!["mod", "guide", "wiki", "攻略"],
             14,
             "Gaming communities and resources"
+        ),
+        
+        // 41. Image Hosting
+        ClassificationRule::new(
+            "imagehost",
+            "图床托管",
+            "Image Hosting",
+            vec![],
+            vec![
+                "i.ibb.co", "ibb.co", "imgbb.com", "imgur.com",
+                "postimg.cc", "imgbox.com", "flickr.com",
+                "500px.com", "unsplash.com", "pexels.com"
+            ],
+            vec![],
+            vec![],
+            52,
+            "Image hosting services"
+        ),
+        
+        // 42. Link Aggregators & Directories
+        ClassificationRule::new(
+            "directories",
+            "导航目录",
+            "Directories & Aggregators",
+            vec![],
+            vec![
+                "linktr.ee", "linktree.com", "start.me", "curlie.org",
+                "fmhy.net", "rgshows.me", "alternativeto.net"
+            ],
+            vec![],
+            vec!["directory", "list", "collection"],
+            48,
+            "Link directories and aggregators"
+        ),
+        
+        // 43. Chinese Platforms
+        ClassificationRule::new(
+            "chinese",
+            "中文平台",
+            "Chinese Platforms",
+            vec![],
+            vec![
+                "baidu.com", "zhihu.com", "zhuanlan.zhihu.com",
+                "bilibili.com", "weibo.com", "douban.com",
+                "linux.do", "v2ex.com", "juejin.cn"
+            ],
+            vec![],
+            vec![],
+            46,
+            "Chinese language platforms"
+        ),
+        
+        // 44. Design & Creative
+        ClassificationRule::new(
+            "creative",
+            "设计素材",
+            "Design & Creative",
+            vec![],
+            vec![
+                "adobe.com", "icons8.com", "flaticon.com",
+                "fontawesome.com", "fonts.google.com",
+                "krita-artists.org", "blender.org"
+            ],
+            vec!["/design", "/icon", "/font"],
+            vec!["design", "icon", "font", "素材"],
+            44,
+            "Design resources and creative tools"
+        ),
+        
+        // 45. Hardware & Tech
+        ClassificationRule::new(
+            "hardware",
+            "硬件技术",
+            "Hardware & Tech",
+            vec![],
+            vec![
+                "nvidia.com", "amd.com", "intel.com",
+                "techpowerup.com", "tomshardware.com",
+                "anandtech.com", "notebookcheck.net"
+            ],
+            vec![],
+            vec!["gpu", "cpu", "hardware"],
+            40,
+            "Hardware and technology resources"
+        ),
+        
+        // 46. Hosting Platforms (个人项目/博客)
+        ClassificationRule::new(
+            "hosting",
+            "托管项目",
+            "Hosted Projects",
+            vec![],
+            vec![
+                "github.io", "vercel.app", "netlify.app", "pages.dev",
+                "neocities.org", "glitch.me", "web.app", "appspot.com",
+                "gitlab.io", "surge.sh", "fly.dev", "railway.app",
+                "render.com", "heroku.com", "replit.com"
+            ],
+            vec![],
+            vec![],
+            8,  // 低优先级，作为兜底
+            "Hosted projects and personal sites"
+        ),
+        
+        // 47. Blogs & Personal Sites
+        ClassificationRule::new(
+            "blogs",
+            "博客站点",
+            "Blogs & Personal",
+            vec!["blog"],
+            vec![
+                "blogspot.com", "wordpress.com", "medium.com",
+                "substack.com", "ghost.io", "wixsite.com",
+                "carrd.co", "tumblr.com"
+            ],
+            vec!["/blog", "/post"],
+            vec!["blog", "博客"],
+            10,
+            "Blogs and personal websites"
+        ),
+        
+        // 48. Developer Tools
+        ClassificationRule::new(
+            "devtools",
+            "开发者工具",
+            "Developer Tools",
+            vec![],
+            vec![
+                "jetbrains.com", "cursor.com", "vscode.dev",
+                "replit.com", "codepen.io", "jsfiddle.net",
+                "codesandbox.io", "stackblitz.com"
+            ],
+            vec![],
+            vec!["ide", "editor", "编辑器"],
+            56,
+            "Developer tools and IDEs"
+        ),
+        
+        // === 新增规则 (49-75) ===
+        
+        // 49. DevOps & CI/CD
+        ClassificationRule::new(
+            "devops",
+            "DevOps运维",
+            "DevOps & CI/CD",
+            vec!["jenkins", "gitlab-ci", "circleci", "travis", "actions"],
+            vec![
+                "jenkins.io", "circleci.com", "travis-ci.org", "travis-ci.com",
+                "actions.github.com", "gitlab.com/ci", "drone.io",
+                "teamcity.jetbrains.com", "bamboo.atlassian.com",
+                "semaphoreci.com", "buildkite.com", "concourse-ci.org"
+            ],
+            vec!["/pipeline", "/ci", "/cd", "/deploy", "/builds"],
+            vec!["CI/CD", "DevOps", "持续集成", "自动化部署", "pipeline"],
+            76,
+            "DevOps and CI/CD platforms"
+        ),
+        
+        // 50. 数据库服务
+        ClassificationRule::new(
+            "database",
+            "数据库服务",
+            "Database Services",
+            vec!["database", "db", "sql", "nosql"],
+            vec![
+                "postgresql.org", "mysql.com", "mongodb.com", "redis.io",
+                "supabase.com", "firebase.google.com", "planetscale.com",
+                "cockroachlabs.com", "cassandra.apache.org", "mariadb.org",
+                "sqlite.org", "arangodb.com", "couchdb.apache.org",
+                "neo4j.com", "influxdata.com", "timescale.com"
+            ],
+            vec!["/database", "/db", "/sql", "/query"],
+            vec!["database", "数据库", "SQL", "NoSQL", "查询"],
+            74,
+            "Database services and tools"
+        ),
+        
+        // 51. 区块链加密货币
+        ClassificationRule::new(
+            "blockchain",
+            "区块链加密",
+            "Blockchain & Crypto",
+            vec!["crypto", "blockchain", "nft", "defi", "web3", "bitcoin", "ethereum"],
+            vec![
+                "ethereum.org", "bitcoin.org", "binance.com", "coinbase.com",
+                "opensea.io", "uniswap.org", "metamask.io", "rarible.com",
+                "crypto.com", "kraken.com", "gemini.com", "coinmarketcap.com",
+                "coingecko.com", "etherscan.io", "blockchain.com"
+            ],
+            vec!["/crypto", "/blockchain", "/nft", "/defi", "/wallet"],
+            vec!["加密货币", "区块链", "NFT", "DeFi", "Web3", "比特币", "以太坊"],
+            54,
+            "Blockchain and cryptocurrency"
+        ),
+        
+        // 52. 服务器监控
+        ClassificationRule::new(
+            "monitoring",
+            "服务器监控",
+            "Server Monitoring",
+            vec!["monitor", "metrics", "observability", "apm"],
+            vec![
+                "grafana.com", "prometheus.io", "datadog.com", "newrelic.com",
+                "sentry.io", "uptimerobot.com", "pingdom.com", "statuspage.io",
+                "elastic.co", "splunk.com", "dynatrace.com", "appdynamics.com"
+            ],
+            vec!["/monitor", "/metrics", "/dashboard", "/analytics"],
+            vec!["监控", "性能", "metrics", "observability"],
+            58,
+            "Server monitoring and observability"
+        ),
+        
+        // 53. API文档与测试
+        ClassificationRule::new(
+            "apitools",
+            "API工具",
+            "API Tools",
+            vec!["postman", "insomnia", "swagger", "openapi"],
+            vec![
+                "postman.com", "insomnia.rest", "hoppscotch.io", "swagger.io",
+                "stoplight.io", "apidoc.tools", "readme.com", "apidog.com"
+            ],
+            vec!["/api/docs", "/swagger", "/openapi", "/api-docs"],
+            vec!["API测试", "Postman", "Swagger", "API文档"],
+            62,
+            "API documentation and testing tools"
+        ),
+        
+        // 54. 容器与云原生
+        ClassificationRule::new(
+            "containers",
+            "容器云原生",
+            "Containers & Cloud Native",
+            vec!["docker", "kubernetes", "k8s", "container"],
+            vec![
+                "docker.com", "kubernetes.io", "k8s.io", "helm.sh",
+                "rancher.com", "portainer.io", "containerd.io",
+                "podman.io", "cloud.docker.com", "docker.io"
+            ],
+            vec!["/docker", "/kubernetes", "/k8s", "/container"],
+            vec!["容器", "Docker", "Kubernetes", "K8s", "云原生"],
+            66,
+            "Container and cloud-native technologies"
+        ),
+        
+        // 55. 软件许可与开源
+        ClassificationRule::new(
+            "licensing",
+            "开源许可",
+            "Open Source Licensing",
+            vec!["license", "licensing", "opensource"],
+            vec![
+                "choosealicense.com", "opensource.org", "creativecommons.org",
+                "tldrlegal.com", "spdx.org", "gnu.org/licenses"
+            ],
+            vec!["/license", "/licensing"],
+            vec!["开源许可", "License", "GPL", "MIT", "Apache"],
+            33,
+            "Open source licenses and legal"
+        ),
+        
+        // 56. 旅游出行
+        ClassificationRule::new(
+            "travel",
+            "旅游出行",
+            "Travel & Tourism",
+            vec!["travel", "trip", "hotel", "flight", "vacation"],
+            vec![
+                "booking.com", "airbnb.com", "expedia.com", "tripadvisor.com",
+                "skyscanner.com", "hotels.com", "priceline.com", "kayak.com",
+                "agoda.com", "hostelworld.com", "ctrip.com", "qunar.com",
+                "mafengwo.cn", "qyer.com"
+            ],
+            vec!["/travel", "/trip", "/hotel", "/flight", "/vacation"],
+            vec!["旅游", "酒店", "机票", "travel", "hotel", "flight"],
+            41,
+            "Travel and tourism platforms"
+        ),
+        
+        // 57. 外卖美食
+        ClassificationRule::new(
+            "food",
+            "外卖美食",
+            "Food Delivery",
+            vec!["food", "delivery", "restaurant", "menu"],
+            vec![
+                "doordash.com", "ubereats.com", "grubhub.com", "deliveroo.com",
+                "ele.me", "meituan.com", "dianping.com", "zomato.com",
+                "yelp.com", "opentable.com", "seamless.com"
+            ],
+            vec!["/food", "/delivery", "/restaurant", "/menu", "/order"],
+            vec!["外卖", "美食", "restaurant", "food delivery", "订餐"],
+            39,
+            "Food delivery and restaurant services"
+        ),
+        
+        // 58. 地图导航
+        ClassificationRule::new(
+            "maps",
+            "地图导航",
+            "Maps & Navigation",
+            vec!["maps", "navigation", "directions"],
+            vec![
+                "maps.google.com", "maps.apple.com", "openstreetmap.org",
+                "waze.com", "here.com", "mapbox.com", "map.baidu.com",
+                "amap.com", "mapy.cz", "yandex.ru/maps"
+            ],
+            vec!["/maps", "/navigation", "/directions", "/route"],
+            vec!["地图", "导航", "navigation", "directions", "maps"],
+            53,
+            "Maps and navigation services"
+        ),
+        
+        // 59. 健康医疗
+        ClassificationRule::new(
+            "health",
+            "健康医疗",
+            "Health & Medical",
+            vec!["health", "medical", "medicine", "doctor"],
+            vec![
+                "webmd.com", "healthline.com", "mayoclinic.org", "nih.gov",
+                "medlineplus.gov", "drugs.com", "rxlist.com", "patient.info",
+                "medicalnewstoday.com", "everydayhealth.com"
+            ],
+            vec!["/health", "/medical", "/medicine", "/doctor", "/symptom"],
+            vec!["健康", "医疗", "health", "medical", "医生", "疾病"],
+            47,
+            "Health and medical information"
+        ),
+        
+        // 60. 天气服务
+        ClassificationRule::new(
+            "weather",
+            "天气服务",
+            "Weather Services",
+            vec!["weather", "forecast", "meteo"],
+            vec![
+                "weather.com", "accuweather.com", "weather.gov", "windy.com",
+                "weatherunderground.com", "wunderground.com", "meteoblue.com",
+                "weather.yahoo.com", "yr.no"
+            ],
+            vec!["/weather", "/forecast"],
+            vec!["天气", "weather", "forecast", "气象"],
+            31,
+            "Weather forecast services"
+        ),
+        
+        // 61. 求职招聘
+        ClassificationRule::new(
+            "jobs",
+            "求职招聘",
+            "Jobs & Careers",
+            vec!["jobs", "career", "hiring", "recruit"],
+            vec![
+                "linkedin.com/jobs", "indeed.com", "glassdoor.com", "monster.com",
+                "zhipin.com", "lagou.com", "51job.com", "liepin.com",
+                "workable.com", "greenhouse.io", "lever.co"
+            ],
+            vec!["/jobs", "/career", "/careers", "/hiring", "/job"],
+            vec!["招聘", "求职", "career", "hiring", "工作"],
+            43,
+            "Job search and career platforms"
+        ),
+        
+        // 62. 播客Podcast
+        ClassificationRule::new(
+            "podcast",
+            "播客节目",
+            "Podcasts",
+            vec!["podcast", "podcasts"],
+            vec![
+                "podcasts.apple.com", "podcasts.google.com", "spotify.com/podcasts",
+                "anchor.fm", "podbean.com", "buzzsprout.com", "transistor.fm",
+                "simplecast.com", "overcast.fm", "pocketcasts.com"
+            ],
+            vec!["/podcast", "/podcasts", "/episode", "/show"],
+            vec!["podcast", "播客", "节目", "episode"],
+            37,
+            "Podcast platforms and directories"
+        ),
+        
+        // 63. 电子书阅读
+        ClassificationRule::new(
+            "ebooks",
+            "电子书阅读",
+            "E-books & Reading",
+            vec!["ebook", "books", "reading", "library"],
+            vec![
+                "kindle.amazon.com", "goodreads.com", "zlibrary.to", "z-lib.org",
+                "annas-archive.org", "libgen.is", "libgen.rs", "libgen.st",
+                "archive.org/details/books", "gutenberg.org", "openlibrary.org",
+                "scribd.com", "bookwalker.jp"
+            ],
+            vec!["/book", "/books", "/ebook", "/read", "/library"],
+            vec!["电子书", "ebook", "books", "阅读", "reading"],
+            29,
+            "E-book platforms and digital libraries"
+        ),
+        
+        // 64. 漫画Comic
+        ClassificationRule::new(
+            "comics",
+            "漫画在线",
+            "Comics & Webcomics",
+            vec!["comic", "webtoon", "webcomic", "manga"],
+            vec![
+                "webtoons.com", "comixology.com", "readcomiconline.li",
+                "marvel.com", "dccomics.com", "tapas.io", "globalcomix.com",
+                "comic-walker.com", "mangaplus.shueisha.co.jp"
+            ],
+            vec!["/comic", "/comics", "/webtoon", "/manga", "/chapter"],
+            vec!["漫画", "comic", "webtoon", "webcomic"],
+            27,
+            "Comics and webcomics platforms"
+        ),
+        
+        // 65. 摄影图片
+        ClassificationRule::new(
+            "photography",
+            "摄影图片",
+            "Photography",
+            vec!["photo", "photography", "photographer"],
+            vec![
+                "500px.com", "flickr.com", "unsplash.com", "pexels.com",
+                "pixabay.com", "shutterstock.com", "gettyimages.com",
+                "smugmug.com", "photobucket.com", "imageshack.com"
+            ],
+            vec!["/photo", "/photos", "/image", "/photography", "/gallery"],
+            vec!["摄影", "photography", "photo", "图片"],
+            23,
+            "Photography and image platforms"
+        ),
+        
+        // 66. 体育运动
+        ClassificationRule::new(
+            "sports",
+            "体育运动",
+            "Sports",
+            vec!["sport", "sports", "football", "basketball"],
+            vec![
+                "espn.com", "nba.com", "nfl.com", "fifa.com", "olympics.com",
+                "mlb.com", "nhl.com", "uefa.com", "premierleague.com",
+                "skysports.com", "bleacherreport.com", "sports.yahoo.com",
+                "thescore.com", "livescore.com"
+            ],
+            vec!["/sports", "/sport", "/game", "/match", "/scores"],
+            vec!["体育", "sports", "运动", "足球", "篮球"],
+            21,
+            "Sports and athletics"
+        ),
+        
+        // 67. 二手交易
+        ClassificationRule::new(
+            "secondhand",
+            "二手交易",
+            "Secondhand & Marketplace",
+            vec!["secondhand", "used", "marketplace", "resale"],
+            vec![
+                "ebay.com", "mercari.com", "poshmark.com", "depop.com",
+                "xianyu.taobao.com", "zhuanzhuan.com", "craigslist.org",
+                "offerup.com", "letgo.com", "facebook.com/marketplace"
+            ],
+            vec!["/marketplace", "/sell", "/buy", "/listing"],
+            vec!["二手", "闲置", "secondhand", "marketplace", "转卖"],
+            19,
+            "Secondhand and marketplace platforms"
+        ),
+        
+        // 68. 团购优惠
+        ClassificationRule::new(
+            "deals",
+            "团购优惠",
+            "Deals & Coupons",
+            vec!["deal", "deals", "coupon", "discount", "promo"],
+            vec![
+                "groupon.com", "slickdeals.net", "dealnews.com", "smzdm.com",
+                "retailmenot.com", "coupons.com", "honey.com", "rakuten.com",
+                "fatwallet.com", "bensbargains.com", "dealsplus.com"
+            ],
+            vec!["/deal", "/deals", "/coupon", "/discount", "/promo"],
+            vec!["优惠", "折扣", "deals", "coupon", "促销", "团购"],
+            17,
+            "Deals and coupon platforms"
+        ),
+        
+        // 69. 价格比较
+        ClassificationRule::new(
+            "pricetracking",
+            "价格比较",
+            "Price Tracking",
+            vec!["price", "compare", "tracking", "comparison"],
+            vec![
+                "camelcamelcamel.com", "keepa.com", "pricespy.com", "pricegrabber.com",
+                "shopzilla.com", "nextag.com", "idealo.de", "geizhals.de"
+            ],
+            vec!["/price", "/compare", "/tracking", "/history"],
+            vec!["价格", "比价", "price tracking", "comparison"],
+            13,
+            "Price comparison and tracking"
+        ),
+        
+        // 70. 短链接服务
+        ClassificationRule::new(
+            "shorturl",
+            "短链接服务",
+            "URL Shorteners",
+            vec!["shorten", "short", "tiny"],
+            vec![
+                "bit.ly", "tinyurl.com", "t.co", "goo.gl", "shorturl.at",
+                "ow.ly", "is.gd", "buff.ly", "adf.ly", "bitly.com",
+                "cutt.ly", "rebrandly.com", "soo.gd"
+            ],
+            vec![],
+            vec!["短链接", "short url", "缩短"],
+            12,
+            "URL shortening services"
+        ),
+        
+        // 71. 本地开发服务
+        ClassificationRule::new(
+            "localhost",
+            "本地开发",
+            "Local Development",
+            vec!["localhost", "127.0.0.1", "0.0.0.0", "192.168.", ":3000", ":8080", ":5000", ":4200"],
+            vec!["localhost", "127.0.0.1", "0.0.0.0"],
+            vec![],
+            vec!["本地", "local", "dev", "development"],
+            11,
+            "Local development servers"
+        ),
+        
+        // 72. 翻译服务
+        ClassificationRule::new(
+            "translation",
+            "翻译服务",
+            "Translation Services",
+            vec!["translate", "translation", "translator"],
+            vec![
+                "translate.google.com", "deepl.com", "bing.com/translator",
+                "reverso.net", "linguee.com", "youdao.com", "fanyi.baidu.com",
+                "translate.yandex.com", "papago.naver.com"
+            ],
+            vec!["/translate", "/translation", "/translator"],
+            vec!["翻译", "translate", "translation", "翻译器"],
+            49,
+            "Translation and language services"
+        ),
+        
+        // 73. 字体资源
+        ClassificationRule::new(
+            "fonts",
+            "字体资源",
+            "Fonts & Typography",
+            vec!["font", "fonts", "typeface", "typography"],
+            vec![
+                "fonts.google.com", "fontsquirrel.com", "dafont.com", "fontspace.com",
+                "1001fonts.com", "abstractfonts.com", "fontlibrary.org",
+                "myfonts.com", "typography.com", "fonts.adobe.com"
+            ],
+            vec!["/font", "/fonts", "/typeface"],
+            vec!["字体", "font", "typography", "typeface"],
+            25,
+            "Font and typography resources"
+        ),
+        
+        // 74. 日本服务
+        ClassificationRule::new(
+            "japanese",
+            "日本服务",
+            "Japanese Services",
+            vec![".co.jp", "niconico", "pixiv"],
+            vec![
+                "nicovideo.jp", "pixiv.net", "dmm.co.jp", "yahoo.co.jp",
+                "rakuten.co.jp", "amazon.co.jp", "fc2.com", "nico.ms",
+                "niconico.jp", "booth.pm", "fanbox.cc"
+            ],
+            vec![],
+            vec![],
+            51,
+            "Japanese platforms and services"
+        ),
+        
+        // 75. 韩国服务
+        ClassificationRule::new(
+            "korean",
+            "韩国服务",
+            "Korean Services",
+            vec![".co.kr", "naver", "kakao"],
+            vec![
+                "naver.com", "kakao.com", "daum.net", "coupang.com",
+                "11st.co.kr", "gmarket.co.kr", "auction.co.kr",
+                "nate.com", "zum.com"
+            ],
+            vec![],
+            vec![],
+            51,
+            "Korean platforms and services"
         ),
     ]
 }
@@ -2940,13 +3559,9 @@ impl SyncEngine {
     
     /// Collect all bookmarks from entire tree for classification
     fn collect_all_bookmarks_for_classification(bookmarks: &mut Vec<Bookmark>, collected: &mut Vec<Bookmark>) {
-        // Protected folder names that should not be reorganized
-        // Includes: Safari system folders + all classification folders
-        let protected_folders = [
-            // Safari系统文件夹
-            "BookmarksBar", "BookmarksMenu", "com.apple.ReadingList",
-            "Favorites", "收藏夹", "书签栏", "书签菜单", "阅读列表",
-            // 分类文件夹 (40个规则对应的文件夹)
+        // 只保护已分类的文件夹，不保护系统文件夹（需要递归进入）
+        let classified_folders = [
+            // 分类文件夹 (48个规则对应的文件夹) - 注意：不包含"未分类"
             "登录入口", "社交媒体", "视频流媒体", "开发工具", "购物网站",
             "新闻资讯", "文档参考", "云存储", "邮箱通讯", "金融理财",
             "AI工具", "设计创意", "教育学习", "音乐音频", "游戏娱乐",
@@ -2955,13 +3570,31 @@ impl SyncEngine {
             "动漫二次元", "下载资源", "安全隐私", "Linux开源", "微软服务",
             "苹果服务", "谷歌服务", "联邦宇宙", "移动开发", "科学研究",
             "直播平台", "浏览器扩展", "在线工具", "效率工具", "游戏社区",
-            "未分类", "网站主页"
+            "图床托管", "导航目录", "中文平台", "设计素材", "硬件技术",
+            "托管项目", "博客站点", "开发者工具",
+            "网站主页"
+            // 注意："未分类"不在此列表中，允许重新分类
         ];
         
-        // First pass: recursively process children (skip protected folders)
+        // 跳过的系统文件夹（不收集其中的书签，但也不递归）
+        let skip_folders = ["com.apple.ReadingList", "阅读列表", "History"];
+        
+        // First pass: recursively process children
         for bookmark in bookmarks.iter_mut() {
-            if bookmark.folder && !protected_folders.contains(&bookmark.title.as_str()) {
-                Self::collect_all_bookmarks_for_classification(&mut bookmark.children, collected);
+            if bookmark.folder {
+                if bookmark.title == "未分类" {
+                    // 特殊处理：收集"未分类"文件夹中的所有书签进行重新分类
+                    Self::collect_from_unclassified(&mut bookmark.children, collected);
+                } else if skip_folders.contains(&bookmark.title.as_str()) {
+                    // 跳过阅读列表等系统文件夹
+                    continue;
+                } else if classified_folders.contains(&bookmark.title.as_str()) {
+                    // 已分类文件夹：不重新分类，保持原样
+                    continue;
+                } else {
+                    // 其他所有文件夹（包括BookmarksBar、导入的浏览器书签等）：递归处理
+                    Self::collect_all_bookmarks_for_classification(&mut bookmark.children, collected);
+                }
             }
         }
         
@@ -2974,6 +3607,23 @@ impl SyncEngine {
             }
         }
         
+        for &i in indices_to_remove.iter().rev() {
+            bookmarks.remove(i);
+        }
+    }
+    
+    /// Collect all bookmarks from "未分类" folder for re-classification
+    fn collect_from_unclassified(bookmarks: &mut Vec<Bookmark>, collected: &mut Vec<Bookmark>) {
+        let mut indices_to_remove = Vec::new();
+        
+        for (i, bookmark) in bookmarks.iter().enumerate() {
+            if !bookmark.folder {
+                collected.push(bookmark.clone());
+                indices_to_remove.push(i);
+            }
+        }
+        
+        // Remove collected bookmarks from "未分类" folder
         for &i in indices_to_remove.iter().rev() {
             bookmarks.remove(i);
         }
@@ -3620,7 +4270,7 @@ impl SyncEngine {
 impl SyncEngine {
     /// Analyze bookmarks for anomalies
     pub async fn analyze_bookmarks(&self, browser_names: Option<&str>) -> Result<()> {
-        use crate::cleanup::{detect_anomalies, AnomalyReport};
+        use crate::cleanup::detect_anomalies;
         
         info!("🔍 分析书签异常...");
         

@@ -7,12 +7,13 @@ use anyhow::{Result, Context, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs;
-use tracing::{info, warn, debug};
+use tracing::{info, debug};
 use reqwest;
 
 /// Firefox Accounts配置
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]  // 字段用于JSON反序列化
 struct FirefoxAccountData {
     email: String,
     session_token: String,
@@ -34,12 +35,14 @@ struct OAuthToken {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]  // 字段用于JSON反序列化
 struct SignedInUser {
     version: u32,
     account_data: FirefoxAccountData,
 }
 
 /// Firefox Sync API客户端
+#[allow(dead_code)]  // 字段用于API调用
 pub struct FirefoxSyncAPIClient {
     token: String,
     uid: String,
@@ -223,6 +226,7 @@ impl FirefoxSyncAPIClient {
 
 /// Sync端点信息
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]  // 字段用于JSON反序列化
 struct SyncEndpoint {
     api_endpoint: String,
     uid: String,
@@ -247,8 +251,6 @@ struct SyncBookmark {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    
     #[test]
     fn test_sync_api_client() {
         // 测试需要真实的profile
