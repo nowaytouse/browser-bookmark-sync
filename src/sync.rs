@@ -54,6 +54,16 @@ impl SyncEngine {
         })
     }
     
+    /// Get Safari reading list items
+    pub fn get_safari_reading_list(&self) -> Result<Vec<ReadingListItem>> {
+        for adapter in &self.adapters {
+            if adapter.browser_type() == BrowserType::Safari {
+                return adapter.read_reading_list();
+            }
+        }
+        Ok(vec![])
+    }
+    
     /// Load last sync timestamp from state file
     fn load_last_sync_time(&mut self) -> Result<()> {
         let state_file = Self::get_state_file_path()?;

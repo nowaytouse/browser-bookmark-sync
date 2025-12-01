@@ -1,224 +1,162 @@
-# 🔖 Browser Bookmark Sync
+# 🔖 Browser Bookmark Sync (bsync)
 
-A powerful cross-browser bookmark management tool for macOS. Merge, deduplicate, and export bookmarks from multiple browsers into a single HTML file.
+A fast, cross-browser bookmark management tool for macOS. Merge, deduplicate, and export bookmarks from multiple browsers.
 
 ## ✨ Features
 
-- **🌐 Multi-Browser Support**: Safari, Chrome, Brave, Brave Nightly, Waterfox, Firefox
-- **📤 HTML Export**: Export to standard Netscape HTML format (importable by all browsers)
-- **🧹 Smart Deduplication**: Remove duplicate bookmarks across all sources
-- **🧠 Auto-Classification**: 48 built-in rules to organize bookmarks by category
-- **🔍 Anomaly Detection**: Detect bulk imports, history pollution, NSFW content
-- **💾 Backup & Restore**: Full backup and restore capabilities
+- **Multi-Browser**: Safari, Chrome, Brave, Brave Nightly, Waterfox, Firefox
+- **HTML Export**: Standard Netscape format (importable everywhere)
+- **Smart Deduplication**: Remove duplicates across all sources
+- **Auto-Classification**: 48 built-in rules to organize bookmarks
+- **Safari Reading List**: Export reading list as bookmarks
+- **Safe by Default**: Export-only, no browser modifications
 
 ## 🚀 Quick Start
 
-### Installation
-
 ```bash
-# Clone and build
-git clone https://github.com/user/browser-sync.git
-cd browser-sync
+# Build
 cargo build --release
+cp target/release/browser-bookmark-sync /usr/local/bin/bsync
 
-# Add to PATH (optional)
-cp target/release/browser-bookmark-sync /usr/local/bin/
-```
-
-### Basic Usage
-
-```bash
-# List detected browsers
-browser-bookmark-sync list
-
-# Export all bookmarks to HTML (RECOMMENDED)
-browser-bookmark-sync export-html -o ~/Desktop/my_bookmarks.html -d
-
-# Export specific browsers with deduplication
-browser-bookmark-sync export-html -b "safari,brave-nightly" -d --merge
-
-# Smart organize bookmarks
-browser-bookmark-sync smart-organize -b safari --dry-run --show-stats
+# Basic usage
+bsync list                              # List browsers
+bsync export -d --merge                 # Export all, deduplicated
+bsync export -b safari -r               # Safari + reading list
+bsync analyze                           # Check for issues
 ```
 
 ## 📖 Commands
 
-| Command | Description |
-|---------|-------------|
-| `list` | List all detected browsers and bookmark locations |
-| `export-html` | Export bookmarks to HTML file (recommended) |
-| `validate` | Validate bookmark integrity |
-| `cleanup` | Remove duplicates and empty folders |
-| `smart-organize` | Auto-classify bookmarks by URL patterns |
-| `list-rules` | Show available classification rules |
-| `sync-history` | Sync browsing history between hub browsers |
-| `analyze` | Analyze bookmarks (NSFW detection) |
-| `master-backup` | Create comprehensive backup |
-| `restore-backup` | Restore from backup |
-| `clear-bookmarks` | Clear browser bookmarks (debug only) |
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `list` | `l` | List detected browsers |
+| `export` | `e` | Export bookmarks to HTML |
+| `analyze` | `a` | Analyze bookmarks |
+| `organize` | `o` | Smart organize by URL |
+| `validate` | `v` | Validate integrity |
+| `history` | `hist` | Sync browser history |
+| `rules` | - | Show classification rules |
+| `backup` | - | Create full backup |
 
-## 📤 Export to HTML (Recommended Workflow)
+## 📤 Export Command
 
-The recommended way to manage bookmarks is to export them to HTML and manually import into your target browser. This avoids sync conflicts.
+The main command for bookmark management:
 
 ```bash
-# Step 1: Export all bookmarks with deduplication
-browser-bookmark-sync export-html \
-  -b "safari,brave-nightly,waterfox" \
-  -d --merge \
-  -o ~/Desktop/all_bookmarks.html
-
-# Step 2: Manually import the HTML file into your browser
-# - Safari: File → Import From → Bookmarks HTML File
-# - Chrome/Brave: Bookmarks → Import Bookmarks and Settings
-# - Firefox: Bookmarks → Manage Bookmarks → Import and Backup
+bsync export [OPTIONS]
 ```
 
-### Export Options
+### Options
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--output <FILE>` | `-o` | Output path (default: ~/Desktop/bookmarks.html) |
+| `--browsers <LIST>` | `-b` | Source browsers (default: all) |
+| `--deduplicate` | `-d` | Remove duplicates |
+| `--merge` | `-m` | Flat structure (no browser folders) |
+| `--clean` | - | Remove empty folders |
+| `--reading-list` | `-r` | Include Safari reading list |
+| `--include <FILE>` | - | Import existing HTML |
+| `--clear-after` | - | Clear sources after export (⚠️) |
+| `--verbose` | `-v` | Detailed output |
+
+### Examples
 
 ```bash
--o, --output <FILE>      Output HTML file path
--b, --browsers <LIST>    Source browsers (comma-separated, default: all)
--d, --deduplicate        Remove duplicate bookmarks
-    --merge              Merge into flat structure (no browser folders)
-    --clean-empty        Remove empty folders before export
-    --include-html <FILE> Also import from existing HTML backup
-    --clear-after        Clear bookmarks from source browsers after export
--v, --verbose            Show detailed output
+# Export all browsers, deduplicated, merged
+bsync export -d -m -o ~/bookmarks.html
+
+# Safari only with reading list
+bsync export -b safari -r -d
+
+# Merge multiple sources
+bsync export -b "safari,brave" -d -m --include old_backup.html
+
+# Full cleanup export
+bsync export -d -m --clean
 ```
-
-### Clear After Export
-
-The `--clear-after` option will delete all bookmarks from source browsers after successful export:
-
-```bash
-# Export and clear source bookmarks
-browser-bookmark-sync export-html -d --merge --clear-after
-```
-
-⚠️ **WARNING**: If browser sync is enabled (Firefox Sync, Chrome Sync, iCloud, etc.), deletion may be ineffective or cause unpredictable bookmark versions. Consider disabling sync before using this option.
 
 ## 🧠 Smart Organization
 
-Automatically classify bookmarks into 48 categories:
+Auto-classify bookmarks into 48 categories:
 
 ```bash
-# Preview classification (dry-run)
-browser-bookmark-sync smart-organize -b safari --dry-run --show-stats
+# Preview (safe)
+bsync organize --dry-run --stats
 
-# Apply classification
-browser-bookmark-sync smart-organize -b safari
+# Apply to specific browser
+bsync organize -b safari
 
-# Use custom rules
-browser-bookmark-sync smart-organize -r custom-rules.json
+# Custom rules
+bsync organize -r my-rules.json
 ```
 
-### Built-in Categories
+### Categories
 
-- 🎬 Streaming Sites, Video Platforms
-- 🎮 Gaming, Game Stores
-- 💻 Development, GitHub, Stack Overflow
-- 📱 Social Media, Forums
-- 🛒 Shopping, E-commerce
+- 🎬 Streaming, Video
+- 🎮 Gaming
+- 💻 Development, GitHub
+- 📱 Social Media
+- 🛒 Shopping
 - 📰 News, Blogs
-- 🎨 Design, Creative Tools
 - And 40+ more...
 
-## 🔄 History Sync
+## 🔍 Analysis
 
-Sync browsing history between hub browsers:
-
-```bash
-# Sync last 30 days of history
-browser-bookmark-sync sync-history -b "waterfox,brave-nightly"
-
-# Sync last 7 days
-browser-bookmark-sync sync-history -b "waterfox,brave-nightly" -d 7
-
-# Preview mode
-browser-bookmark-sync sync-history --dry-run
-```
-
-## 🔍 Bookmark Analysis
-
-Analyze bookmarks for duplicates and NSFW content:
+Check bookmarks for issues:
 
 ```bash
-browser-bookmark-sync analyze -b safari
+bsync analyze
+bsync analyze -b safari
 ```
 
 Detects:
-- **Duplicate URLs**: Same URL bookmarked multiple times
-- **Empty Folders**: Folders with no bookmarks
-- **NSFW Content**: Adult content statistics (info only)
-
-## 💾 Backup & Restore
-
-```bash
-# Create master backup
-browser-bookmark-sync master-backup -o ~/Desktop/BookmarkBackup
-
-# Restore from backup
-browser-bookmark-sync restore-backup -b waterfox -f backup.sqlite
-```
+- Duplicate URLs
+- Empty folders
+- NSFW content (stats only)
 
 ## 🌐 Supported Browsers
 
-| Browser | Bookmarks | History | Cookies |
-|---------|-----------|---------|---------|
-| Safari | ✅ | ✅ | ❌ |
-| Chrome | ✅ | ✅ | ✅ |
-| Brave | ✅ | ✅ | ✅ |
-| Brave Nightly | ✅ | ✅ | ✅ |
-| Waterfox | ✅ | ✅ | ✅ |
-| Firefox | ✅ | ✅ | ✅ |
+| Browser | Bookmarks | History | Reading List |
+|---------|-----------|---------|--------------|
+| Safari | ✅ | ✅ | ✅ |
+| Chrome | ✅ | ✅ | - |
+| Brave | ✅ | ✅ | - |
+| Brave Nightly | ✅ | ✅ | - |
+| Waterfox | ✅ | ✅ | - |
+| Firefox | ✅ | ✅ | - |
 
 ## ⚠️ Important Notes
 
-1. **Close browsers before operations**: Some browsers lock their database files
-2. **Use HTML export**: Avoid direct browser writes to prevent sync conflicts
-3. **Backup first**: Always create backups before major operations
-4. **Manual import**: Import HTML files manually for best results
+1. **Close browsers** before operations
+2. **Export is safe** - doesn't modify browser data
+3. **--clear-after is destructive** - use with caution
+4. **Browser sync conflicts** - if sync is enabled, manual import is safer
 
 ## 📊 Example Output
 
 ```
-📤 导出书签到HTML文件
+📤 Exporting bookmarks to HTML
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📄 输出: ~/Desktop/bookmarks.html
-🌐 来源: safari,brave-nightly
-🔀 合并模式
-🧹 去重复
+Output: ~/Desktop/bookmarks.html
+Source: all
+  ✓ Deduplicate
+  ✓ Merge (flat)
+  ✓ Include Safari reading list
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ✅ Safari : 136054 书签
-  ✅ Brave Nightly : 42272 书签
-📊 收集完成: 178326 书签
-  ✅ 移除 154805 重复书签
-✅ 导出完成!
-   📄 文件: ~/Desktop/bookmarks.html
-   📊 书签数: 23521
+🎯 Target browsers:
+  - Safari
+  - Brave Nightly
+  - Waterfox
+📖 Reading Safari reading list...
+   42 items found
+📊 Collection complete: 178326 bookmarks
+🧹 Deduplicating...
+  ✅ Removed 154805 duplicate bookmarks
 
-🎉 导出完成! 23521 书签
-💡 请手动导入到目标浏览器，避免被同步覆盖
-```
-
-## 🛠️ Development
-
-```bash
-# Run tests
-cargo test
-
-# Build release
-cargo build --release
-
-# Run with debug logging
-RUST_LOG=debug browser-bookmark-sync list
+✅ Exported 23521 bookmarks to ~/Desktop/bookmarks.html
 ```
 
 ## 📄 License
 
 MIT License
-
-## 🤝 Contributing
-
-Contributions welcome! Please read the contributing guidelines first.

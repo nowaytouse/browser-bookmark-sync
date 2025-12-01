@@ -15,9 +15,15 @@ mod browser_utils;
 use sync::SyncEngine;
 
 #[derive(Parser)]
-#[command(name = "browser-bookmark-sync")]
-#[command(about = "Cross-browser bookmark management tool - merge, deduplicate, export", long_about = None)]
+#[command(name = "bsync")]
+#[command(about = "Cross-browser bookmark sync tool - merge, deduplicate, export")]
 #[command(version)]
+#[command(after_help = "EXAMPLES:
+    bsync list                              # List detected browsers
+    bsync export -d --merge                 # Export all, deduplicated, merged
+    bsync export -b safari --reading-list   # Export Safari with reading list
+    bsync analyze                           # Analyze bookmarks for issues
+    bsync organize --dry-run                # Preview smart organization")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -25,38 +31,42 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// List all detected browsers and their bookmark locations
+    /// List detected browsers and bookmark counts
     #[command(alias = "l", alias = "ls")]
     List,
     
-    /// Export bookmarks to HTML file (RECOMMENDED - avoids sync conflicts)
-    #[command(alias = "export", alias = "e")]
-    ExportHtml {
-        /// Output HTML file path
-        #[arg(short = 'o', long, default_value = "~/Desktop/bookmarks_export.html")]
+    /// Export bookmarks to HTML file (safe, non-destructive)
+    #[command(alias = "e", alias = "exp")]
+    Export {
+        /// Output file path
+        #[arg(short, long, default_value = "~/Desktop/bookmarks.html")]
         output: String,
         
-        /// Source browsers (comma-separated, default: all)
-        #[arg(short = 'b', long, default_value = "all")]
+        /// Source browsers (comma-separated, or 'all')
+        #[arg(short, long, default_value = "all")]
         browsers: String,
         
-        /// Merge all bookmarks into flat structure (no browser folders)
-        #[arg(long)]
-        merge: bool,
-        
         /// Remove duplicate bookmarks
-        #[arg(long, short = 'd')]
+        #[arg(short, long)]
         deduplicate: bool,
         
-        /// Remove empty folders before export
-        #[arg(long)]
-        clean_empty: bool,
+        /// Merge into flat structure (no browser folders)
+        #[arg(short, long)]
+        merge: bool,
         
-        /// Also import from existing HTML backup file
+        /// Remove empty folders
         #[arg(long)]
-        include_html: Option<String>,
+        clean: bool,
         
-        /// Clear bookmarks from source browsers after export (WARNING: destructive!)
+        /// Include Safari reading list as bookmarks
+        #[arg(short = 'r', long)]
+        reading_list: bool,
+        
+        /// Import from existing HTML file
+        #[arg(long)]
+        include: Option<String>,
+        
+        /// Clear source browsers after export (DANGEROUS!)
         #[arg(long)]
         clear_after: bool,
         
@@ -65,81 +75,58 @@ enum Commands {
         verbose: bool,
     },
     
+    /// Analyze bookmarks (duplicates, empty folders, NSFW)
+    #[command(alias = "a")]
+    Analyze {
+        /// Target browsers
+        #[arg(short, long)]
+        browsers: Option<String>,
+    },
+    
+    /// Smart organize bookmarks by URL patterns
+    #[command(alias = "org", alias = "o")]
+    Organize {
+        /// Target browsers
+        #[arg(short, long)]
+        browsers: Option<String>,
+        
+        /// Custom rules file (JSON)
+        #[arg(short, long)]
+        rules: Option<String>,
+        
+        /// Show statistics
+        #[arg(short, long)]
+        stats: bool,
+        
+        /// Preview only, no changes
+        #[arg(long)]
+        dry_run: bool,
+        
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
+    },
+    
     /// Validate bookmark integrity
-    #[command(alias = "v", alias = "check")]
+    #[command(alias = "v")]
     Validate {
-        /// Show detailed validation report
+        /// Detailed report
         #[arg(short, long)]
         detailed: bool,
     },
     
-    /// Clean up bookmarks (remove duplicates/empty folders) - MODIFIES BROWSER DATA
-    #[command(alias = "c", alias = "clean")]
-    Cleanup {
-        /// Target browsers (comma-separated, default: all)
-        #[arg(short = 'b', long)]
-        browsers: Option<String>,
-        
-        /// Remove duplicate bookmarks
-        #[arg(long)]
-        remove_duplicates: bool,
-        
-        /// Remove empty folders
-        #[arg(long)]
-        remove_empty_folders: bool,
-        
-        /// Dry run - preview without making changes
-        #[arg(short, long)]
-        dry_run: bool,
-        
-        /// Verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    
-    /// Smart organize bookmarks by URL patterns - MODIFIES BROWSER DATA
-    #[command(alias = "so", alias = "smart")]
-    SmartOrganize {
-        /// Target browsers (comma-separated, default: all)
-        #[arg(short = 'b', long)]
-        browsers: Option<String>,
-        
-        /// Custom rules file (JSON format)
-        #[arg(short = 'r', long)]
-        rules_file: Option<String>,
-        
-        /// Only process uncategorized bookmarks
-        #[arg(long)]
-        uncategorized_only: bool,
-        
-        /// Show rule matching statistics
-        #[arg(long)]
-        show_stats: bool,
-        
-        /// Dry run - preview without making changes
-        #[arg(short, long)]
-        dry_run: bool,
-        
-        /// Verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
-    
-    /// List available classification rules
-    ListRules,
-    
-    /// Sync browsing history between hub browsers
-    #[command(alias = "sh", alias = "history")]
-    SyncHistory {
-        /// Hub browsers (comma-separated, default: waterfox,brave-nightly)
-        #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
+    /// Sync browsing history between browsers
+    #[command(alias = "hist")]
+    History {
+        /// Target browsers
+        #[arg(short, long, default_value = "waterfox,brave-nightly")]
         browsers: String,
         
-        /// Number of days to sync (default: 30)
-        #[arg(short = 'd', long, default_value = "30")]
+        /// Days to sync
+        #[arg(short, long, default_value = "30")]
         days: i32,
         
-        /// Dry run - preview without making changes
+        /// Preview only
         #[arg(long)]
         dry_run: bool,
         
@@ -148,62 +135,22 @@ enum Commands {
         verbose: bool,
     },
     
-    /// Analyze bookmarks (NSFW detection, duplicates)
-    #[command(alias = "a")]
-    Analyze {
-        /// Target browsers (comma-separated, default: all)
-        #[arg(short = 'b', long)]
-        browsers: Option<String>,
-    },
+    /// Show available classification rules
+    Rules,
     
-    /// Create master backup (merge all browser data)
-    MasterBackup {
+    /// Create full backup of all browser data
+    Backup {
         /// Output directory
-        #[arg(short = 'o', long, default_value = "~/Desktop/BookmarkBackup")]
+        #[arg(short, long, default_value = "~/Desktop/BookmarkBackup")]
         output: String,
-        
-        /// Include full data (not just unique URLs)
-        #[arg(long)]
-        include_full: bool,
-    },
-    
-    /// Restore bookmarks from backup
-    RestoreBackup {
-        /// Browser to restore (e.g., waterfox)
-        #[arg(short = 'b', long)]
-        browser: String,
-        
-        /// Backup file path (optional, uses latest if not specified)
-        #[arg(short = 'f', long)]
-        file: Option<String>,
-    },
-    
-    /// Clear all bookmarks from browsers (DEBUG ONLY - use with caution!)
-    #[command(alias = "clear")]
-    ClearBookmarks {
-        /// Target browsers (comma-separated)
-        #[arg(short = 'b', long)]
-        browsers: String,
-        
-        /// Skip confirmation
-        #[arg(short = 'y', long)]
-        yes: bool,
-        
-        /// Dry run - preview without making changes
-        #[arg(short, long)]
-        dry_run: bool,
     },
 }
 
-/// Print sync warning for operations that modify browser data
 fn print_sync_warning() {
     warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    warn!("⚠️  WARNING: This operation modifies browser bookmark data!");
-    warn!("");
-    warn!("   If browser sync is enabled (Firefox Sync, Chrome Sync, iCloud, etc.),");
-    warn!("   changes may be overwritten or cause unexpected sync conflicts.");
-    warn!("");
-    warn!("   RECOMMENDED: Use 'export-html' instead and import manually.");
+    warn!("⚠️  WARNING: This operation modifies browser data!");
+    warn!("   If browser sync is enabled, changes may cause conflicts.");
+    warn!("   RECOMMENDED: Use 'export' instead and import manually.");
     warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }
 
@@ -220,176 +167,144 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::List => {
-            info!("Detecting browsers...");
             let engine = SyncEngine::new()?;
             engine.list_browsers()?;
         }
         
-        Commands::ExportHtml { output, browsers, merge, deduplicate, clean_empty, include_html, clear_after, verbose } => {
-            info!("Exporting bookmarks to HTML");
+        Commands::Export { output, browsers, deduplicate, merge, clean, reading_list, include, clear_after, verbose } => {
+            info!("📤 Exporting bookmarks to HTML");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             info!("Output: {}", output);
             info!("Source: {}", browsers);
-            if merge { info!("Mode: Merged (flat structure)"); }
-            if deduplicate { info!("Deduplicate: Yes"); }
-            if clean_empty { info!("Clean empty folders: Yes"); }
-            if clear_after { 
-                warn!("Clear after: YES (will delete original bookmarks!)"); 
-            }
+            if deduplicate { info!("  ✓ Deduplicate"); }
+            if merge { info!("  ✓ Merge (flat)"); }
+            if clean { info!("  ✓ Clean empty folders"); }
+            if reading_list { info!("  ✓ Include Safari reading list"); }
+            if clear_after { warn!("  ⚠ Clear after export"); }
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             
             let mut engine = SyncEngine::new()?;
             
+            // Import from existing HTML if specified
             let mut extra_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
-            if let Some(html_path) = &include_html {
-                let expanded = if html_path.starts_with("~/") {
-                    html_path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
-                } else { html_path.clone() };
-                
-                info!("Importing HTML: {}", expanded);
+            if let Some(html_path) = &include {
+                let expanded = expand_path(html_path);
+                info!("📥 Importing: {}", expanded);
                 match sync::import_bookmarks_from_html(&expanded) {
                     Ok(bookmarks) => {
-                        let count = bookmarks.iter().map(|b| count_bookmark_tree(b)).sum::<usize>();
-                        info!("  Imported {} bookmarks", count);
+                        let count: usize = bookmarks.iter().map(|b| count_tree(b)).sum();
+                        info!("   {} bookmarks imported", count);
                         extra_bookmarks = bookmarks;
                     }
-                    Err(e) => warn!("  Import failed: {}", e),
+                    Err(e) => warn!("   Import failed: {}", e),
+                }
+            }
+            
+            // Include Safari reading list if requested
+            if reading_list {
+                info!("📖 Reading Safari reading list...");
+                match engine.get_safari_reading_list() {
+                    Ok(items) if !items.is_empty() => {
+                        info!("   {} items found", items.len());
+                        let reading_folder = crate::browsers::Bookmark {
+                            id: "reading-list".to_string(),
+                            title: "Reading List".to_string(),
+                            url: None,
+                            folder: true,
+                            children: items.into_iter().map(|item| crate::browsers::Bookmark {
+                                id: format!("rl-{}", item.url.len()),
+                                title: item.title,
+                                url: Some(item.url),
+                                folder: false,
+                                children: vec![],
+                                date_added: item.date_added,
+                                date_modified: None,
+                            }).collect(),
+                            date_added: Some(chrono::Utc::now().timestamp_millis()),
+                            date_modified: None,
+                        };
+                        extra_bookmarks.push(reading_folder);
+                    }
+                    Ok(_) => info!("   No reading list items"),
+                    Err(e) => warn!("   Failed to read: {}", e),
                 }
             }
             
             let count = engine.export_to_html_with_extra(
-                Some(&browsers), &output, merge, deduplicate, clean_empty, verbose, extra_bookmarks
+                Some(&browsers), &output, merge, deduplicate, clean, verbose, extra_bookmarks
             ).await?;
             
             info!("");
-            info!("Export complete! {} bookmarks", count);
+            info!("✅ Exported {} bookmarks to {}", count, output);
             
-            // Clear bookmarks after export if requested
             if clear_after {
                 warn!("");
-                warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                warn!("⚠️  WARNING: Clearing bookmarks from source browsers!");
-                warn!("");
-                warn!("   If browser sync is enabled (Firefox Sync, Chrome Sync, iCloud, etc.),");
-                warn!("   deletion may be ineffective or cause unpredictable bookmark versions.");
-                warn!("   Consider disabling sync before using this option.");
-                warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                
+                print_sync_warning();
                 engine.clear_bookmarks(&browsers, false).await?;
-                info!("✅ Source bookmarks cleared. Import the HTML file to restore.");
-            } else {
-                info!("Import this file manually to avoid sync conflicts.");
+                info!("✅ Source bookmarks cleared");
             }
         }
         
+        Commands::Analyze { browsers } => {
+            info!("🔍 Analyzing bookmarks...");
+            let engine = SyncEngine::new()?;
+            engine.analyze_bookmarks(browsers.as_deref()).await?;
+        }
+        
+        Commands::Organize { browsers, rules, stats, dry_run, verbose } => {
+            if !dry_run {
+                print_sync_warning();
+            }
+            info!("🧠 Smart organizing bookmarks...");
+            let mut engine = SyncEngine::new()?;
+            engine.smart_organize(
+                browsers.as_deref(), rules.as_deref(), false, stats, dry_run, verbose
+            ).await?;
+            info!("✅ Organization complete!");
+        }
+        
         Commands::Validate { detailed } => {
-            info!("Validating bookmarks...");
+            info!("🔍 Validating bookmarks...");
             let engine = SyncEngine::new()?;
             let report = engine.validate(detailed)?;
             println!("{}", report);
         }
         
-        Commands::Cleanup { browsers, remove_duplicates, remove_empty_folders, dry_run, verbose } => {
-            if !remove_duplicates && !remove_empty_folders {
-                eprintln!("Error: Specify --remove-duplicates or --remove-empty-folders");
-                std::process::exit(1);
-            }
-            
-            if !dry_run {
-                print_sync_warning();
-            }
-            
-            info!("Cleaning up bookmarks...");
+        Commands::History { browsers, days, dry_run, verbose } => {
+            info!("📜 Syncing browser history");
+            info!("   Browsers: {}", browsers);
+            info!("   Range: {} days", days);
             let mut engine = SyncEngine::new()?;
-            engine.cleanup_bookmarks(
-                browsers.as_deref(), remove_duplicates, remove_empty_folders, dry_run, verbose
-            ).await?;
-            info!("Cleanup complete!");
+            engine.sync_history(Some(days), dry_run, verbose).await?;
+            info!("✅ History sync complete!");
         }
         
-        Commands::SmartOrganize { browsers, rules_file, uncategorized_only, show_stats, dry_run, verbose } => {
-            if !dry_run {
-                print_sync_warning();
-            }
-            
-            info!("Smart organizing bookmarks...");
-            let mut engine = SyncEngine::new()?;
-            engine.smart_organize(
-                browsers.as_deref(), rules_file.as_deref(), uncategorized_only, show_stats, dry_run, verbose
-            ).await?;
-            info!("Organization complete!");
-        }
-        
-        Commands::ListRules => {
+        Commands::Rules => {
             SyncEngine::print_builtin_rules();
         }
         
-        Commands::SyncHistory { browsers, days, dry_run, verbose } => {
-            info!("Syncing browser history");
-            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            info!("Hub browsers: {}", browsers);
-            info!("Sync range: Last {} days", days);
-            if dry_run { info!("Mode: Dry run"); }
-            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            
-            let mut engine = SyncEngine::new()?;
-            engine.sync_history(Some(days), dry_run, verbose).await?;
-            info!("History sync complete!");
-        }
-        
-        Commands::Analyze { browsers } => {
-            info!("Analyzing bookmarks...");
-            let engine = SyncEngine::new()?;
-            engine.analyze_bookmarks(browsers.as_deref()).await?;
-        }
-        
-        Commands::MasterBackup { output, include_full } => {
-            info!("Creating master backup...");
-            sync::create_master_backup(&output, include_full).await?;
-            info!("Backup complete!");
-        }
-        
-        Commands::RestoreBackup { browser, file } => {
-            print_sync_warning();
-            info!("Restoring backup...");
-            let mut engine = SyncEngine::new()?;
-            engine.restore_backup(&browser, file.as_deref()).await?;
-            info!("Restore complete!");
-        }
-        
-        Commands::ClearBookmarks { browsers, yes, dry_run } => {
-            warn!("WARNING: This will clear ALL bookmarks!");
-            warn!("Target: {}", browsers);
-            
-            if !dry_run {
-                print_sync_warning();
-            }
-            
-            if !yes && !dry_run {
-                print!("Confirm? (y/N): ");
-                use std::io::{self, Write};
-                io::stdout().flush().ok();
-                let mut input = String::new();
-                io::stdin().read_line(&mut input).ok();
-                if !input.trim().eq_ignore_ascii_case("y") {
-                    info!("Cancelled");
-                    return Ok(());
-                }
-            }
-            
-            let mut engine = SyncEngine::new()?;
-            engine.clear_bookmarks(&browsers, dry_run).await?;
-            info!("Clear complete!");
+        Commands::Backup { output } => {
+            info!("💾 Creating backup...");
+            sync::create_master_backup(&output, true).await?;
+            info!("✅ Backup complete: {}", output);
         }
     }
 
     Ok(())
 }
 
-fn count_bookmark_tree(bookmark: &crate::browsers::Bookmark) -> usize {
+fn expand_path(path: &str) -> String {
+    if path.starts_with("~/") {
+        path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
+    } else {
+        path.to_string()
+    }
+}
+
+fn count_tree(bookmark: &crate::browsers::Bookmark) -> usize {
     let mut count = if bookmark.url.is_some() { 1 } else { 0 };
     for child in &bookmark.children {
-        count += count_bookmark_tree(child);
+        count += count_tree(child);
     }
     count
 }
