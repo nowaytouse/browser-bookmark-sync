@@ -11,6 +11,7 @@ mod firefox_sync_api;
 mod cloud_reset;
 mod cleanup;
 mod browser_utils;
+mod incremental_sync;
 
 use sync::{SyncEngine, SyncMode};
 use scheduler::SchedulerConfig;
@@ -28,15 +29,19 @@ struct Cli {
 enum Commands {
     /// Full sync between hub browsers (bookmarks + history + cookies)
     Sync {
-        /// Hub browsers (comma-separated)
+        /// Hub browsers (comma-separated). Use "all" for all browsers
         #[arg(short = 'b', long, default_value = "waterfox,brave-nightly")]
         browsers: String,
         
-        /// Sync mode: incremental (default) or full
-        #[arg(short = 'm', long, default_value = "incremental")]
+        /// Sync mode: 
+        /// - bidirectional-incremental: 双向增量同步 (检测变更,双向合并)
+        /// - bidirectional-full: 双向全量同步 (读取所有,双向合并)
+        /// - specified-incremental: 指定浏览器增量同步
+        /// - specified-full: 指定浏览器全量同步
+        #[arg(short = 'm', long, default_value = "bidirectional-incremental")]
         mode: String,
         
-        /// Clear data from non-hub browsers
+        /// Clear data from non-hub browsers (only for bidirectional modes)
         #[arg(long)]
         clear_others: bool,
         

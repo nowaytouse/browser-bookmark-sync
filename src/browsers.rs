@@ -40,7 +40,7 @@ pub struct HistoryItem {
     pub last_visit: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BrowserType {
     Waterfox,
     Safari,
