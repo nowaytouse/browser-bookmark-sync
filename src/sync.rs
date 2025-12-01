@@ -3355,24 +3355,278 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             "Font and typography resources"
         ),
         
-        // 74. 日本服务
+        // === 日语细分规则 (74-88) ===
+        
+        // 74. 日本购物
         ClassificationRule::new(
-            "japanese",
-            "日本服务",
-            "Japanese Services",
-            vec![".co.jp", "niconico", "pixiv"],
+            "japanese_shopping",
+            "日本购物",
+            "Japanese Shopping",
+            vec!["rakuten", "amazon.co.jp", ".co.jp"],
             vec![
-                "nicovideo.jp", "pixiv.net", "dmm.co.jp", "yahoo.co.jp",
-                "rakuten.co.jp", "amazon.co.jp", "fc2.com", "nico.ms",
-                "niconico.jp", "booth.pm", "fanbox.cc"
+                "rakuten.co.jp", "amazon.co.jp", "shopping.yahoo.co.jp",
+                "mercari.com", "suruga-ya.jp", "bookoff.co.jp",
+                "yodobashi.com", "biccamera.com", "kakaku.com"
+            ],
+            vec!["/shop", "/cart", "/product"],
+            vec!["楽天", "購入", "ショッピング"],
+            53,
+            "Japanese e-commerce and shopping sites"
+        ),
+        
+        // 75. 日本新闻
+        ClassificationRule::new(
+            "japanese_news",
+            "日本新闻",
+            "Japanese News",
+            vec!["asahi", "yomiuri", "mainichi", "nikkei"],
+            vec![
+                "asahi.com", "yomiuri.co.jp", "mainichi.jp", "nikkei.com",
+                "sankei.com", "jiji.com", "kyodo.co.jp", "nhk.or.jp",
+                "47news.jp", "itmedia.co.jp"
+            ],
+            vec!["/news", "/article"],
+            vec!["ニュース", "新聞", "記事"],
+            52,
+            "Japanese news and media sites"
+        ),
+        
+        // 76. 日本娱乐视频
+        ClassificationRule::new(
+            "japanese_entertainment",
+            "日本娱乐",
+            "Japanese Entertainment",
+            vec!["niconico", "abema", "tver"],
+            vec![
+                "nicovideo.jp", "abema.tv", "tver.jp", "gyao.yahoo.co.jp",
+                "u-next.jp", "hulu.jp", "netflix.co.jp", "amazon.co.jp/prime",
+                "dazn.com"
+            ],
+            vec!["/watch", "/video", "/anime"],
+            vec!["ニコニコ", "動画", "アニメ", "番組"],
+            51,
+            "Japanese video streaming and entertainment"
+        ),
+        
+        // 77. 日本社交平台
+        ClassificationRule::new(
+            "japanese_social",
+            "日本社交",
+            "Japanese Social",
+            vec!["line", "mixi", "twitter.com/ja"],
+            vec![
+                "line.me", "mixi.jp", "ameba.jp", "fc2.com",
+                "hatena.ne.jp", "note.com", "livedoor.blog"
+            ],
+            vec!["/profile", "/user", "/blog"],
+            vec!["友達", "メッセージ", "ブログ"],
+            50,
+            "Japanese social media platforms"
+        ),
+        
+        // 78. 日本科技开发
+        ClassificationRule::new(
+            "japanese_tech",
+            "日本科技",
+            "Japanese Tech",
+            vec!["qiita", "zenn", "teratail"],
+            vec![
+                "qiita.com", "zenn.dev", "teratail.com", "atcoder.jp",
+                "codepen.io", "github.com", "stackoverflow.com"
+            ],
+            vec!["/tech", "/dev", "/code"],
+            vec!["技術", "プログラミング", "開発"],
+            49,
+            "Japanese tech and developer communities"
+        ),
+        
+        // 79. 日本游戏
+        ClassificationRule::new(
+            "japanese_gaming",
+            "日本游戏",
+            "Japanese Gaming",
+            vec!["dmm", "gree", "mobage"],
+            vec![
+                "dmm.co.jp", "dmm.com", "gree.jp", "mobage.jp",
+                "4gamer.net", "famitsu.com", "dengeki.com",
+                "nintendo.co.jp", "playstation.com/ja-jp"
+            ],
+            vec!["/game", "/play"],
+            vec!["ゲーム", "プレイ", "攻略"],
+            48,
+            "Japanese gaming platforms and sites"
+        ),
+        
+        // 80. 日本漫画小说
+        ClassificationRule::new(
+            "japanese_manga",
+            "日本漫画",
+            "Japanese Manga",
+            vec!["pixiv", "booth", "fanbox"],
+            vec![
+                "pixiv.net", "booth.pm", "fanbox.cc", "seiga.nicovideo.jp",
+                "comic.pixiv.net", "shonenjump.com", "comico.jp",
+                "piccoma.com"
+            ],
+            vec!["/manga", "/comic", "/novel"],
+            vec!["漫画", "イラスト", "小説"],
+            47,
+            "Japanese manga and illustration sites"
+        ),
+        
+        // 81. 日本音乐
+        ClassificationRule::new(
+            "japanese_music",
+            "日本音乐",
+            "Japanese Music",
+            vec!["spotify.com/ja", "apple.com/jp/music"],
+            vec![
+                "music.apple.com", "spotify.com", "youtube.com/music",
+                "uta-net.com", "joysound.com", "recochoku.jp",
+                "mora.jp", "ototoy.jp"
+            ],
+            vec!["/music", "/song", "/artist"],
+            vec!["音楽", "歌詞", "アーティスト"],
+            46,
+            "Japanese music streaming and lyrics"
+        ),
+        
+        // 82. 日本工具服务
+        ClassificationRule::new(
+            "japanese_tools",
+            "日本工具",
+            "Japanese Tools",
+            vec!["yahoo.co.jp", "cookpad", "tabelog"],
+            vec![
+                "yahoo.co.jp", "cookpad.com", "tabelog.com",
+                "gurunavi.com", "hotpepper.jp", "jalan.net",
+                "rakuten-travelco.jp", "ekitan.com", "jorudan.co.jp"
+            ],
+            vec!["/search", "/map", "/tool"],
+            vec!["検索", "レシピ", "地図"],
+            45,
+            "Japanese utility and service sites"
+        ),
+        
+        // 83. 日本教育学习
+        ClassificationRule::new(
+            "japanese_education",
+            "日本教育",
+            "Japanese Education",
+            vec!["studyplus", "benesse"],
+            vec![
+                "studyplus.jp", "benesse.jp", "smartstudy.jp",
+                "english-speaking.jp", "weblio.jp", "jisho.org",
+                "tangorin.com", "takoboto.jp"
+            ],
+            vec!["/study", "/learn", "/course"],
+            vec!["勉強", "学習", "教育"],
+            44,
+            "Japanese education and learning platforms"
+        ),
+        
+        // 84. 日本二手交易
+        ClassificationRule::new(
+            "japanese_secondhand",
+            "日本二手",
+            "Japanese Secondhand",
+            vec!["mercari", "yahoo.auction"],
+            vec![
+                "mercari.com", "auctions.yahoo.co.jp", "rakuma.rakuten.co.jp",
+                "jimoty.jp", "aucfan.com", "bookoff.co.jp",
+                "hardoff.co.jp", "treasure-f.com"
+            ],
+            vec!["/auction", "/sell", "/buy"],
+            vec!["中古", "オークション", "フリマ"],
+            43,
+            "Japanese secondhand and auction sites"
+        ),
+        
+        // 85. 日本旅游
+        ClassificationRule::new(
+            "japanese_travel",
+            "日本旅游",
+            "Japanese Travel",
+            vec!["jalan", "rakuten.travel", "booking.com/ja"],
+            vec![
+                "jalan.net", "travel.rakuten.co.jp", "booking.com",
+                "agoda.com", "じゃらん", "一休.com", "expedia.co.jp",
+                "tripadvisor.jp", "ana.co.jp", "jal.co.jp"
+            ],
+            vec!["/hotel", "/travel", "/flight"],
+            vec!["旅行", "ホテル", "予約"],
+            42,
+            "Japanese travel and booking sites"
+        ),
+        
+        // 86. 日本金融
+        ClassificationRule::new(
+            "japanese_finance",
+            "日本金融",
+            "Japanese Finance",
+            vec!["rakuten-sec", "sbi", "moneyforward"],
+            vec![
+                "rakuten-sec.co.jp", "sbisec.co.jp", "moneyforward.com",
+                "mufg.jp", "smbc.co.jp", "mizuho-fg.co.jp",
+                "japanpost.jp", "paypay.ne.jp", "line-pay.com"
+            ],
+            vec!["/bank", "/pay", "/finance"],
+            vec!["金融", "銀行", "支払い"],
+            41,
+            "Japanese banking and finance services"
+        ),
+        
+        // 87. 日本求职招聘
+        ClassificationRule::new(
+            "japanese_jobs",
+            "日本求职",
+            "Japanese Jobs",
+            vec!["rikunabi", "mynavi", "doda"],
+            vec![
+                "rikunabi.com", "mynavi.jp", "doda.jp",
+                "en-japan.com", "bizreach.jp", "wantedly.com",
+                "green-japan.com", "indeed.com/jp"
+            ],
+            vec!["/job", "/career", "/recruit"],
+            vec!["求人", "転職", "採用"],
+            40,
+            "Japanese job hunting and recruitment"
+        ),
+        
+        // 88. 日本健康医疗
+        ClassificationRule::new(
+            "japanese_health",
+            "日本健康",
+            "Japanese Health",
+            vec!["medicalnote", "caloo"],
+            vec![
+                "medicalnote.jp", "caloo.jp", "epark.jp",
+                "qlife.jp", "doctor-navi.com", "medley.life",
+                "minnakenko.jp", "healthcare.omron.co.jp"
+            ],
+            vec!["/health", "/clinic", "/medical"],
+            vec!["健康", "病院", "医療"],
+            39,
+            "Japanese healthcare and medical sites"
+        ),
+        
+        // 89. 日本综合服务 (原日本服务,优先级降低)
+        ClassificationRule::new(
+            "japanese_general",
+            "日本综合",
+            "Japanese General",
+            vec![".co.jp", ".jp"],
+            vec![
+                "fc2.com", "livedoor.com", "goo.ne.jp",
+                "excite.co.jp", "biglobe.ne.jp", "nifty.com"
             ],
             vec![],
             vec![],
-            51,
-            "Japanese platforms and services"
+            38,
+            "General Japanese websites and services"
         ),
         
-        // 75. 韩国服务
+        // 90. 韩国服务
         ClassificationRule::new(
             "korean",
             "韩国服务",

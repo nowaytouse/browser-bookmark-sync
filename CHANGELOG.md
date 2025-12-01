@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added - 2025-12-01 (Update 3)
+
+#### 🌏 日语分类规则扩展 (75→90条)
+- **新增15条日语网站分类规则**: 细分日本主流网站类别
+- **覆盖类别**:
+  - 🛍️ 日本购物: 楽天、Amazon.co.jp、Mercari
+  - 📰 日本新闻: 朝日新聞、読売新聞、NHK
+  - 🎬 日本娱乐: ニコニコ動画、AbemaTV、Hulu JP
+  - 💬 日本社交: Line、Mixi、Ameba
+  - 💻 日本科技: Qiita、Zenn、AtCoder
+  - 🎮 日本游戏: DMM、Gree、4Gamer
+  - 📚 日本漫画: Pixiv、Booth、Fanbox
+  - 🎵 日本音乐: Spotify JP、Uta-net
+  - 🍜 日本工具: Yahoo Japan、Cookpad、Tabelog
+  - 📖 日本教育: Studyplus、Weblio、Jisho
+  - 🛒 日本二手: Mercari、Yahoo拍卖
+  - ✈️ 日本旅游: じゃらん、一休.com
+  - 💰 日本金融: 楽天証券、Paypay
+  - 💼 日本求职: Rikunabi、Mynavi、Doda
+  - 🏥 日本健康: Medical Note、Caloo
+
+**规则总数**: 75条 → 90条 (+15条日语规则)
+
+#### 🔒 浏览器自动关闭功能
+- **新选项**: `--auto-close-browsers` 用于sync命令
+- **优雅关闭**: 使用AppleScript优先尝试quit
+- **强制关闭**: 优雅失败后自动killall -9
+- **安全保障**: dry-run模式下不会关闭浏览器
+- **支持浏览器**: Safari、Chrome、Brave、Brave Nightly、Waterfox、Firefox Nightly
+
+**使用示例**:
+```bash
+# 自动关闭浏览器后同步
+browser-bookmark-sync sync --auto-close-browsers
+
+# 预览模式(不会关闭浏览器)
+browser-bookmark-sync sync --auto-close-browsers --dry-run
+```
+
 ### Added - 2025-12-01 (Update 2)
 
 #### 🍪 Cookie同步到Hub浏览器

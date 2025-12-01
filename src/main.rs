@@ -10,6 +10,7 @@ mod firefox_sync;
 mod firefox_sync_api;
 mod cloud_reset;
 mod cleanup;
+mod browser_utils;
 
 use sync::{SyncEngine, SyncMode};
 use scheduler::SchedulerConfig;
@@ -50,6 +51,10 @@ enum Commands {
         /// Firefox Sync strategy: ignore, warn, trigger, wait, or api
         #[arg(long, default_value = "api")]
         firefox_sync: String,
+        
+        /// Automatically close target browsers before syncing
+        #[arg(long)]
+        auto_close_browsers: bool,
     },
     
     /// Start the scheduler for automatic periodic syncing
@@ -314,7 +319,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sync { browsers, mode, clear_others, dry_run, verbose, firefox_sync } => {
+        Commands::Sync { browsers, mode, clear_others, dry_run, verbose, firefox_sync, auto_close_browsers } => {
             let sync_mode = match mode.to_lowercase().as_str() {
                 "incremental" | "inc" => SyncMode::Incremental,
                 "full" => SyncMode::Full,
@@ -338,6 +343,13 @@ async fn main() -> Result<()> {
             };
             
             info!("🔄 Starting {:?} sync between hub browsers: {}", sync_mode, browsers);
+            
+            // Auto-close browsers if requested
+            if auto_close_browsers && !dry_run {
+                let browser_list = browser_utils::parse_browser_list(&browsers);
+                browser_utils::close_browsers(&browser_list, false)?;
+            }
+            
             let mut engine = SyncEngine::new()?;
             // Full sync: bookmarks + history + reading list + cookies
             engine.set_hub_browsers_with_firefox_sync(

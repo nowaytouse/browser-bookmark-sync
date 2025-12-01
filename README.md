@@ -9,11 +9,12 @@ A powerful, macOS-only command-line tool for synchronizing and managing bookmark
 - **macOS Native:** Deep integration with browser data files on macOS (SQLite, Plist).
 - **Advanced Sync Logic:** Uses a **"Base & Merge"** strategy where the browser with the most organized bookmark structure becomes the template for others.
 - **Smart Deduplication:** Automatically resolves duplicate bookmarks by prioritizing entries in deeper folders and those added more recently.
-- **Intelligent Organizer:** A powerful, priority-based engine with **75 built-in bilingual (EN/CN) rules** to automatically classify bookmarks into folders. Extensible with custom JSON rules.
+- **Intelligent Organizer:** A powerful, priority-based engine with **90 built-in trilingual (EN/CN/JP) rules** to automatically classify bookmarks into folders. Extensible with custom JSON rules.
 - **Firefox Sync Integration:** Offers two strategies (`api` or `local`) to safely sync with Firefox Sync, preventing cloud data from overwriting local changes.
 - **Complete Data Management:** Provides a rich set of tools to `sync`, `cleanup`, `organize`, `validate`, `backup`, `restore`, and `schedule` operations.
 - **Cloud Reset Wizard:** A guided process (`cloud-reset`) to resolve complex Firefox Sync data conflicts.
 - **Cron-based Scheduling:** Run sync operations automatically in the background on a cron schedule.
+- **Auto-Close Browsers:** Automatically closes browsers before sync to ensure data safety (graceful quit + force kill).
 
 ## 🖥️ Supported Platforms
 
