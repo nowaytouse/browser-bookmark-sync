@@ -2858,3 +2858,56 @@ mod tests {
         assert_eq!(rules[0].priority, 100);
     }
 }
+
+impl SyncEngine {
+    /// Set hub browsers with Firefox Sync integration
+    pub async fn set_hub_browsers_with_firefox_sync(
+        &mut self,
+        hub_names: &str,
+        sync_history: bool,
+        sync_reading_list: bool,
+        sync_cookies: bool,
+        clear_others: bool,
+        dry_run: bool,
+        verbose: bool,
+        firefox_sync_strategy: crate::firefox_sync::SyncStrategy,
+    ) -> Result<()> {
+        use crate::firefox_sync::FirefoxSyncHandler;
+        
+        // 检测Waterfox profile并创建Firefox Sync处理器
+        let waterfox_profile = std::path::PathBuf::from(
+            std::env::var("HOME")?
+        ).join("Library/Application Support/Waterfox/Profiles/ll4fbmm0.default-release");
+        
+        let firefox_sync_handler = if waterfox_profile.exists() {
+            Some(FirefoxSyncHandler::new(&waterfox_profile, firefox_sync_strategy)?)
+        } else {
+            None
+        };
+        
+        // 在写入前执行Firefox Sync处理
+        if let Some(ref handler) = firefox_sync_handler {
+            handler.before_write()?;
+        }
+        
+        // 执行正常的同步流程
+        self.set_hub_browsers(
+            hub_names,
+            sync_history,
+            sync_reading_list,
+            sync_cookies,
+            clear_others,
+            dry_run,
+            verbose
+        ).await?;
+        
+        // 在写入后执行Firefox Sync处理
+        if let Some(ref handler) = firefox_sync_handler {
+            if !dry_run {
+                handler.after_write()?;
+            }
+        }
+        
+        Ok(())
+    }
+}

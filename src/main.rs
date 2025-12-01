@@ -6,6 +6,7 @@ mod browsers;
 mod sync;
 mod scheduler;
 mod validator;
+mod firefox_sync;
 
 use sync::{SyncEngine, SyncMode};
 use scheduler::SchedulerConfig;
@@ -42,6 +43,10 @@ enum Commands {
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
+        
+        /// Firefox Sync strategy: ignore, warn, trigger, or wait
+        #[arg(long, default_value = "trigger")]
+        firefox_sync: String,
     },
     
     /// Start the scheduler for automatic periodic syncing
@@ -237,7 +242,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sync { browsers, mode, clear_others, dry_run, verbose } => {
+        Commands::Sync { browsers, mode, clear_others, dry_run, verbose, firefox_sync } => {
             let sync_mode = match mode.to_lowercase().as_str() {
                 "incremental" | "inc" => SyncMode::Incremental,
                 "full" => SyncMode::Full,
@@ -247,10 +252,31 @@ async fn main() -> Result<()> {
                 }
             };
             
+            // 解析Firefox Sync策略
+            let firefox_sync_strategy = match firefox_sync.to_lowercase().as_str() {
+                "ignore" => firefox_sync::SyncStrategy::Ignore,
+                "warn" => firefox_sync::SyncStrategy::WarnAndContinue,
+                "trigger" => firefox_sync::SyncStrategy::TriggerSync,
+                "wait" => firefox_sync::SyncStrategy::TriggerAndWait { timeout_secs: 60 },
+                _ => {
+                    eprintln!("❌ Invalid firefox-sync strategy: {}. Use 'ignore', 'warn', 'trigger', or 'wait'", firefox_sync);
+                    std::process::exit(1);
+                }
+            };
+            
             info!("🔄 Starting {:?} sync between hub browsers: {}", sync_mode, browsers);
             let mut engine = SyncEngine::new()?;
             // Full sync: bookmarks + history + reading list + cookies
-            engine.set_hub_browsers(&browsers, true, true, true, clear_others, dry_run, verbose).await?;
+            engine.set_hub_browsers_with_firefox_sync(
+                &browsers, 
+                true, 
+                true, 
+                true, 
+                clear_others, 
+                dry_run, 
+                verbose,
+                firefox_sync_strategy
+            ).await?;
             info!("✅ Synchronization complete!");
         }
         
