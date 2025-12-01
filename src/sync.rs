@@ -1865,16 +1865,17 @@ impl ClassificationRule {
             name: name.to_string(),
             folder_name: folder_name.to_string(),
             folder_name_en: folder_name_en.to_string(),
-            url_patterns: url_patterns.iter().map(|s| s.to_string()).collect(),
-            domain_patterns: domain_patterns.iter().map(|s| s.to_string()).collect(),
-            path_patterns: path_patterns.iter().map(|s| s.to_string()).collect(),
-            title_patterns: title_patterns.iter().map(|s| s.to_string()).collect(),
+            // Pre-lowercase all patterns for performance optimization
+            url_patterns: url_patterns.iter().map(|s| s.to_lowercase()).collect(),
+            domain_patterns: domain_patterns.iter().map(|s| s.to_lowercase()).collect(),
+            path_patterns: path_patterns.iter().map(|s| s.to_lowercase()).collect(),
+            title_patterns: title_patterns.iter().map(|s| s.to_lowercase()).collect(),
             priority,
             description: description.to_string(),
         }
     }
     
-    /// Check if a bookmark matches this rule
+    /// Check if a bookmark matches this rule (optimized)
     fn matches(&self, url: &str, title: &str) -> bool {
         let url_lower = url.to_lowercase();
         let title_lower = title.to_lowercase();
@@ -1882,30 +1883,30 @@ impl ClassificationRule {
         // Extract domain and path from URL
         let (domain, path) = Self::parse_url_parts(&url_lower);
         
-        // Check URL patterns
+        // Check URL patterns (already lowercase)
         for pattern in &self.url_patterns {
-            if url_lower.contains(&pattern.to_lowercase()) {
+            if url_lower.contains(pattern) {
                 return true;
             }
         }
         
-        // Check domain patterns
+        // Check domain patterns (already lowercase)
         for pattern in &self.domain_patterns {
-            if domain.contains(&pattern.to_lowercase()) {
+            if domain.contains(pattern) {
                 return true;
             }
         }
         
-        // Check path patterns
+        // Check path patterns (already lowercase)
         for pattern in &self.path_patterns {
-            if path.contains(&pattern.to_lowercase()) {
+            if path.contains(pattern) {
                 return true;
             }
         }
         
-        // Check title patterns
+        // Check title patterns (already lowercase)
         for pattern in &self.title_patterns {
-            if title_lower.contains(&pattern.to_lowercase()) {
+            if title_lower.contains(pattern) {
                 return true;
             }
         }

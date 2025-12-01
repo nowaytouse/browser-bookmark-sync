@@ -49,8 +49,14 @@ All notable changes to this project will be documented in this file.
 
 **目标**: 最大限度减少「未分类」书签,提升自动化分类准确度
 
+**性能优化**:
+- 预先转换规则patterns为小写,避免每次匹配时重复调用`to_lowercase()`
+- 对于75条规则和72k+书签,显著降低CPU开销
+- 匹配逻辑从O(n*m*p)优化到O(n*m),其中p为pattern数量
+
 **文档更新**:
 - 更新 `README_CN.md`: 规则数量48→75条,新增规则表格
+- 更新 `README.md`: 同步英文文档,规则数量48→75条
 - 添加 🆕 标识标记新增规则
 
 ### Fixed - 2024-11-30 (Update 4)
