@@ -12,15 +12,15 @@ use crate::browsers::BrowserType;
 /// Force close browsers before sync to ensure clean state
 pub fn close_browsers(browsers: &[BrowserType], force: bool) -> Result<()> {
     info!("🔒 Closing browsers before sync...");
-    
+
     for browser in browsers {
         close_browser(browser, force)?;
     }
-    
+
     // Wait for browsers to fully close
     thread::sleep(Duration::from_secs(2));
     info!("✅ All browsers closed");
-    
+
     Ok(())
 }
 
@@ -33,29 +33,26 @@ fn close_browser(browser: &BrowserType, force: bool) -> Result<()> {
         BrowserType::Waterfox => ("Waterfox", "waterfox-bin"),
         BrowserType::FirefoxNightly => ("Firefox Nightly", "firefox"),
     };
-    
+
     if !force {
         // Try graceful close with AppleScript
         let script = format!("tell application \"{}\" to quit", app_name);
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .output();
-        
+        let output = Command::new("osascript").arg("-e").arg(&script).output();
+
         if output.is_ok() {
             info!("  ✅ {} closed gracefully", app_name);
             return Ok(());
         } else {
-            warn!("  ⚠️  {} graceful close failed, trying force kill", app_name);
+            warn!(
+                "  ⚠️  {} graceful close failed, trying force kill",
+                app_name
+            );
         }
     }
-    
+
     // Force kill
-    let output = Command::new("killall")
-        .arg("-9")
-        .arg(process_name)
-        .output();
-    
+    let output = Command::new("killall").arg("-9").arg(process_name).output();
+
     match output {
         Ok(_) => {
             info!("  ✅ {} force killed", app_name);
@@ -64,7 +61,7 @@ fn close_browser(browser: &BrowserType, force: bool) -> Result<()> {
             warn!("  ⚠️  Failed to kill {}: {}", app_name, e);
         }
     }
-    
+
     Ok(())
 }
 

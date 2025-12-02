@@ -1,5 +1,5 @@
 //! 书签清理模块 - 检测异常书签数据（仅检测，不自动删除）
-//! 
+//!
 //! 功能：
 //! 1. 检测重复书签
 //! 2. 检测NSFW内容（仅统计分类）
@@ -24,47 +24,73 @@ pub struct AnomalyReport {
 
 /// NSFW域名模式
 const NSFW_DOMAIN_PATTERNS: &[&str] = &[
-    "pornhub.com", "xvideos.com", "xnxx.com", "xhamster.com",
-    "redtube.com", "youporn.com", "tube8.com", "spankbang.com",
-    "hanime.tv", "nhentai.net", "e-hentai.org", "exhentai.org",
-    "rule34.xxx", "gelbooru.com", "danbooru.donmai.us",
-    "iwara.tv", "kemono.party", "hitomi.la",
-    "javlibrary.com", "javdb.com", "missav.com",
-    "onlyfans.com", "fansly.com", "f95zone.to",
+    "pornhub.com",
+    "xvideos.com",
+    "xnxx.com",
+    "xhamster.com",
+    "redtube.com",
+    "youporn.com",
+    "tube8.com",
+    "spankbang.com",
+    "hanime.tv",
+    "nhentai.net",
+    "e-hentai.org",
+    "exhentai.org",
+    "rule34.xxx",
+    "gelbooru.com",
+    "danbooru.donmai.us",
+    "iwara.tv",
+    "kemono.party",
+    "hitomi.la",
+    "javlibrary.com",
+    "javdb.com",
+    "missav.com",
+    "onlyfans.com",
+    "fansly.com",
+    "f95zone.to",
 ];
 
 /// NSFW标题关键词
 const NSFW_TITLE_KEYWORDS: &[&str] = &[
-    "porn", "hentai", "nsfw", "adult", "xxx", "18+", "r18",
-    "エロ", "成人", "工口", "同人誌",
+    "porn",
+    "hentai",
+    "nsfw",
+    "adult",
+    "xxx",
+    "18+",
+    "r18",
+    "エロ",
+    "成人",
+    "工口",
+    "同人誌",
 ];
 
 impl AnomalyReport {
     pub fn print_summary(&self) {
         println!("\n📊 Bookmark Analysis Report");
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        
+
         if self.duplicate_count > 0 {
             println!("🔄 Duplicate URLs: {}", self.duplicate_count);
         }
-        
+
         if self.empty_folder_count > 0 {
             println!("📁 Empty folders: {}", self.empty_folder_count);
         }
-        
+
         // NSFW is just statistics, not an issue
         if self.nsfw_count > 0 {
             println!("🔞 NSFW content: {}", self.nsfw_count);
         }
-        
+
         let total_issues = self.duplicate_count + self.empty_folder_count;
-        
+
         if total_issues == 0 {
             println!("✅ Bookmarks are in good condition");
         } else {
             println!("\n💡 Use 'cleanup' command to clean up");
         }
-        
+
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     }
 }
@@ -73,19 +99,19 @@ impl AnomalyReport {
 pub fn detect_anomalies(bookmarks: &[Bookmark]) -> AnomalyReport {
     let mut report = AnomalyReport::default();
     let mut url_counts: HashMap<String, usize> = HashMap::new();
-    
+
     collect_bookmark_stats(bookmarks, &mut url_counts, &mut report);
-    
+
     // 检测重复URL
     for (_url, count) in &url_counts {
         if *count > 1 {
             report.duplicate_count += count - 1;
         }
     }
-    
+
     // 检测空文件夹
     report.empty_folder_count = count_empty_folders(bookmarks);
-    
+
     report
 }
 
@@ -100,7 +126,7 @@ fn collect_bookmark_stats(
         } else if let Some(ref url) = bookmark.url {
             let normalized = normalize_url(url);
             *url_counts.entry(normalized).or_insert(0) += 1;
-            
+
             // NSFW统计
             if is_nsfw_url(url, &bookmark.title) {
                 report.nsfw_count += 1;
@@ -127,36 +153,44 @@ fn count_empty_folders(bookmarks: &[Bookmark]) -> usize {
 pub fn is_nsfw_url(url: &str, title: &str) -> bool {
     let url_lower = url.to_lowercase();
     let title_lower = title.to_lowercase();
-    
+
     for pattern in NSFW_DOMAIN_PATTERNS {
-        if url_lower.contains(pattern) { return true; }
+        if url_lower.contains(pattern) {
+            return true;
+        }
     }
-    
+
     for keyword in NSFW_TITLE_KEYWORDS {
-        if title_lower.contains(keyword) { return true; }
+        if title_lower.contains(keyword) {
+            return true;
+        }
     }
-    
+
     false
 }
 
 fn normalize_url(url: &str) -> String {
     let mut normalized = url.trim().to_lowercase();
-    if normalized.ends_with('/') { normalized.pop(); }
-    if let Some(pos) = normalized.find('#') { normalized.truncate(pos); }
+    if normalized.ends_with('/') {
+        normalized.pop();
+    }
+    if let Some(pos) = normalized.find('#') {
+        normalized.truncate(pos);
+    }
     normalized
 }
 
 // ============================================================
 // 以下功能已被移除（误删风险太高）：
 // - remove_bulk_imported_bookmarks
-// - remove_history_pollution  
+// - remove_history_pollution
 // - organize_nsfw_bookmarks
 // - deep_clean_bookmarks
 // ============================================================
 
 /// 清理统计（保留结构用于兼容，自动清理功能已禁用）
 #[derive(Debug, Default)]
-#[allow(dead_code)]  // 保留用于API兼容性，自动清理功能已禁用
+#[allow(dead_code)] // 保留用于API兼容性，自动清理功能已禁用
 pub struct CleanupStats {
     pub bulk_removed: usize,
     pub history_removed: usize,
@@ -164,12 +198,12 @@ pub struct CleanupStats {
     pub empty_removed: usize,
 }
 
-#[allow(dead_code)]  // 保留用于API兼容性
+#[allow(dead_code)] // 保留用于API兼容性
 impl CleanupStats {
     pub fn total_removed(&self) -> usize {
         self.bulk_removed + self.history_removed + self.empty_removed
     }
-    
+
     pub fn print_summary(&self) {
         println!("\n📊 清理统计");
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -181,7 +215,7 @@ impl CleanupStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_is_nsfw_url() {
         assert!(is_nsfw_url("https://pornhub.com/video/123", "Video"));
@@ -189,7 +223,7 @@ mod tests {
         assert!(is_nsfw_url("https://example.com/page", "Hentai Collection"));
         assert!(!is_nsfw_url("https://github.com/user/repo", "Repository"));
     }
-    
+
     #[test]
     fn test_normalize_url() {
         assert_eq!(normalize_url("https://example.com/"), "https://example.com");

@@ -1,11 +1,11 @@
-use anyhow::{Context, Result, anyhow};
-use std::path::{Path, PathBuf};
-use std::fs;
-use tracing::{info, warn, error, debug};
+use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
+use std::fs;
+use std::path::{Path, PathBuf};
+use tracing::{debug, error, info, warn};
 
 /// 数据库安全操作包装器
-/// 
+///
 /// 该模块提供了一种安全的方式来修改浏览器数据库，防止损坏。
 /// 它实现了“复制-验证-替换”模式：
 /// 1. 将目标数据库复制到临时位置
@@ -25,32 +25,27 @@ pub fn check_compatibility(db_path: &Path) -> Result<()> {
     let conn = Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-    ).context("Failed to open database for compatibility check")?;
+    )
+    .context("Failed to open database for compatibility check")?;
 
     // 检查 SQLite 版本
-    let version: String = conn.query_row(
-        "SELECT sqlite_version()",
-        [],
-        |row| row.get(0),
-    ).context("Failed to query SQLite version")?;
+    let version: String = conn
+        .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+        .context("Failed to query SQLite version")?;
 
     debug!("Database SQLite version: {}", version);
 
     // 检查架构版本 (user_version)
-    let schema_version: i32 = conn.query_row(
-        "PRAGMA user_version",
-        [],
-        |row| row.get(0),
-    ).context("Failed to query schema version")?;
+    let schema_version: i32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .context("Failed to query schema version")?;
 
     debug!("Database schema version: {}", schema_version);
 
     // 运行快速完整性检查
-    let integrity: String = conn.query_row(
-        "PRAGMA quick_check",
-        [],
-        |row| row.get(0),
-    ).context("Failed to run integrity check")?;
+    let integrity: String = conn
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .context("Failed to run integrity check")?;
 
     if integrity != "ok" {
         return Err(anyhow!("Database integrity check failed: {}", integrity));
@@ -67,7 +62,7 @@ pub fn is_database_locked(db_path: &Path) -> bool {
     let file_name = db_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if !file_name.is_empty() {
         let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
-        
+
         // 检查常见的锁定文件
         let lock_files = vec![
             format!("{}.lock", file_name),
@@ -86,10 +81,7 @@ pub fn is_database_locked(db_path: &Path) -> bool {
 
     // 2. 尝试以读写模式打开并获取排他锁
     // 注意：这可能会失败，如果数据库被其他进程使用
-    match Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-    ) {
+    match Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE) {
         Ok(conn) => {
             // 尝试设置锁定模式为 EXCLUSIVE
             if let Err(e) = conn.execute("PRAGMA locking_mode = EXCLUSIVE", []) {
@@ -98,7 +90,10 @@ pub fn is_database_locked(db_path: &Path) -> bool {
             }
             // 尝试开始一个立即事务
             if let Err(e) = conn.execute("BEGIN IMMEDIATE", []) {
-                debug!("Failed to begin immediate transaction (db likely locked): {}", e);
+                debug!(
+                    "Failed to begin immediate transaction (db likely locked): {}",
+                    e
+                );
                 return true;
             }
             // 如果成功，回滚并关闭
@@ -114,10 +109,7 @@ pub fn is_database_locked(db_path: &Path) -> bool {
 
 /// 安全地执行写入事务
 /// 使用“复制-验证-替换”模式防止数据损坏
-pub fn safe_write_transaction<F>(
-    db_path: &Path,
-    operation: F,
-) -> Result<()>
+pub fn safe_write_transaction<F>(db_path: &Path, operation: F) -> Result<()>
 where
     F: FnOnce(&Connection) -> Result<()>,
 {
@@ -125,7 +117,9 @@ where
 
     // 1. 预检查
     if is_database_locked(db_path) {
-        return Err(anyhow!("Database is locked by running browser. Please close the browser and try again."));
+        return Err(anyhow!(
+            "Database is locked by running browser. Please close the browser and try again."
+        ));
     }
 
     check_compatibility(db_path).context("Database compatibility check failed")?;
@@ -133,20 +127,21 @@ where
     // 2. 创建临时副本
     let temp_dir = std::env::temp_dir().join("browser-sync-safe-write");
     fs::create_dir_all(&temp_dir)?;
-    
-    let db_name = db_path.file_name()
+
+    let db_name = db_path
+        .file_name()
         .ok_or_else(|| anyhow!("Invalid database path"))?
         .to_string_lossy();
-    
+
     let temp_db_path = temp_dir.join(format!("{}_{}.tmp", db_name, uuid::Uuid::new_v4()));
-    
+
     debug!("Creating temporary copy at {:?}", temp_db_path);
     fs::copy(db_path, &temp_db_path).context("Failed to create temporary database copy")?;
 
     // 还要复制 WAL 和 SHM 文件（如果存在）
     let wal_path = db_path.with_extension("sqlite-wal");
     let shm_path = db_path.with_extension("sqlite-shm");
-    
+
     if wal_path.exists() {
         let _ = fs::copy(&wal_path, temp_db_path.with_extension("sqlite-wal"));
     }
@@ -157,20 +152,21 @@ where
     // 3. 在副本上执行操作
     let result = (|| -> Result<()> {
         let conn = Connection::open(&temp_db_path).context("Failed to open temporary database")?;
-        
+
         // 执行用户提供的操作
         operation(&conn)?;
-        
+
         // 4. 验证完整性
         debug!("Verifying integrity of modified database...");
-        let integrity: String = conn.query_row(
-            "PRAGMA integrity_check",
-            [],
-            |row| row.get(0),
-        ).context("Failed to verify integrity")?;
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .context("Failed to verify integrity")?;
 
         if integrity != "ok" {
-            return Err(anyhow!("Database integrity check failed after modification: {}", integrity));
+            return Err(anyhow!(
+                "Database integrity check failed after modification: {}",
+                integrity
+            ));
         }
 
         // 显式关闭连接以确保所有写入都已刷新
@@ -182,7 +178,7 @@ where
     match result {
         Ok(_) => {
             info!("✅ Operation successful and verified. Replacing original database.");
-            
+
             // 备份原始数据库（作为额外的安全措施）
             let backup_path = db_path.with_extension("sqlite.bak");
             if let Err(e) = fs::copy(db_path, &backup_path) {
@@ -200,26 +196,34 @@ where
                 fs::copy(&temp_db_path, db_path).context("Failed to replace original database")?;
                 fs::remove_file(&temp_db_path)?;
             }
-            
+
             // 清理临时 WAL/SHM 文件
             let temp_wal = temp_db_path.with_extension("sqlite-wal");
             let temp_shm = temp_db_path.with_extension("sqlite-shm");
-            if temp_wal.exists() { let _ = fs::remove_file(temp_wal); }
-            if temp_shm.exists() { let _ = fs::remove_file(temp_shm); }
+            if temp_wal.exists() {
+                let _ = fs::remove_file(temp_wal);
+            }
+            if temp_shm.exists() {
+                let _ = fs::remove_file(temp_shm);
+            }
 
             Ok(())
         }
         Err(e) => {
             error!("❌ Operation failed or validation failed. Original database unchanged.");
             error!("Error: {}", e);
-            
+
             // 清理临时文件
             let _ = fs::remove_file(&temp_db_path);
             let temp_wal = temp_db_path.with_extension("sqlite-wal");
             let temp_shm = temp_db_path.with_extension("sqlite-shm");
-            if temp_wal.exists() { let _ = fs::remove_file(temp_wal); }
-            if temp_shm.exists() { let _ = fs::remove_file(temp_shm); }
-            
+            if temp_wal.exists() {
+                let _ = fs::remove_file(temp_wal);
+            }
+            if temp_shm.exists() {
+                let _ = fs::remove_file(temp_shm);
+            }
+
             Err(e)
         }
     }

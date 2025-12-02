@@ -100,12 +100,8 @@ fn test_sync_history_dry_run() {
 
 #[test]
 fn test_sync_with_custom_browsers() {
-    let (_success, stdout, stderr) = run_cli(&[
-        "sync",
-        "--browsers",
-        "waterfox,brave-nightly",
-        "--dry-run",
-    ]);
+    let (_success, stdout, stderr) =
+        run_cli(&["sync", "--browsers", "waterfox,brave-nightly", "--dry-run"]);
 
     let combined = format!("{}{}", stdout, stderr);
     // Should identify hub browsers

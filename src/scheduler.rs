@@ -2,8 +2,8 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
-use tokio_cron_scheduler::{JobScheduler, Job};
-use tracing::{info, error};
+use tokio_cron_scheduler::{Job, JobScheduler};
+use tracing::{error, info};
 
 use crate::sync::{SyncEngine, SyncMode};
 
@@ -23,14 +23,17 @@ impl SchedulerConfig {
 
 pub async fn start_scheduler(config: SchedulerConfig) -> Result<()> {
     let mut scheduler = JobScheduler::new().await?;
-    
-    info!("⏰ Scheduler initialized with cron: {}", config.cron_expression);
-    
+
+    info!(
+        "⏰ Scheduler initialized with cron: {}",
+        config.cron_expression
+    );
+
     let cron_expr = config.cron_expression.clone();
     let job = Job::new_async(cron_expr.as_str(), move |_uuid, _l| {
         Box::pin(async move {
             info!("🔄 Scheduled sync triggered");
-            
+
             match SyncEngine::new() {
                 Ok(mut engine) => {
                     // Use incremental mode for scheduled syncs
@@ -50,10 +53,10 @@ pub async fn start_scheduler(config: SchedulerConfig) -> Result<()> {
             }
         })
     })?;
-    
+
     scheduler.add(job).await?;
     scheduler.start().await?;
-    
+
     if config.daemon {
         info!("🔄 Running as daemon. Press Ctrl+C to stop.");
         tokio::signal::ctrl_c().await?;
@@ -62,7 +65,7 @@ pub async fn start_scheduler(config: SchedulerConfig) -> Result<()> {
         info!("⏰ Scheduler started. Keeping process alive...");
         tokio::signal::ctrl_c().await?;
     }
-    
+
     scheduler.shutdown().await?;
     Ok(())
 }

@@ -1,18 +1,18 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
+mod browser_utils;
 mod browsers;
-mod sync;
-mod scheduler;
-mod validator;
+mod cleanup;
+mod cloud_reset;
+mod db_safety;
 mod firefox_sync;
 mod firefox_sync_api;
-mod cloud_reset;
-mod cleanup;
-mod browser_utils;
-mod db_safety;
+mod scheduler;
+mod sync;
 mod sync_flags;
+mod validator;
 
 use sync::SyncEngine;
 use sync_flags::SyncFlags;
@@ -37,30 +37,30 @@ enum Commands {
     /// List detected browsers and bookmark counts
     #[command(alias = "l", alias = "ls")]
     List,
-    
+
     /// Export browser data to HTML or JSON file (safe, non-destructive)
     #[command(alias = "e", alias = "exp")]
     Export {
         /// Output file path
         #[arg(short, long, default_value = "~/Desktop/bookmarks.html")]
         output: String,
-        
+
         /// Source browsers (comma-separated, or 'all')
         #[arg(short, long, default_value = "all")]
         browsers: String,
-        
+
         /// Include bookmarks (default: true)
         #[arg(long, default_value = "true")]
         bookmarks: bool,
-        
+
         /// Include browsing history
         #[arg(long)]
         history: bool,
-        
+
         /// Include reading list (Safari, Firefox)
         #[arg(short = 'r', long)]
         reading_list: bool,
-        
+
         /// Include cookies (⚠️  affects sessions)
         #[arg(long)]
         cookies: bool,
@@ -72,27 +72,27 @@ enum Commands {
         /// Include extensions (⚠️  NOT SUPPORTED - BLOCKED)
         #[arg(long)]
         extensions: bool,
-        
+
         /// Days of history to export (default: 30, 0 = all)
         #[arg(long, default_value = "30")]
         history_days: i32,
-        
+
         /// Remove duplicate bookmarks/URLs
         #[arg(short, long)]
         deduplicate: bool,
-        
+
         /// Merge into flat structure (no browser folders)
         #[arg(short, long)]
         merge: bool,
-        
+
         /// Remove empty folders
         #[arg(long)]
         clean: bool,
-        
+
         /// Import from existing HTML file
         #[arg(long)]
         include: Option<String>,
-        
+
         /// Clear source browsers after export (⚠️  DANGEROUS!)
         #[arg(long)]
         clear_after: bool,
@@ -100,12 +100,12 @@ enum Commands {
         /// Enable unsafe database writes (required for clear_after)
         #[arg(long)]
         unsafe_write: bool,
-        
+
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
     },
-    
+
     /// Analyze bookmarks (duplicates, empty folders, NSFW)
     #[command(alias = "a")]
     Analyze {
@@ -113,31 +113,31 @@ enum Commands {
         #[arg(short, long)]
         browsers: Option<String>,
     },
-    
+
     /// Smart organize bookmarks by URL patterns
     #[command(alias = "org", alias = "o")]
     Organize {
         /// Target browsers
         #[arg(short, long)]
         browsers: Option<String>,
-        
+
         /// Custom rules file (JSON)
         #[arg(short, long)]
         rules: Option<String>,
-        
+
         /// Show statistics
         #[arg(short, long)]
         stats: bool,
-        
+
         /// Preview only, no changes
         #[arg(long)]
         dry_run: bool,
-        
+
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
     },
-    
+
     /// Validate bookmark integrity
     #[command(alias = "v")]
     Validate {
@@ -145,30 +145,30 @@ enum Commands {
         #[arg(short, long)]
         detailed: bool,
     },
-    
+
     /// Sync browsing history between browsers
     #[command(alias = "hist")]
     History {
         /// Target browsers
         #[arg(short, long, default_value = "waterfox,brave-nightly")]
         browsers: String,
-        
+
         /// Days to sync
         #[arg(short, long, default_value = "30")]
         days: i32,
-        
+
         /// Preview only
         #[arg(long)]
         dry_run: bool,
-        
+
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
     },
-    
+
     /// Show available classification rules
     Rules,
-    
+
     /// Create full backup of all browser data
     Backup {
         /// Output directory
@@ -190,7 +190,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into())
+                .add_directive(tracing::Level::INFO.into()),
         )
         .init();
 
@@ -201,24 +201,24 @@ async fn main() -> Result<()> {
             let engine = SyncEngine::new()?;
             engine.list_browsers()?;
         }
-        
-        Commands::Export { 
-            output, 
-            browsers, 
+
+        Commands::Export {
+            output,
+            browsers,
             bookmarks,
             history,
             reading_list,
             cookies,
             history_days,
-            deduplicate, 
-            merge, 
-            clean, 
-            include, 
-            clear_after, 
+            deduplicate,
+            merge,
+            clean,
+            include,
+            clear_after,
             unsafe_write,
             passwords,
             extensions,
-            verbose 
+            verbose,
         } => {
             // Create sync flags from arguments
             let sync_flags = SyncFlags {
@@ -228,31 +228,43 @@ async fn main() -> Result<()> {
                 cookies,
                 passwords,
                 extensions,
-                history_days: if history_days > 0 { Some(history_days) } else { None },
+                history_days: if history_days > 0 {
+                    Some(history_days)
+                } else {
+                    None
+                },
                 deduplicate,
                 merge,
                 verbose,
             };
-            
+
             // Validate flags
             if let Err(e) = sync_flags.validate() {
                 error!("{}", e);
                 return Ok(());
             }
-            
+
             info!("📤 Exporting browser data");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             info!("Output: {}", output);
             info!("Source: {}", browsers);
             info!("Data Types: {}", sync_flags.description());
-            if deduplicate { info!("  ✓ Deduplicate"); }
-            if merge { info!("  ✓ Merge (flat)"); }
-            if clean { info!("  ✓ Clean empty folders"); }
-            if clear_after { warn!("  ⚠️  Clear after export"); }
+            if deduplicate {
+                info!("  ✓ Deduplicate");
+            }
+            if merge {
+                info!("  ✓ Merge (flat)");
+            }
+            if clean {
+                info!("  ✓ Clean empty folders");
+            }
+            if clear_after {
+                warn!("  ⚠️  Clear after export");
+            }
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            
+
             let mut engine = SyncEngine::new()?;
-            
+
             // Import from existing HTML if specified
             let mut extra_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
             if let Some(html_path) = &include {
@@ -267,7 +279,7 @@ async fn main() -> Result<()> {
                     Err(e) => warn!("   Import failed: {}", e),
                 }
             }
-            
+
             // Include Safari reading list if requested
             if reading_list {
                 info!("📖 Reading Safari reading list...");
@@ -279,15 +291,18 @@ async fn main() -> Result<()> {
                             title: "Reading List".to_string(),
                             url: None,
                             folder: true,
-                            children: items.into_iter().map(|item| crate::browsers::Bookmark {
-                                id: format!("rl-{}", item.url.len()),
-                                title: item.title,
-                                url: Some(item.url),
-                                folder: false,
-                                children: vec![],
-                                date_added: item.date_added,
-                                date_modified: None,
-                            }).collect(),
+                            children: items
+                                .into_iter()
+                                .map(|item| crate::browsers::Bookmark {
+                                    id: format!("rl-{}", item.url.len()),
+                                    title: item.title,
+                                    url: Some(item.url),
+                                    folder: false,
+                                    children: vec![],
+                                    date_added: item.date_added,
+                                    date_modified: None,
+                                })
+                                .collect(),
                             date_added: Some(chrono::Utc::now().timestamp_millis()),
                             date_modified: None,
                         };
@@ -309,15 +324,19 @@ async fn main() -> Result<()> {
                             title: "History".to_string(),
                             url: None,
                             folder: true,
-                            children: items.into_iter().enumerate().map(|(i, item)| crate::browsers::Bookmark {
-                                id: format!("hist-{}", i),
-                                title: item.title.unwrap_or_default(),
-                                url: Some(item.url),
-                                folder: false,
-                                children: vec![],
-                                date_added: item.last_visit,
-                                date_modified: None,
-                            }).collect(),
+                            children: items
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, item)| crate::browsers::Bookmark {
+                                    id: format!("hist-{}", i),
+                                    title: item.title.unwrap_or_default(),
+                                    url: Some(item.url),
+                                    folder: false,
+                                    children: vec![],
+                                    date_added: item.last_visit,
+                                    date_modified: None,
+                                })
+                                .collect(),
                             date_added: Some(chrono::Utc::now().timestamp_millis()),
                             date_modified: None,
                         };
@@ -339,15 +358,19 @@ async fn main() -> Result<()> {
                             title: "Cookies".to_string(),
                             url: None,
                             folder: true,
-                            children: items.into_iter().enumerate().map(|(i, item)| crate::browsers::Bookmark {
-                                id: format!("cookie-{}", i),
-                                title: format!("{} ({})", item.name, item.host),
-                                url: Some(format!("http://{}/{}", item.host, item.path)), // Fake URL for visualization
-                                folder: false,
-                                children: vec![],
-                                date_added: item.expiry,
-                                date_modified: None,
-                            }).collect(),
+                            children: items
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, item)| crate::browsers::Bookmark {
+                                    id: format!("cookie-{}", i),
+                                    title: format!("{} ({})", item.name, item.host),
+                                    url: Some(format!("http://{}/{}", item.host, item.path)), // Fake URL for visualization
+                                    folder: false,
+                                    children: vec![],
+                                    date_added: item.expiry,
+                                    date_modified: None,
+                                })
+                                .collect(),
                             date_added: Some(chrono::Utc::now().timestamp_millis()),
                             date_modified: None,
                         };
@@ -357,14 +380,22 @@ async fn main() -> Result<()> {
                     Err(e) => warn!("   Failed to read cookies: {}", e),
                 }
             }
-            
-            let count = engine.export_to_html_with_extra(
-                Some(&browsers), &output, merge, deduplicate, clean, verbose, extra_bookmarks
-            ).await?;
-            
+
+            let count = engine
+                .export_to_html_with_extra(
+                    Some(&browsers),
+                    &output,
+                    merge,
+                    deduplicate,
+                    clean,
+                    verbose,
+                    extra_bookmarks,
+                )
+                .await?;
+
             info!("");
             info!("✅ Exported {} bookmarks to {}", count, output);
-            
+
             if clear_after {
                 if !unsafe_write {
                     error!("❌ Error: --clear-after requires --unsafe-write flag to confirm destructive operation");
@@ -376,33 +407,51 @@ async fn main() -> Result<()> {
                 info!("✅ Source bookmarks cleared");
             }
         }
-        
+
         Commands::Analyze { browsers } => {
             info!("🔍 Analyzing bookmarks...");
             let engine = SyncEngine::new()?;
             engine.analyze_bookmarks(browsers.as_deref()).await?;
         }
-        
-        Commands::Organize { browsers, rules, stats, dry_run, verbose } => {
+
+        Commands::Organize {
+            browsers,
+            rules,
+            stats,
+            dry_run,
+            verbose,
+        } => {
             if !dry_run {
                 print_sync_warning();
             }
             info!("🧠 Smart organizing bookmarks...");
             let mut engine = SyncEngine::new()?;
-            engine.smart_organize(
-                browsers.as_deref(), rules.as_deref(), false, stats, dry_run, verbose
-            ).await?;
+            engine
+                .smart_organize(
+                    browsers.as_deref(),
+                    rules.as_deref(),
+                    false,
+                    stats,
+                    dry_run,
+                    verbose,
+                )
+                .await?;
             info!("✅ Organization complete!");
         }
-        
+
         Commands::Validate { detailed } => {
             info!("🔍 Validating bookmarks...");
             let engine = SyncEngine::new()?;
             let report = engine.validate(detailed)?;
             println!("{}", report);
         }
-        
-        Commands::History { browsers, days, dry_run, verbose } => {
+
+        Commands::History {
+            browsers,
+            days,
+            dry_run,
+            verbose,
+        } => {
             info!("📜 Syncing browser history");
             info!("   Browsers: {}", browsers);
             info!("   Range: {} days", days);
@@ -410,11 +459,11 @@ async fn main() -> Result<()> {
             engine.sync_history(Some(days), dry_run, verbose).await?;
             info!("✅ History sync complete!");
         }
-        
+
         Commands::Rules => {
             SyncEngine::print_builtin_rules();
         }
-        
+
         Commands::Backup { output } => {
             info!("💾 Creating backup...");
             sync::create_master_backup(&output, true).await?;

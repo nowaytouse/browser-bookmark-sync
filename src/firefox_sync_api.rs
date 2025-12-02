@@ -1,17 +1,17 @@
 //! Firefox Sync API - reserved for future cloud sync feature
 #![allow(dead_code)]
 
-use anyhow::{Result, Context, bail};
-use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::fs;
-use tracing::{info, debug};
+use anyhow::{bail, Context, Result};
 use reqwest;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+use tracing::{debug, info};
 
 /// Firefox Accounts配置
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]  // 字段用于JSON反序列化
+#[allow(dead_code)] // 字段用于JSON反序列化
 struct FirefoxAccountData {
     email: String,
     session_token: String,
@@ -33,14 +33,14 @@ struct OAuthToken {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]  // 字段用于JSON反序列化
+#[allow(dead_code)] // 字段用于JSON反序列化
 struct SignedInUser {
     version: u32,
     account_data: FirefoxAccountData,
 }
 
 /// Firefox Sync API客户端
-#[allow(dead_code)]  // 字段用于API调用
+#[allow(dead_code)] // 字段用于API调用
 pub struct FirefoxSyncAPIClient {
     token: String,
     uid: String,
@@ -52,23 +52,26 @@ impl FirefoxSyncAPIClient {
     /// 从Waterfox profile加载认证信息
     pub fn from_profile(profile_path: &Path) -> Result<Self> {
         let signed_in_user_path = profile_path.join("signedInUser.json");
-        
+
         if !signed_in_user_path.exists() {
             bail!("Not signed in to Firefox Account");
         }
-        
-        let content = fs::read_to_string(&signed_in_user_path)
-            .context("Failed to read signedInUser.json")?;
-        
-        let user: SignedInUser = serde_json::from_str(&content)
-            .context("Failed to parse signedInUser.json")?;
-        
-        let token = user.account_data.oauth_tokens.oldsync
+
+        let content =
+            fs::read_to_string(&signed_in_user_path).context("Failed to read signedInUser.json")?;
+
+        let user: SignedInUser =
+            serde_json::from_str(&content).context("Failed to parse signedInUser.json")?;
+
+        let token = user
+            .account_data
+            .oauth_tokens
+            .oldsync
             .ok_or_else(|| anyhow::anyhow!("No oldsync token found"))?
             .token;
-        
+
         info!("✅ Loaded Firefox Account: {}", user.account_data.email);
-        
+
         Ok(Self {
             token,
             uid: user.account_data.uid,
@@ -76,16 +79,16 @@ impl FirefoxSyncAPIClient {
             sync_url: "https://token.services.mozilla.com".to_string(),
         })
     }
-    
+
     /// 获取Sync存储端点
     async fn get_sync_endpoint(&self) -> Result<SyncEndpoint> {
         let client = reqwest::Client::new();
-        
+
         let url = format!("{}/1.0/sync/1.5", self.sync_url);
-        
+
         info!("🔍 Getting Sync endpoint...");
         debug!("   URL: {}", url);
-        
+
         // Firefox Sync需要X-KeyID头
         let response = client
             .get(&url)
@@ -94,51 +97,56 @@ impl FirefoxSyncAPIClient {
             .send()
             .await
             .context("Failed to get sync endpoint")?;
-        
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             bail!("Failed to get sync endpoint: {} - {}", status, body);
         }
-        
-        let endpoint: SyncEndpoint = response.json().await
+
+        let endpoint: SyncEndpoint = response
+            .json()
+            .await
             .context("Failed to parse sync endpoint response")?;
-        
+
         info!("✅ Sync endpoint: {}", endpoint.api_endpoint);
-        
+
         Ok(endpoint)
     }
-    
+
     /// 上传书签到云端
     pub async fn upload_bookmarks(&self, bookmarks: &[crate::browsers::Bookmark]) -> Result<()> {
         info!("📤 Uploading bookmarks to Firefox Sync cloud...");
-        
+
         // 1. 获取Sync端点
         let endpoint = self.get_sync_endpoint().await?;
-        
+
         // 2. 转换书签格式为Firefox Sync格式
         let sync_bookmarks = self.convert_to_sync_format(bookmarks)?;
-        
+
         // 3. 上传到云端
         self.upload_to_cloud(&endpoint, sync_bookmarks).await?;
-        
+
         info!("✅ Bookmarks uploaded to cloud successfully");
-        
+
         Ok(())
     }
-    
+
     /// 转换书签格式
-    fn convert_to_sync_format(&self, bookmarks: &[crate::browsers::Bookmark]) -> Result<Vec<SyncBookmark>> {
+    fn convert_to_sync_format(
+        &self,
+        bookmarks: &[crate::browsers::Bookmark],
+    ) -> Result<Vec<SyncBookmark>> {
         info!("🔄 Converting bookmarks to Sync format...");
-        
+
         let mut sync_bookmarks = Vec::new();
         self.convert_recursive(bookmarks, "menu", &mut sync_bookmarks)?;
-        
+
         info!("   Converted {} bookmarks", sync_bookmarks.len());
-        
+
         Ok(sync_bookmarks)
     }
-    
+
     /// 递归转换书签
     fn convert_recursive(
         &self,
@@ -148,7 +156,7 @@ impl FirefoxSyncAPIClient {
     ) -> Result<()> {
         for bookmark in bookmarks {
             let id = format!("{}_{}", parent_id, bookmark.id);
-            
+
             if bookmark.folder {
                 // 文件夹
                 output.push(SyncBookmark {
@@ -156,10 +164,14 @@ impl FirefoxSyncAPIClient {
                     type_field: "folder".to_string(),
                     parent_id: parent_id.to_string(),
                     title: bookmark.title.clone(),
-                    children: bookmark.children.iter().map(|c| format!("{}_{}", id, c.id)).collect(),
+                    children: bookmark
+                        .children
+                        .iter()
+                        .map(|c| format!("{}_{}", id, c.id))
+                        .collect(),
                     ..Default::default()
                 });
-                
+
                 // 递归处理子项
                 self.convert_recursive(&bookmark.children, &id, output)?;
             } else if let Some(ref url) = bookmark.url {
@@ -174,32 +186,46 @@ impl FirefoxSyncAPIClient {
                 });
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// 上传到云端
-    async fn upload_to_cloud(&self, endpoint: &SyncEndpoint, bookmarks: Vec<SyncBookmark>) -> Result<()> {
+    async fn upload_to_cloud(
+        &self,
+        endpoint: &SyncEndpoint,
+        bookmarks: Vec<SyncBookmark>,
+    ) -> Result<()> {
         let client = reqwest::Client::new();
-        
+
         // Firefox Sync使用批量上传
         let batch_size = 100;
         let total = bookmarks.len();
-        
-        info!("📤 Uploading {} bookmarks in batches of {}...", total, batch_size);
-        
+
+        info!(
+            "📤 Uploading {} bookmarks in batches of {}...",
+            total, batch_size
+        );
+
         for (i, chunk) in bookmarks.chunks(batch_size).enumerate() {
             let url = format!("{}/storage/bookmarks", endpoint.api_endpoint);
-            
-            let payload: Vec<_> = chunk.iter().map(|b| {
-                serde_json::json!({
-                    "id": b.id,
-                    "payload": serde_json::to_string(b).unwrap(),
+
+            let payload: Vec<_> = chunk
+                .iter()
+                .map(|b| {
+                    serde_json::json!({
+                        "id": b.id,
+                        "payload": serde_json::to_string(b).unwrap(),
+                    })
                 })
-            }).collect();
-            
-            debug!("   Uploading batch {}/{}", i + 1, (total + batch_size - 1) / batch_size);
-            
+                .collect();
+
+            debug!(
+                "   Uploading batch {}/{}",
+                i + 1,
+                (total + batch_size - 1) / batch_size
+            );
+
             let response = client
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", self.token))
@@ -208,23 +234,27 @@ impl FirefoxSyncAPIClient {
                 .send()
                 .await
                 .context("Failed to upload bookmarks")?;
-            
+
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
                 bail!("Failed to upload bookmarks: {} - {}", status, body);
             }
-            
-            info!("   ✅ Batch {}/{} uploaded", i + 1, (total + batch_size - 1) / batch_size);
+
+            info!(
+                "   ✅ Batch {}/{} uploaded",
+                i + 1,
+                (total + batch_size - 1) / batch_size
+            );
         }
-        
+
         Ok(())
     }
 }
 
 /// Sync端点信息
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]  // 字段用于JSON反序列化
+#[allow(dead_code)] // 字段用于JSON反序列化
 struct SyncEndpoint {
     api_endpoint: String,
     uid: String,
