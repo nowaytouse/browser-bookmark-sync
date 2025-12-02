@@ -1,5 +1,6 @@
 //! Firefox Sync integration module - reserved for future cloud sync feature
 #![allow(dead_code)]
+#![allow(clippy::single_component_path_imports)]
 
 use anyhow::{Context, Result};
 use std::fs;

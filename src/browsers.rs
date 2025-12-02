@@ -1659,7 +1659,7 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
                 // Generate a unique GUID for the folder
                 let guid = format!(
                     "folder_{}",
-                    uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string()
+                    &uuid::Uuid::new_v4().to_string().replace("-", "")[..12]
                 );
 
                 // Insert folder
@@ -1689,7 +1689,7 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
                 // Generate a unique GUID for the bookmark
                 let guid = format!(
                     "bkmk_{}",
-                    uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string()
+                    &uuid::Uuid::new_v4().to_string().replace("-", "")[..12]
                 );
 
                 // First, ensure the URL exists in moz_places
@@ -1867,7 +1867,7 @@ fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem
                                 .map(|d| {
                                     // Convert plist::Date to timestamp
                                     use std::time::SystemTime;
-                                    let system_time: SystemTime = d.clone().into();
+                                    let system_time: SystemTime = d.into();
                                     system_time
                                         .duration_since(SystemTime::UNIX_EPOCH)
                                         .unwrap_or_default()

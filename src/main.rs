@@ -272,7 +272,7 @@ async fn main() -> Result<()> {
                 info!("📥 Importing: {}", expanded);
                 match sync::import_bookmarks_from_html(&expanded) {
                     Ok(bookmarks) => {
-                        let count: usize = bookmarks.iter().map(|b| count_tree(b)).sum();
+                        let count: usize = bookmarks.iter().map(count_tree).sum();
                         info!("   {} bookmarks imported", count);
                         extra_bookmarks = bookmarks;
                     }

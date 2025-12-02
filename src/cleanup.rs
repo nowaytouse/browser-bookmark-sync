@@ -103,7 +103,7 @@ pub fn detect_anomalies(bookmarks: &[Bookmark]) -> AnomalyReport {
     collect_bookmark_stats(bookmarks, &mut url_counts, &mut report);
 
     // 检测重复URL
-    for (_url, count) in &url_counts {
+    for count in url_counts.values() {
         if *count > 1 {
             report.duplicate_count += count - 1;
         }

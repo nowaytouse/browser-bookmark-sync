@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use anyhow::{bail, Context, Result};
-use reqwest;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -148,6 +148,7 @@ impl FirefoxSyncAPIClient {
     }
 
     /// 递归转换书签
+    #[allow(clippy::only_used_in_recursion)]
     fn convert_recursive(
         &self,
         bookmarks: &[crate::browsers::Bookmark],
@@ -223,7 +224,7 @@ impl FirefoxSyncAPIClient {
             debug!(
                 "   Uploading batch {}/{}",
                 i + 1,
-                (total + batch_size - 1) / batch_size
+                total.div_ceil(batch_size)
             );
 
             let response = client
@@ -244,7 +245,7 @@ impl FirefoxSyncAPIClient {
             info!(
                 "   ✅ Batch {}/{} uploaded",
                 i + 1,
-                (total + batch_size - 1) / batch_size
+                total.div_ceil(batch_size)
             );
         }
 

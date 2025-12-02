@@ -4,6 +4,7 @@ use tracing::warn;
 /// 同步标志配置
 /// 控制哪些数据类型被同步或导出
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SyncFlags {
     /// 同步书签
     pub bookmarks: bool,

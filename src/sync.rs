@@ -621,7 +621,7 @@ impl SyncEngine {
 
                 url_map
                     .entry(normalized)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(location);
             }
         }
@@ -799,16 +799,19 @@ impl SyncEngine {
                 if bookmark.folder {
                     let signature = get_folder_signature(bookmark);
                     if !signature.is_empty() {
-                        if seen_signatures.contains_key(&signature) {
-                            // Duplicate found
-                            debug!(
-                                "Found duplicate folder: {} (signature: {})",
-                                bookmark.title, signature
-                            );
-                            to_remove.push(idx);
-                            *removed += 1;
-                        } else {
-                            seen_signatures.insert(signature, idx);
+                        match seen_signatures.entry(signature) {
+                            std::collections::hash_map::Entry::Occupied(entry) => {
+                                // Duplicate found
+                                debug!(
+                                    "Found duplicate folder: {} (signature: {})",
+                                    bookmark.title, entry.key()
+                                );
+                                to_remove.push(idx);
+                                *removed += 1;
+                            }
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                entry.insert(idx);
+                            }
                         }
                     }
                 }
@@ -1436,6 +1439,7 @@ impl SyncEngine {
     }
 
     /// Set hub browsers - migrate all data to hubs and optionally clear non-hub browsers
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_hub_browsers(
         &mut self,
         hub_names: &str,
@@ -2276,7 +2280,6 @@ impl SyncEngine {
     }
 
     /// Recursively remove empty folders and return count of removed folders
-
     fn remove_empty_folders(bookmarks: &mut Vec<Bookmark>) -> usize {
         let mut removed_count = 0;
 
@@ -2353,6 +2356,7 @@ pub struct ClassificationRule {
 }
 
 impl ClassificationRule {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: &str,
         folder_name: &str,
@@ -4863,7 +4867,7 @@ impl SyncEngine {
                     let mut unclassified: Vec<Bookmark> = Vec::new();
 
                     for bookmark in to_classify {
-                        let url = bookmark.url.as_ref().map(|s| s.as_str()).unwrap_or("");
+                        let url = bookmark.url.as_deref().unwrap_or("");
                         let title = &bookmark.title;
 
                         let mut matched = false;
@@ -4877,7 +4881,7 @@ impl SyncEngine {
                                 }
                                 classified
                                     .entry(rule.folder_name.clone())
-                                    .or_insert_with(Vec::new)
+                                    .or_default()
                                     .push(bookmark.clone());
                                 *stats
                                     .by_category
@@ -5516,6 +5520,7 @@ mod tests {
 
 impl SyncEngine {
     /// Set hub browsers with Firefox Sync integration
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_hub_browsers_with_firefox_sync(
         &mut self,
         hub_names: &str,
@@ -5924,6 +5929,7 @@ impl SyncEngine {
     }
 
     /// Export all bookmarks with additional bookmarks from external sources
+    #[allow(clippy::too_many_arguments)]
     pub async fn export_to_html_with_extra(
         &self,
         browser_names: Option<&str>,
@@ -5945,9 +5951,9 @@ impl SyncEngine {
                 .iter()
                 .filter(|a| {
                     let name = a.browser_type().name().to_lowercase();
-                    let name_normalized = name.replace(' ', "-").replace('_', "-");
+                    let name_normalized = name.replace([' ', '_'], "-");
                     browser_list.iter().any(|b| {
-                        let b_normalized = b.replace(' ', "-").replace('_', "-");
+                        let b_normalized = b.replace([' ', '_'], "-");
                         // Exact match first
                         name_normalized == b_normalized ||
                         // Then partial match
