@@ -381,14 +381,17 @@ async fn main() -> Result<()> {
                 }
             }
 
+            let export_config = sync::ExportConfig {
+                merge,
+                deduplicate,
+                clean_empty: clean,
+                verbose,
+            };
             let count = engine
                 .export_to_html_with_extra(
                     Some(&browsers),
                     &output,
-                    merge,
-                    deduplicate,
-                    clean,
-                    verbose,
+                    &export_config,
                     extra_bookmarks,
                 )
                 .await?;

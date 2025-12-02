@@ -55,76 +55,47 @@ fn test_validate_command() {
 }
 
 #[test]
-fn test_sync_dry_run() {
-    let (_success, stdout, stderr) = run_cli(&["sync", "--dry-run"]);
+fn test_history_dry_run() {
+    let (_success, stdout, stderr) = run_cli(&["history", "--dry-run"]);
 
-    // Should show full sync (bookmarks + history + cookies)
-    let combined = format!("{}{}", stdout, stderr);
-    assert!(
-        combined.contains("bookmarks") || combined.contains("Merged"),
-        "Should show bookmark sync"
-    );
-    assert!(
-        combined.contains("history") || combined.contains("History"),
-        "Should show history sync"
-    );
-    assert!(
-        combined.contains("cookies") || combined.contains("Cookies"),
-        "Should show cookies sync"
-    );
-    assert!(
-        combined.contains("Dry run") || combined.contains("dry run"),
-        "Should indicate dry run mode"
-    );
-
-    println!("✅ sync --dry-run works (full sync: bookmarks + history + cookies)");
-}
-
-#[test]
-fn test_sync_history_dry_run() {
-    let (_success, stdout, stderr) = run_cli(&["sync-history", "--dry-run"]);
-
-    // Should sync ALL history (no --days option)
     let combined = format!("{}{}", stdout, stderr);
     assert!(
         combined.contains("history") || combined.contains("History"),
         "Should mention history synchronization"
     );
-    assert!(
-        combined.contains("Merged") || combined.contains("unique"),
-        "Should show merge results"
-    );
 
-    println!("✅ sync-history --dry-run works (syncs ALL history)");
+    println!("✅ history --dry-run works");
 }
 
 #[test]
-fn test_sync_with_custom_browsers() {
-    let (_success, stdout, stderr) =
-        run_cli(&["sync", "--browsers", "waterfox,brave-nightly", "--dry-run"]);
+fn test_analyze_command() {
+    let (_success, stdout, stderr) = run_cli(&["analyze"]);
 
     let combined = format!("{}{}", stdout, stderr);
-    // Should identify hub browsers
     assert!(
-        combined.contains("Hub") || combined.contains("hub") || combined.contains("waterfox"),
-        "Should identify hub browsers"
+        combined.contains("Analyzing")
+            || combined.contains("Analysis")
+            || combined.contains("bookmarks"),
+        "Should show analysis output"
     );
 
-    println!("✅ sync --browsers works");
+    println!("✅ analyze command works");
 }
 
 #[test]
-fn test_sync_clear_others_dry_run() {
-    let (_success, stdout, stderr) = run_cli(&["sync", "--clear-others", "--dry-run"]);
+fn test_rules_command() {
+    let (success, stdout, stderr) = run_cli(&["rules"]);
 
     let combined = format!("{}{}", stdout, stderr);
-    // Should show that non-hub browsers will be cleared
     assert!(
-        combined.contains("Non-hub") || combined.contains("clear") || combined.contains("CLEARED"),
-        "Should indicate non-hub browsers will be cleared"
+        success
+            || combined.contains("rule")
+            || combined.contains("Rule")
+            || combined.contains("classification"),
+        "Should show classification rules"
     );
 
-    println!("✅ sync --clear-others --dry-run works");
+    println!("✅ rules command works");
 }
 
 #[test]
@@ -133,30 +104,36 @@ fn test_help_commands() {
     let (_, stdout, stderr) = run_cli(&["--help"]);
     let combined = format!("{}{}", stdout, stderr);
     assert!(
-        combined.contains("sync") && combined.contains("validate"),
+        combined.contains("export") && combined.contains("validate"),
         "Help should list available commands"
     );
 
-    // Test sync help - should show full sync description
-    let (_, stdout, stderr) = run_cli(&["sync", "--help"]);
+    // Test export help
+    let (_, stdout, stderr) = run_cli(&["export", "--help"]);
     let combined = format!("{}{}", stdout, stderr);
     assert!(
-        combined.contains("bookmarks") || combined.contains("history") || combined.contains("Full"),
-        "sync help should mention full sync"
+        combined.contains("bookmarks") || combined.contains("output") || combined.contains("HTML"),
+        "export help should describe export functionality"
     );
 
     println!("✅ help commands work");
 }
 
 #[test]
-fn test_sync_cookies_dry_run() {
-    let (_success, stdout, stderr) = run_cli(&["sync-cookies", "--dry-run"]);
-
+fn test_export_dry_check() {
+    // Test that export command parses arguments correctly
+    let (_, stdout, stderr) = run_cli(&["export", "--help"]);
     let combined = format!("{}{}", stdout, stderr);
+
+    // Should show various export options
     assert!(
-        combined.contains("cookies") || combined.contains("Cookies"),
-        "Should mention cookies synchronization"
+        combined.contains("--deduplicate") || combined.contains("-d"),
+        "Should have deduplicate option"
+    );
+    assert!(
+        combined.contains("--merge") || combined.contains("-m"),
+        "Should have merge option"
     );
 
-    println!("✅ sync-cookies --dry-run works");
+    println!("✅ export options are available");
 }

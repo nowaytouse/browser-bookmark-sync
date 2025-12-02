@@ -1865,13 +1865,11 @@ fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem
                                 .get("ReadingListDateAdded")
                                 .and_then(|v| v.as_date())
                                 .map(|d| {
-                                    // Convert plist::Date to timestamp
-                                    use std::time::SystemTime;
-                                    let system_time: SystemTime = d.into();
-                                    system_time
-                                        .duration_since(SystemTime::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs() as i64
+                                    // Convert plist::Date to timestamp using chrono
+                                    use chrono::{DateTime, Utc};
+                                    let dt: DateTime<Utc> =
+                                        d.to_xml_format().parse().unwrap_or_else(|_| Utc::now());
+                                    dt.timestamp()
                                 });
 
                             items.push(ReadingListItem {

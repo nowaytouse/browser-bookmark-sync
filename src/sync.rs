@@ -13,6 +13,27 @@ use crate::browsers::{
 };
 use crate::validator::ValidationReport;
 
+/// Configuration for hub browser operations
+#[derive(Debug, Clone, Default)]
+pub struct HubConfig {
+    pub hub_names: String,
+    pub sync_history: bool,
+    pub sync_reading_list: bool,
+    pub sync_cookies: bool,
+    pub clear_others: bool,
+    pub dry_run: bool,
+    pub verbose: bool,
+}
+
+/// Configuration for HTML export operations
+#[derive(Debug, Clone, Default)]
+pub struct ExportConfig {
+    pub merge: bool,
+    pub deduplicate: bool,
+    pub clean_empty: bool,
+    pub verbose: bool,
+}
+
 /// Location information for a bookmark in the tree
 struct BookmarkLocation {
     path: BookmarkPath, // Vector of indices representing the path in the tree
@@ -619,10 +640,7 @@ impl SyncEngine {
                     date_added: bookmark.date_added,
                 };
 
-                url_map
-                    .entry(normalized)
-                    .or_default()
-                    .push(location);
+                url_map.entry(normalized).or_default().push(location);
             }
         }
     }
@@ -799,18 +817,19 @@ impl SyncEngine {
                 if bookmark.folder {
                     let signature = get_folder_signature(bookmark);
                     if !signature.is_empty() {
-                        match seen_signatures.entry(signature) {
-                            std::collections::hash_map::Entry::Occupied(entry) => {
+                        use std::collections::hash_map::Entry;
+                        match seen_signatures.entry(signature.clone()) {
+                            Entry::Occupied(_) => {
                                 // Duplicate found
                                 debug!(
                                     "Found duplicate folder: {} (signature: {})",
-                                    bookmark.title, entry.key()
+                                    bookmark.title, signature
                                 );
                                 to_remove.push(idx);
                                 *removed += 1;
                             }
-                            std::collections::hash_map::Entry::Vacant(entry) => {
-                                entry.insert(idx);
+                            Entry::Vacant(e) => {
+                                e.insert(idx);
                             }
                         }
                     }
@@ -1439,17 +1458,14 @@ impl SyncEngine {
     }
 
     /// Set hub browsers - migrate all data to hubs and optionally clear non-hub browsers
-    #[allow(clippy::too_many_arguments)]
-    pub async fn set_hub_browsers(
-        &mut self,
-        hub_names: &str,
-        sync_history: bool,
-        sync_reading_list: bool,
-        sync_cookies: bool,
-        clear_others: bool,
-        dry_run: bool,
-        verbose: bool,
-    ) -> Result<()> {
+    pub async fn set_hub_browsers(&mut self, config: &HubConfig) -> Result<()> {
+        let hub_names = &config.hub_names;
+        let sync_history = config.sync_history;
+        let sync_reading_list = config.sync_reading_list;
+        let sync_cookies = config.sync_cookies;
+        let clear_others = config.clear_others;
+        let dry_run = config.dry_run;
+        let verbose = config.verbose;
         // Parse hub browser names
         let hub_list: Vec<String> = hub_names
             .split(',')
@@ -2355,7 +2371,85 @@ pub struct ClassificationRule {
     pub description: String,
 }
 
+/// Builder for ClassificationRule
+#[derive(Default)]
+pub struct ClassificationRuleBuilder {
+    name: String,
+    folder_name: String,
+    folder_name_en: String,
+    url_patterns: Vec<String>,
+    domain_patterns: Vec<String>,
+    path_patterns: Vec<String>,
+    title_patterns: Vec<String>,
+    priority: i32,
+    description: String,
+}
+
+impl ClassificationRuleBuilder {
+    pub fn new(name: &str, folder_name: &str, folder_name_en: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            folder_name: folder_name.to_string(),
+            folder_name_en: folder_name_en.to_string(),
+            ..Default::default()
+        }
+    }
+
+    pub fn url_patterns(mut self, patterns: Vec<&str>) -> Self {
+        self.url_patterns = patterns.iter().map(|s| s.to_lowercase()).collect();
+        self
+    }
+
+    pub fn domain_patterns(mut self, patterns: Vec<&str>) -> Self {
+        self.domain_patterns = patterns.iter().map(|s| s.to_lowercase()).collect();
+        self
+    }
+
+    pub fn path_patterns(mut self, patterns: Vec<&str>) -> Self {
+        self.path_patterns = patterns.iter().map(|s| s.to_lowercase()).collect();
+        self
+    }
+
+    pub fn title_patterns(mut self, patterns: Vec<&str>) -> Self {
+        self.title_patterns = patterns.iter().map(|s| s.to_lowercase()).collect();
+        self
+    }
+
+    pub fn priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.description = description.to_string();
+        self
+    }
+
+    pub fn build(self) -> ClassificationRule {
+        ClassificationRule {
+            name: self.name,
+            folder_name: self.folder_name,
+            folder_name_en: self.folder_name_en,
+            url_patterns: self.url_patterns,
+            domain_patterns: self.domain_patterns,
+            path_patterns: self.path_patterns,
+            title_patterns: self.title_patterns,
+            priority: self.priority,
+            description: self.description,
+        }
+    }
+}
+
 impl ClassificationRule {
+    /// Create a new classification rule (internal constructor)
+    ///
+    /// This function has 9 parameters which exceeds clippy's default of 7.
+    /// We allow this because:
+    /// 1. This is a private constructor used only within this module
+    /// 2. All parameters are required (no optional fields)
+    /// 3. Parameters are logically grouped: identity (3), patterns (4), metadata (2)
+    /// 4. Public API uses ClassificationRuleBuilder for better ergonomics
+    /// 5. Refactoring 95 call sites would add complexity without benefit
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: &str,
@@ -2372,7 +2466,6 @@ impl ClassificationRule {
             name: name.to_string(),
             folder_name: folder_name.to_string(),
             folder_name_en: folder_name_en.to_string(),
-            // Pre-lowercase all patterns for performance optimization
             url_patterns: url_patterns.iter().map(|s| s.to_lowercase()).collect(),
             domain_patterns: domain_patterns.iter().map(|s| s.to_lowercase()).collect(),
             path_patterns: path_patterns.iter().map(|s| s.to_lowercase()).collect(),
@@ -5520,18 +5613,18 @@ mod tests {
 
 impl SyncEngine {
     /// Set hub browsers with Firefox Sync integration
-    #[allow(clippy::too_many_arguments)]
     pub async fn set_hub_browsers_with_firefox_sync(
         &mut self,
-        hub_names: &str,
-        sync_history: bool,
-        sync_reading_list: bool,
-        sync_cookies: bool,
-        clear_others: bool,
-        dry_run: bool,
-        verbose: bool,
+        config: &HubConfig,
         firefox_sync_strategy: crate::firefox_sync::SyncStrategy,
     ) -> Result<()> {
+        let hub_names = &config.hub_names;
+        let sync_history = config.sync_history;
+        let sync_reading_list = config.sync_reading_list;
+        let sync_cookies = config.sync_cookies;
+        let clear_others = config.clear_others;
+        let dry_run = config.dry_run;
+        let verbose = config.verbose;
         use crate::firefox_sync::{FirefoxSyncHandler, SyncStrategy};
         use crate::firefox_sync_api::FirefoxSyncAPIClient;
 
@@ -5575,16 +5668,16 @@ impl SyncEngine {
         }
 
         // 执行正常的同步流程
-        self.set_hub_browsers(
-            hub_names,
+        let hub_config = HubConfig {
+            hub_names: hub_names.to_string(),
             sync_history,
             sync_reading_list,
             sync_cookies,
             clear_others,
             dry_run,
             verbose,
-        )
-        .await?;
+        };
+        self.set_hub_browsers(&hub_config).await?;
 
         // 如果使用API策略，上传到云端
         if let Some(ref client) = api_client {
@@ -5912,34 +6005,24 @@ impl SyncEngine {
         &self,
         browser_names: Option<&str>,
         output_path: &str,
-        merge: bool,
-        deduplicate: bool,
-        verbose: bool,
+        config: &ExportConfig,
     ) -> Result<usize> {
-        self.export_to_html_with_extra(
-            browser_names,
-            output_path,
-            merge,
-            deduplicate,
-            false,
-            verbose,
-            Vec::new(),
-        )
-        .await
+        self.export_to_html_with_extra(browser_names, output_path, config, Vec::new())
+            .await
     }
 
     /// Export all bookmarks with additional bookmarks from external sources
-    #[allow(clippy::too_many_arguments)]
     pub async fn export_to_html_with_extra(
         &self,
         browser_names: Option<&str>,
         output_path: &str,
-        merge: bool,
-        deduplicate: bool,
-        clean_empty: bool,
-        verbose: bool,
+        config: &ExportConfig,
         extra_bookmarks: Vec<Bookmark>,
     ) -> Result<usize> {
+        let merge = config.merge;
+        let deduplicate = config.deduplicate;
+        let clean_empty = config.clean_empty;
+        let verbose = config.verbose;
         info!("📤 Exporting bookmarks to HTML...");
 
         // Determine target browsers

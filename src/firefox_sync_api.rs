@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use anyhow::{bail, Context, Result};
-
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -140,7 +139,7 @@ impl FirefoxSyncAPIClient {
         info!("🔄 Converting bookmarks to Sync format...");
 
         let mut sync_bookmarks = Vec::new();
-        self.convert_recursive(bookmarks, "menu", &mut sync_bookmarks)?;
+        Self::convert_recursive(bookmarks, "menu", &mut sync_bookmarks)?;
 
         info!("   Converted {} bookmarks", sync_bookmarks.len());
 
@@ -148,9 +147,7 @@ impl FirefoxSyncAPIClient {
     }
 
     /// 递归转换书签
-    #[allow(clippy::only_used_in_recursion)]
     fn convert_recursive(
-        &self,
         bookmarks: &[crate::browsers::Bookmark],
         parent_id: &str,
         output: &mut Vec<SyncBookmark>,
@@ -174,7 +171,7 @@ impl FirefoxSyncAPIClient {
                 });
 
                 // 递归处理子项
-                self.convert_recursive(&bookmark.children, &id, output)?;
+                Self::convert_recursive(&bookmark.children, &id, output)?;
             } else if let Some(ref url) = bookmark.url {
                 // 书签
                 output.push(SyncBookmark {

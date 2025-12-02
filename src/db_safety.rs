@@ -1,23 +1,20 @@
-//! 数据库安全操作包装器
-//!
-//! 该模块提供了一种安全的方式来修改浏览器数据库，防止损坏。
-//! 它实现了“复制-验证-替换”模式：
-//! 1. 将目标数据库复制到临时位置
-//! 2. 在副本上执行写入操作
-//! 3. 验证副本的完整性
-//! 4. 仅当验证通过时，才用副本替换原始数据库
-//! 5. 如果出现任何错误，原始数据库保持不变
-
 use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
 use std::fs;
 use std::path::Path;
 use tracing::{debug, error, info, warn};
 
-/// 检查数据库兼容性。
+/// 数据库安全操作包装器
 ///
-/// 验证数据库是否可以被当前的 SQLite 版本安全打开。
-#[allow(clippy::doc_lazy_continuation)]
+/// 该模块提供了一种安全的方式来修改浏览器数据库，防止损坏。
+/// 它实现了“复制-验证-替换”模式：
+/// 1. 将目标数据库复制到临时位置
+/// 2. 在副本上执行写入操作
+/// 3. 验证副本的完整性
+/// 4. 仅当验证通过时，才用副本替换原始数据库
+/// 5. 如果出现任何错误，原始数据库保持不变
+///
+/// 检查数据库兼容性，验证数据库是否可以被当前的 SQLite 版本安全打开
 pub fn check_compatibility(db_path: &Path) -> Result<()> {
     if !db_path.exists() {
         return Err(anyhow!("Database file does not exist: {:?}", db_path));

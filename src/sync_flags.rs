@@ -4,7 +4,6 @@ use tracing::warn;
 /// 同步标志配置
 /// 控制哪些数据类型被同步或导出
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SyncFlags {
     /// 同步书签
     pub bookmarks: bool,
@@ -27,13 +26,16 @@ pub struct SyncFlags {
     /// 历史记录天数限制 (None = 全部)
     pub history_days: Option<i32>,
 
-    /// 是否去重
+    /// 是否去重 (用于export命令)
+    #[allow(dead_code)]
     pub deduplicate: bool,
 
-    /// 是否合并文件夹结构
+    /// 是否合并文件夹结构 (用于export命令)
+    #[allow(dead_code)]
     pub merge: bool,
 
-    /// 详细输出
+    /// 详细输出 (用于export命令)
+    #[allow(dead_code)]
     pub verbose: bool,
 }
 
