@@ -32,6 +32,8 @@ pub struct ExportConfig {
     pub deduplicate: bool,
     pub clean_empty: bool,
     pub verbose: bool,
+    /// Only export bookmarks from folders matching this name
+    pub folder_filter: Option<String>,
 }
 
 /// Location information for a bookmark in the tree
@@ -781,6 +783,40 @@ impl SyncEngine {
 
         cleanup_recursive(bookmarks, &mut removed_count);
         removed_count
+    }
+
+    /// Extract all bookmarks from folders matching the given name
+    /// Searches recursively through all bookmarks and collects contents of matching folders
+    fn extract_bookmarks_from_folder(bookmarks: &[Bookmark], folder_name: &str) -> Vec<Bookmark> {
+        let mut result = Vec::new();
+        let folder_name_lower = folder_name.to_lowercase();
+
+        fn search_recursive(
+            bookmarks: &[Bookmark],
+            folder_name_lower: &str,
+            result: &mut Vec<Bookmark>,
+        ) {
+            for bookmark in bookmarks {
+                if bookmark.folder {
+                    // Check if this folder matches the target name
+                    if bookmark.title.to_lowercase().contains(folder_name_lower) {
+                        // Found matching folder - collect all its contents
+                        debug!(
+                            "Found matching folder: \"{}\" with {} items",
+                            bookmark.title,
+                            bookmark.children.len()
+                        );
+                        // Add all children (both bookmarks and subfolders)
+                        result.extend(bookmark.children.clone());
+                    }
+                    // Also search inside this folder for nested matching folders
+                    search_recursive(&bookmark.children, folder_name_lower, result);
+                }
+            }
+        }
+
+        search_recursive(bookmarks, &folder_name_lower, &mut result);
+        result
     }
 
     /// Deduplicate folder structures by signature
@@ -6105,6 +6141,18 @@ impl SyncEngine {
                     warn!("  ⚠️  {} : read failed - {}", browser_name, e);
                 }
             }
+        }
+
+        // Apply folder filter if specified
+        if let Some(ref folder_name) = config.folder_filter {
+            info!("📁 Filtering by folder: \"{}\"", folder_name);
+            let filtered = Self::extract_bookmarks_from_folder(&all_bookmarks, folder_name);
+            let filtered_count = Self::count_all_bookmarks(&filtered);
+            info!(
+                "  ✅ Found {} bookmarks in folders matching \"{}\"",
+                filtered_count, folder_name
+            );
+            all_bookmarks = filtered;
         }
 
         let before_dedup = Self::count_all_bookmarks(&all_bookmarks);

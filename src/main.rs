@@ -104,6 +104,11 @@ enum Commands {
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
+
+        /// Only export bookmarks from specific folder name (e.g., "👀临时" or "Temp")
+        /// Searches all browsers for folders matching this name
+        #[arg(short = 'f', long)]
+        folder: Option<String>,
     },
 
     /// Analyze bookmarks (duplicates, empty folders, NSFW)
@@ -219,6 +224,7 @@ async fn main() -> Result<()> {
             passwords,
             extensions,
             verbose,
+            folder,
         } => {
             // Create sync flags from arguments
             let sync_flags = SyncFlags {
@@ -386,7 +392,15 @@ async fn main() -> Result<()> {
                 deduplicate,
                 clean_empty: clean,
                 verbose,
+                folder_filter: folder.clone(),
             };
+
+            // Show folder filter info
+            if let Some(ref folder_name) = folder {
+                info!("📁 Folder filter: \"{}\"", folder_name);
+                info!("   Only bookmarks from folders matching this name will be exported");
+            }
+
             let count = engine
                 .export_to_html_with_extra(
                     Some(&browsers),

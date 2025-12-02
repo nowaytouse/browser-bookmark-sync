@@ -65,6 +65,7 @@ bsync export [选项]
 | `--passwords` | - | 🔴 导出加密密码元数据（⚠️ 无法解密）|
 | `--extensions` | - | ⚠️ 导出扩展程序元数据（仅列表，无法迁移）|
 | `--include <文件>` | - | 导入已有 HTML |
+| `--folder <名称>` | `-f` | 仅导出指定名称的文件夹内容（如 "👀临时"）|
 | `--clear-after` | - | 导出后清空来源（⚠️ 危险，需要 --unsafe-write）|
 | `--unsafe-write` | - | 启用不安全数据库写入（需要确认）|
 | `--verbose` | `-v` | 详细输出 |
@@ -83,6 +84,12 @@ bsync export -b "safari,brave" -d -m --include old_backup.html
 
 # 完整清理导出
 bsync export -d -m --clean
+
+# 仅导出指定文件夹（如 "👀临时" 或 "Temp"）
+bsync export -f "👀临时" -d -o ~/Desktop/temp_bookmarks.html
+
+# 从所有浏览器导出 emoji 文件夹
+bsync export -f "👀" -d --merge
 ```
 
 ## 🧠 智能整理

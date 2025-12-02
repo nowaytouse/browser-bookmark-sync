@@ -57,6 +57,7 @@ bsync export [OPTIONS]
 | `--clean` | - | Remove empty folders |
 | `--reading-list` | `-r` | Include Safari reading list |
 | `--include <FILE>` | - | Import existing HTML |
+| `--folder <NAME>` | `-f` | Only export contents of folders matching this name |
 | `--clear-after` | - | Clear sources after export (⚠️) |
 | `--history` | - | Include browsing history |
 | `--history-days <N>` | - | History days limit (default: 30, 0=all) |
@@ -79,6 +80,12 @@ bsync export -b "safari,brave" -d -m --include old_backup.html
 
 # Full cleanup export
 bsync export -d -m --clean
+
+# Export only from specific folder (e.g., "Temp" or "👀临时")
+bsync export -f "Temp" -d -o ~/Desktop/temp_bookmarks.html
+
+# Export from emoji folder across all browsers
+bsync export -f "👀" -d --merge
 ```
 
 ## 🧠 Smart Organization
