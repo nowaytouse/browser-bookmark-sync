@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 
 mod browsers;
 mod sync;
@@ -11,8 +11,11 @@ mod firefox_sync_api;
 mod cloud_reset;
 mod cleanup;
 mod browser_utils;
+mod db_safety;
+mod sync_flags;
 
 use sync::SyncEngine;
+use sync_flags::SyncFlags;
 
 #[derive(Parser)]
 #[command(name = "bsync")]
@@ -35,7 +38,7 @@ enum Commands {
     #[command(alias = "l", alias = "ls")]
     List,
     
-    /// Export bookmarks to HTML file (safe, non-destructive)
+    /// Export browser data to HTML or JSON file (safe, non-destructive)
     #[command(alias = "e", alias = "exp")]
     Export {
         /// Output file path
@@ -46,7 +49,35 @@ enum Commands {
         #[arg(short, long, default_value = "all")]
         browsers: String,
         
-        /// Remove duplicate bookmarks
+        /// Include bookmarks (default: true)
+        #[arg(long, default_value = "true")]
+        bookmarks: bool,
+        
+        /// Include browsing history
+        #[arg(long)]
+        history: bool,
+        
+        /// Include reading list (Safari, Firefox)
+        #[arg(short = 'r', long)]
+        reading_list: bool,
+        
+        /// Include cookies (⚠️  affects sessions)
+        #[arg(long)]
+        cookies: bool,
+
+        /// Include passwords (⚠️  SECURITY RISK - BLOCKED)
+        #[arg(long)]
+        passwords: bool,
+
+        /// Include extensions (⚠️  NOT SUPPORTED - BLOCKED)
+        #[arg(long)]
+        extensions: bool,
+        
+        /// Days of history to export (default: 30, 0 = all)
+        #[arg(long, default_value = "30")]
+        history_days: i32,
+        
+        /// Remove duplicate bookmarks/URLs
         #[arg(short, long)]
         deduplicate: bool,
         
@@ -58,17 +89,17 @@ enum Commands {
         #[arg(long)]
         clean: bool,
         
-        /// Include Safari reading list as bookmarks
-        #[arg(short = 'r', long)]
-        reading_list: bool,
-        
         /// Import from existing HTML file
         #[arg(long)]
         include: Option<String>,
         
-        /// Clear source browsers after export (DANGEROUS!)
+        /// Clear source browsers after export (⚠️  DANGEROUS!)
         #[arg(long)]
         clear_after: bool,
+
+        /// Enable unsafe database writes (required for clear_after)
+        #[arg(long)]
+        unsafe_write: bool,
         
         /// Verbose output
         #[arg(short, long)]
@@ -171,16 +202,53 @@ async fn main() -> Result<()> {
             engine.list_browsers()?;
         }
         
-        Commands::Export { output, browsers, deduplicate, merge, clean, reading_list, include, clear_after, verbose } => {
-            info!("📤 Exporting bookmarks to HTML");
+        Commands::Export { 
+            output, 
+            browsers, 
+            bookmarks,
+            history,
+            reading_list,
+            cookies,
+            history_days,
+            deduplicate, 
+            merge, 
+            clean, 
+            include, 
+            clear_after, 
+            unsafe_write,
+            passwords,
+            extensions,
+            verbose 
+        } => {
+            // Create sync flags from arguments
+            let sync_flags = SyncFlags {
+                bookmarks,
+                history,
+                reading_list,
+                cookies,
+                passwords,
+                extensions,
+                history_days: if history_days > 0 { Some(history_days) } else { None },
+                deduplicate,
+                merge,
+                verbose,
+            };
+            
+            // Validate flags
+            if let Err(e) = sync_flags.validate() {
+                error!("{}", e);
+                return Ok(());
+            }
+            
+            info!("📤 Exporting browser data");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             info!("Output: {}", output);
             info!("Source: {}", browsers);
+            info!("Data Types: {}", sync_flags.description());
             if deduplicate { info!("  ✓ Deduplicate"); }
             if merge { info!("  ✓ Merge (flat)"); }
             if clean { info!("  ✓ Clean empty folders"); }
-            if reading_list { info!("  ✓ Include Safari reading list"); }
-            if clear_after { warn!("  ⚠ Clear after export"); }
+            if clear_after { warn!("  ⚠️  Clear after export"); }
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             
             let mut engine = SyncEngine::new()?;
@@ -229,6 +297,66 @@ async fn main() -> Result<()> {
                     Err(e) => warn!("   Failed to read: {}", e),
                 }
             }
+
+            // Include History if requested
+            if history {
+                info!("📜 Reading history...");
+                match engine.get_all_history(sync_flags.history_days) {
+                    Ok(items) if !items.is_empty() => {
+                        info!("   {} history items found", items.len());
+                        let history_folder = crate::browsers::Bookmark {
+                            id: "history".to_string(),
+                            title: "History".to_string(),
+                            url: None,
+                            folder: true,
+                            children: items.into_iter().enumerate().map(|(i, item)| crate::browsers::Bookmark {
+                                id: format!("hist-{}", i),
+                                title: item.title.unwrap_or_default(),
+                                url: Some(item.url),
+                                folder: false,
+                                children: vec![],
+                                date_added: item.last_visit,
+                                date_modified: None,
+                            }).collect(),
+                            date_added: Some(chrono::Utc::now().timestamp_millis()),
+                            date_modified: None,
+                        };
+                        extra_bookmarks.push(history_folder);
+                    }
+                    Ok(_) => info!("   No history items found"),
+                    Err(e) => warn!("   Failed to read history: {}", e),
+                }
+            }
+
+            // Include Cookies if requested
+            if cookies {
+                info!("🍪 Reading cookies...");
+                match engine.get_all_cookies() {
+                    Ok(items) if !items.is_empty() => {
+                        info!("   {} cookies found", items.len());
+                        let cookies_folder = crate::browsers::Bookmark {
+                            id: "cookies".to_string(),
+                            title: "Cookies".to_string(),
+                            url: None,
+                            folder: true,
+                            children: items.into_iter().enumerate().map(|(i, item)| crate::browsers::Bookmark {
+                                id: format!("cookie-{}", i),
+                                title: format!("{} ({})", item.name, item.host),
+                                url: Some(format!("http://{}/{}", item.host, item.path)), // Fake URL for visualization
+                                folder: false,
+                                children: vec![],
+                                date_added: item.expiry,
+                                date_modified: None,
+                            }).collect(),
+                            date_added: Some(chrono::Utc::now().timestamp_millis()),
+                            date_modified: None,
+                        };
+                        extra_bookmarks.push(cookies_folder);
+                    }
+                    Ok(_) => info!("   No cookies found"),
+                    Err(e) => warn!("   Failed to read cookies: {}", e),
+                }
+            }
             
             let count = engine.export_to_html_with_extra(
                 Some(&browsers), &output, merge, deduplicate, clean, verbose, extra_bookmarks
@@ -238,6 +366,10 @@ async fn main() -> Result<()> {
             info!("✅ Exported {} bookmarks to {}", count, output);
             
             if clear_after {
+                if !unsafe_write {
+                    error!("❌ Error: --clear-after requires --unsafe-write flag to confirm destructive operation");
+                    return Ok(());
+                }
                 warn!("");
                 print_sync_warning();
                 engine.clear_bookmarks(&browsers, false).await?;

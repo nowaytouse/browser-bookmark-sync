@@ -1,4 +1,5 @@
 use anyhow::Result;
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::{debug, warn, info};
@@ -1496,122 +1497,121 @@ fn count_bookmarks(bookmarks: &[Bookmark]) -> usize {
 }
 
 fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) -> Result<()> {
-    use rusqlite::Connection;
-    
-    let conn = Connection::open(db_path)?;
-    
-    // Start transaction
-    conn.execute("BEGIN TRANSACTION", [])?;
-    
-    // Clear existing user bookmarks (keep system folders: 1=root, 2=menu, 3=toolbar, 4=tags, 5=unfiled, 6=mobile)
-    conn.execute(
-        "DELETE FROM moz_bookmarks WHERE id > 6 AND parent >= 2",
-        [],
-    )?;
-    
-    let mut position_counter = 0i32;
-    let now = chrono::Utc::now().timestamp_micros();
-    
-    // Recursive function to insert bookmarks with folder structure
-    fn insert_bookmark_recursive(
-        conn: &Connection,
-        bookmark: &Bookmark,
-        parent_id: i64,
-        position: &mut i32,
-        now: i64,
-    ) -> Result<()> {
-        let current_position = *position;
-        *position += 1;
+    // 使用安全事务包装器防止数据库损坏
+    crate::db_safety::safe_write_transaction(db_path, |conn| {
+        // Start transaction
+        conn.execute("BEGIN TRANSACTION", [])?;
         
-        if bookmark.folder {
-            // 🔧 FIX: Skip empty folders and folders with "/" name
-            if bookmark.children.is_empty() {
-                debug!("Skipping empty folder: {}", bookmark.title);
-                return Ok(());
+        // Clear existing user bookmarks (keep system folders: 1=root, 2=menu, 3=toolbar, 4=tags, 5=unfiled, 6=mobile)
+        conn.execute(
+            "DELETE FROM moz_bookmarks WHERE id > 6 AND parent >= 2",
+            [],
+        )?;
+        
+        let mut position_counter = 0i32;
+        let now = chrono::Utc::now().timestamp_micros();
+        
+        // Recursive function to insert bookmarks with folder structure
+        fn insert_bookmark_recursive(
+            conn: &rusqlite::Connection,
+            bookmark: &Bookmark,
+            parent_id: i64,
+            position: &mut i32,
+            now: i64,
+        ) -> Result<()> {
+            let current_position = *position;
+            *position += 1;
+            
+            if bookmark.folder {
+                // 🔧 FIX: Skip empty folders and folders with "/" name
+                if bookmark.children.is_empty() {
+                    debug!("Skipping empty folder: {}", bookmark.title);
+                    return Ok(());
+                }
+                
+                if bookmark.title == "/" || bookmark.title.is_empty() {
+                    debug!("Skipping invalid folder name: '{}'", bookmark.title);
+                    return Ok(());
+                }
+                
+                // Generate a unique GUID for the folder
+                let guid = format!("folder_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
+                
+                // Insert folder
+                conn.execute(
+                    "INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified, guid)
+                     VALUES (2, NULL, ?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![
+                        parent_id,
+                        current_position,
+                        &bookmark.title,
+                        bookmark.date_added.unwrap_or(now),
+                        bookmark.date_modified.unwrap_or(now),
+                        guid,
+                    ],
+                )?;
+                
+                // Get the new folder's ID
+                let folder_id: i64 = conn.query_row(
+                    "SELECT last_insert_rowid()",
+                    [],
+                    |row| row.get(0),
+                )?;
+                
+                // Insert children
+                let mut child_position = 0i32;
+                for child in &bookmark.children {
+                    insert_bookmark_recursive(conn, child, folder_id, &mut child_position, now)?;
+                }
+            } else if let Some(url) = &bookmark.url {
+                // Generate a unique GUID for the bookmark
+                let guid = format!("bkmk_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
+                
+                // First, ensure the URL exists in moz_places
+                conn.execute(
+                    "INSERT OR IGNORE INTO moz_places (url, title, rev_host, hidden, typed, frecency, guid)
+                     VALUES (?1, ?2, '', 0, 0, -1, ?3)",
+                    rusqlite::params![url, &bookmark.title, format!("place_{}", guid)],
+                )?;
+                
+                // Get the place_id
+                let place_id: i64 = conn.query_row(
+                    "SELECT id FROM moz_places WHERE url = ?1",
+                    [url],
+                    |row| row.get(0),
+                )?;
+                
+                // Insert bookmark
+                conn.execute(
+                    "INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified, guid)
+                     VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        place_id,
+                        parent_id,
+                        current_position,
+                        &bookmark.title,
+                        bookmark.date_added.unwrap_or(now),
+                        bookmark.date_modified.unwrap_or(now),
+                        guid,
+                    ],
+                )?;
             }
             
-            if bookmark.title == "/" || bookmark.title.is_empty() {
-                debug!("Skipping invalid folder name: '{}'", bookmark.title);
-                return Ok(());
-            }
-            
-            // Generate a unique GUID for the folder
-            let guid = format!("folder_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
-            
-            // Insert folder
-            conn.execute(
-                "INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified, guid)
-                 VALUES (2, NULL, ?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    parent_id,
-                    current_position,
-                    &bookmark.title,
-                    bookmark.date_added.unwrap_or(now),
-                    bookmark.date_modified.unwrap_or(now),
-                    guid,
-                ],
-            )?;
-            
-            // Get the new folder's ID
-            let folder_id: i64 = conn.query_row(
-                "SELECT last_insert_rowid()",
-                [],
-                |row| row.get(0),
-            )?;
-            
-            // Insert children
-            let mut child_position = 0i32;
-            for child in &bookmark.children {
-                insert_bookmark_recursive(conn, child, folder_id, &mut child_position, now)?;
-            }
-        } else if let Some(url) = &bookmark.url {
-            // Generate a unique GUID for the bookmark
-            let guid = format!("bkmk_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
-            
-            // First, ensure the URL exists in moz_places
-            conn.execute(
-                "INSERT OR IGNORE INTO moz_places (url, title, rev_host, hidden, typed, frecency, guid)
-                 VALUES (?1, ?2, '', 0, 0, -1, ?3)",
-                rusqlite::params![url, &bookmark.title, format!("place_{}", guid)],
-            )?;
-            
-            // Get the place_id
-            let place_id: i64 = conn.query_row(
-                "SELECT id FROM moz_places WHERE url = ?1",
-                [url],
-                |row| row.get(0),
-            )?;
-            
-            // Insert bookmark
-            conn.execute(
-                "INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified, guid)
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    place_id,
-                    parent_id,
-                    current_position,
-                    &bookmark.title,
-                    bookmark.date_added.unwrap_or(now),
-                    bookmark.date_modified.unwrap_or(now),
-                    guid,
-                ],
-            )?;
+            Ok(())
         }
         
+        // Insert all bookmarks into toolbar (parent=3)
+        for bookmark in bookmarks {
+            insert_bookmark_recursive(conn, bookmark, 3, &mut position_counter, now)?;
+        }
+        
+        // Commit transaction
+        conn.execute("COMMIT", [])?;
+        
+        let total = count_bookmarks(bookmarks);
+        info!("📚 Wrote {} bookmarks (tree structure) to Firefox database", total);
         Ok(())
-    }
-    
-    // Insert all bookmarks into toolbar (parent=3)
-    for bookmark in bookmarks {
-        insert_bookmark_recursive(&conn, bookmark, 3, &mut position_counter, now)?;
-    }
-    
-    // Commit transaction
-    conn.execute("COMMIT", [])?;
-    
-    let total = count_bookmarks(bookmarks);
-    info!("📚 Wrote {} bookmarks (tree structure) to Firefox database", total);
-    Ok(())
+    })
 }
 
 // Firefox history helper functions
@@ -1672,44 +1672,43 @@ fn read_firefox_history(db_path: &std::path::Path, days: Option<i32>) -> Result<
 }
 
 fn write_firefox_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Result<()> {
-    use rusqlite::Connection;
-    
-    let conn = Connection::open(db_path)?;
-    
-    // Start transaction
-    conn.execute("BEGIN TRANSACTION", [])?;
-    
-    // Insert history items
-    for item in items {
-        // First, ensure the URL exists in moz_places
-        conn.execute(
-            "INSERT OR REPLACE INTO moz_places (url, title, rev_host, hidden, typed, frecency, visit_count)
-             VALUES (?1, ?2, '', 0, 0, -1, ?3)",
-            rusqlite::params![&item.url, &item.title, item.visit_count],
-        )?;
+    // 使用安全事务包装器
+    crate::db_safety::safe_write_transaction(db_path, |conn| {
+        // Start transaction
+        conn.execute("BEGIN TRANSACTION", [])?;
         
-        // Get the place_id
-        let place_id: i64 = conn.query_row(
-            "SELECT id FROM moz_places WHERE url = ?1",
-            [&item.url],
-            |row| row.get(0),
-        )?;
-        
-        // Insert visit record
-        if let Some(last_visit) = item.last_visit {
+        // Insert history items
+        for item in items {
+            // First, ensure the URL exists in moz_places
             conn.execute(
-                "INSERT OR IGNORE INTO moz_historyvisits (place_id, visit_date, visit_type, from_visit)
-                 VALUES (?1, ?2, 1, 0)",
-                rusqlite::params![place_id, last_visit],
+                "INSERT OR REPLACE INTO moz_places (url, title, rev_host, hidden, typed, frecency, visit_count)
+                 VALUES (?1, ?2, '', 0, 0, -1, ?3)",
+                rusqlite::params![&item.url, &item.title, item.visit_count],
             )?;
+            
+            // Get the place_id
+            let place_id: i64 = conn.query_row(
+                "SELECT id FROM moz_places WHERE url = ?1",
+                [&item.url],
+                |row| row.get(0),
+            )?;
+            
+            // Insert visit record
+            if let Some(last_visit) = item.last_visit {
+                conn.execute(
+                    "INSERT OR IGNORE INTO moz_historyvisits (place_id, visit_date, visit_type, from_visit)
+                     VALUES (?1, ?2, 1, 0)",
+                    rusqlite::params![place_id, last_visit],
+                )?;
+            }
         }
-    }
-    
-    // Commit transaction
-    conn.execute("COMMIT", [])?;
-    
-    debug!("Wrote {} history items to Firefox database", items.len());
-    Ok(())
+        
+        // Commit transaction
+        conn.execute("COMMIT", [])?;
+        
+        debug!("Wrote {} history items to Firefox database", items.len());
+        Ok(())
+    })
 }
 
 // Safari reading list helper functions (reserved for future)
@@ -2037,36 +2036,35 @@ fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
 
 #[allow(dead_code)]
 fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
-    use rusqlite::Connection;
-    
-    let conn = Connection::open(db_path)?;
-    
-    conn.execute("BEGIN TRANSACTION", [])?;
-    
-    let now = chrono::Utc::now().timestamp_micros();
-    
-    for cookie in cookies {
-        conn.execute(
-            "INSERT OR REPLACE INTO moz_cookies (originAttributes, name, value, host, path, expiry, lastAccessed, creationTime, isSecure, isHttpOnly, inBrowserElement, sameSite, schemeMap, isPartitionedAttributeSet)
-             VALUES ('', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 0, 0, 0)",
-            rusqlite::params![
-                &cookie.name,
-                &cookie.value,
-                &cookie.host,
-                &cookie.path,
-                cookie.expiry.unwrap_or(0),
-                now,
-                now,
-                if cookie.is_secure { 1 } else { 0 },
-                if cookie.is_http_only { 1 } else { 0 },
-            ],
-        )?;
-    }
-    
-    conn.execute("COMMIT", [])?;
-    
-    debug!("Wrote {} cookies to Firefox database", cookies.len());
-    Ok(())
+    // 使用安全事务包装器
+    crate::db_safety::safe_write_transaction(db_path, |conn| {
+        conn.execute("BEGIN TRANSACTION", [])?;
+        
+        let now = chrono::Utc::now().timestamp_micros();
+        
+        for cookie in cookies {
+            conn.execute(
+                "INSERT OR REPLACE INTO moz_cookies (originAttributes, name, value, host, path, expiry, lastAccessed, creationTime, isSecure, isHttpOnly, inBrowserElement, sameSite, schemeMap, isPartitionedAttributeSet)
+                 VALUES ('', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 0, 0, 0)",
+                rusqlite::params![
+                    &cookie.name,
+                    &cookie.value,
+                    &cookie.host,
+                    &cookie.path,
+                    cookie.expiry.unwrap_or(0),
+                    now,
+                    now,
+                    if cookie.is_secure { 1 } else { 0 },
+                    if cookie.is_http_only { 1 } else { 0 },
+                ],
+            )?;
+        }
+        
+        conn.execute("COMMIT", [])?;
+        
+        debug!("Wrote {} cookies to Firefox database", cookies.len());
+        Ok(())
+    })
 }
 
 // Chromium cookies helper functions (reserved for future)

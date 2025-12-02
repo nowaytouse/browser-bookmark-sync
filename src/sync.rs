@@ -63,6 +63,44 @@ impl SyncEngine {
         }
         Ok(vec![])
     }
+
+    /// Get history from all browsers
+    pub fn get_all_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+        let mut all_history = Vec::new();
+        for adapter in &self.adapters {
+            if adapter.supports_history() {
+                match adapter.read_history(days) {
+                    Ok(mut history) => {
+                        debug!("Read {} history items from {}", history.len(), adapter.browser_type().name());
+                        all_history.append(&mut history);
+                    }
+                    Err(e) => {
+                        warn!("Failed to read history from {}: {}", adapter.browser_type().name(), e);
+                    }
+                }
+            }
+        }
+        Ok(all_history)
+    }
+
+    /// Get cookies from all browsers
+    pub fn get_all_cookies(&self) -> Result<Vec<Cookie>> {
+        let mut all_cookies = Vec::new();
+        for adapter in &self.adapters {
+            if adapter.supports_cookies() {
+                match adapter.read_cookies() {
+                    Ok(mut cookies) => {
+                        debug!("Read {} cookies from {}", cookies.len(), adapter.browser_type().name());
+                        all_cookies.append(&mut cookies);
+                    }
+                    Err(e) => {
+                        warn!("Failed to read cookies from {}: {}", adapter.browser_type().name(), e);
+                    }
+                }
+            }
+        }
+        Ok(all_cookies)
+    }
     
     /// Load last sync timestamp from state file
     fn load_last_sync_time(&mut self) -> Result<()> {
