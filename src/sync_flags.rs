@@ -59,14 +59,37 @@ impl Default for SyncFlags {
 impl SyncFlags {
     /// 验证标志配置的安全性
     pub fn validate(&self) -> Result<()> {
-        // 1. 严格禁止密码同步
+        // 1. 密码导出 - 允许但强烈警告
         if self.passwords {
-            return Err(anyhow!("❌ Error: Password export is blocked for security reasons. This tool will NEVER support password extraction."));
+            warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            warn!("🔴 CRITICAL SECURITY WARNING: Password Export Enabled");
+            warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            warn!("⚠️  Browser passwords are ENCRYPTED with OS-level protection.");
+            warn!("⚠️  Only encrypted blobs can be exported - NOT plaintext passwords.");
+            warn!("⚠️  These encrypted passwords CANNOT be imported to other browsers.");
+            warn!(
+                "⚠️  For password migration, use browser's built-in export or a password manager."
+            );
+            warn!("");
+            warn!("🔒 What you'll get: Encrypted password metadata (URLs, usernames, timestamps)");
+            warn!("❌ What you WON'T get: Actual decrypted passwords");
+            warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         }
 
-        // 2. 严格禁止扩展程序同步 (技术上不可行且有风险)
+        // 2. 扩展程序导出 - 允许但说明限制
         if self.extensions {
-            return Err(anyhow!("❌ Error: Extension sync is not supported. Extensions store complex local state that cannot be safely transferred."));
+            warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            warn!("⚠️  EXTENSION EXPORT LIMITATIONS");
+            warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            warn!("📦 Extensions contain complex local state that CANNOT be fully transferred:");
+            warn!("   • Extension settings and preferences are browser-specific");
+            warn!("   • Login states and tokens cannot be migrated");
+            warn!("   • Some extensions are browser-exclusive (Chrome-only, Firefox-only)");
+            warn!("");
+            warn!("✅ What you'll get: Extension list with metadata (name, version, permissions)");
+            warn!("❌ What you WON'T get: Extension data, settings, or automatic installation");
+            warn!("💡 Recommendation: Use this list to manually reinstall extensions");
+            warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         }
 
         // 3. 针对 Cookie 的警告
@@ -77,8 +100,14 @@ impl SyncFlags {
         }
 
         // 4. 检查是否至少选择了一种数据类型
-        if !self.bookmarks && !self.history && !self.reading_list && !self.cookies {
-            return Err(anyhow!("❌ Error: No data types selected. Please specify at least one of: --bookmarks, --history, --reading-list, --cookies"));
+        if !self.bookmarks
+            && !self.history
+            && !self.reading_list
+            && !self.cookies
+            && !self.passwords
+            && !self.extensions
+        {
+            return Err(anyhow!("❌ Error: No data types selected. Please specify at least one of: --bookmarks, --history, --reading-list, --cookies, --passwords, --extensions"));
         }
 
         Ok(())
@@ -103,6 +132,12 @@ impl SyncFlags {
         }
         if self.cookies {
             types.push("Cookies (⚠️)");
+        }
+        if self.passwords {
+            types.push("Passwords (🔴 ENCRYPTED ONLY)");
+        }
+        if self.extensions {
+            types.push("Extensions (⚠️ METADATA ONLY)");
         }
 
         types.join(", ")

@@ -28,6 +28,48 @@ pub struct Cookie {
     pub is_http_only: bool,
 }
 
+/// ⚠️ SECURITY WARNING: Password data structure
+/// This is implemented for completeness but STRONGLY DISCOURAGED.
+/// Passwords are encrypted by browsers and exporting them poses severe security risks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPassword {
+    /// Website URL
+    pub url: String,
+    /// Username or email
+    pub username: String,
+    /// ⚠️ ENCRYPTED password - cannot be decrypted without OS keychain access
+    pub encrypted_password: Vec<u8>,
+    /// When the password was created
+    pub date_created: Option<i64>,
+    /// When the password was last used
+    pub date_last_used: Option<i64>,
+    /// Number of times used
+    pub times_used: i32,
+}
+
+/// ⚠️ WARNING: Extension data structure
+/// Extensions contain complex local state and binary data.
+/// Cross-browser extension sync is technically limited.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserExtension {
+    /// Extension ID (unique identifier)
+    pub id: String,
+    /// Extension name
+    pub name: String,
+    /// Version string
+    pub version: String,
+    /// Whether the extension is enabled
+    pub enabled: bool,
+    /// Extension description
+    pub description: Option<String>,
+    /// Homepage URL
+    pub homepage_url: Option<String>,
+    /// Permissions requested by the extension
+    pub permissions: Vec<String>,
+    /// Installation source (store URL or local path)
+    pub install_source: Option<String>,
+}
+
 // Reserved for future reading list sync feature
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +155,30 @@ pub trait BrowserAdapter: Send + Sync {
     #[allow(dead_code)]
     fn write_cookies(&self, _cookies: &[Cookie]) -> Result<()> {
         Ok(())
+    }
+
+    // ⚠️ Password support - SECURITY SENSITIVE
+    // Implemented for completeness but STRONGLY DISCOURAGED
+    #[allow(dead_code)]
+    fn supports_passwords(&self) -> bool {
+        false
+    }
+    /// ⚠️ WARNING: Passwords are encrypted and cannot be decrypted without OS keychain
+    #[allow(dead_code)]
+    fn read_passwords(&self) -> Result<Vec<SavedPassword>> {
+        Ok(vec![])
+    }
+
+    // ⚠️ Extension support - LIMITED FUNCTIONALITY
+    // Extensions have complex local state that cannot be fully transferred
+    #[allow(dead_code)]
+    fn supports_extensions(&self) -> bool {
+        false
+    }
+    /// ⚠️ WARNING: Only metadata is exported, not the actual extension files
+    #[allow(dead_code)]
+    fn read_extensions(&self) -> Result<Vec<BrowserExtension>> {
+        Ok(vec![])
     }
 }
 
@@ -1081,6 +1147,57 @@ impl BrowserAdapter for ChromeAdapter {
             }
         }
         Ok(())
+    }
+
+    // ⚠️ Password support - SECURITY SENSITIVE
+    fn supports_passwords(&self) -> bool {
+        true
+    }
+
+    fn read_passwords(&self) -> Result<Vec<SavedPassword>> {
+        let profiles = self.detect_all_profiles()?;
+        let default_profile = profiles
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
+
+        let login_data_path = default_profile.join("Login Data");
+        if login_data_path.exists() {
+            match read_chromium_passwords(&login_data_path) {
+                Ok(passwords) => {
+                    warn!(
+                        "🔴 Chrome: {} password entries (ENCRYPTED - cannot be decrypted)",
+                        passwords.len()
+                    );
+                    return Ok(passwords);
+                }
+                Err(e) => warn!("⚠️  Failed to read Chrome passwords: {}", e),
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    // ⚠️ Extension support - METADATA ONLY
+    fn supports_extensions(&self) -> bool {
+        true
+    }
+
+    fn read_extensions(&self) -> Result<Vec<BrowserExtension>> {
+        let profiles = self.detect_all_profiles()?;
+        let default_profile = profiles
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
+
+        let extensions_path = default_profile.join("Extensions");
+        if extensions_path.exists() {
+            match read_chromium_extensions(&extensions_path) {
+                Ok(extensions) => {
+                    info!("✅ Chrome: {} extensions (metadata only)", extensions.len());
+                    return Ok(extensions);
+                }
+                Err(e) => warn!("⚠️  Failed to read Chrome extensions: {}", e),
+            }
+        }
+        Ok(Vec::new())
     }
 }
 
@@ -2268,6 +2385,158 @@ fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Resu
 
     debug!("Wrote {} cookies to Chromium database", cookies.len());
     Ok(())
+}
+
+/// ⚠️ Read passwords from Chromium Login Data database
+/// WARNING: Passwords are ENCRYPTED and cannot be decrypted without OS keychain access
+#[allow(dead_code)] // Called by trait method which is reserved for future use
+fn read_chromium_passwords(db_path: &std::path::Path) -> Result<Vec<SavedPassword>> {
+    use rusqlite::{Connection, OpenFlags};
+
+    // Copy database to temp location to avoid locking issues
+    let temp_dir = std::env::temp_dir();
+    let temp_db = temp_dir.join("browser_sync_login_data_temp.db");
+    std::fs::copy(db_path, &temp_db)?;
+
+    let conn = Connection::open_with_flags(
+        &temp_db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    let mut passwords = Vec::new();
+
+    let mut stmt = conn.prepare(
+        "SELECT origin_url, username_value, password_value, date_created, date_last_used, times_used
+         FROM logins
+         ORDER BY date_last_used DESC",
+    )?;
+
+    let password_iter = stmt.query_map([], |row| {
+        let encrypted_password: Vec<u8> = row.get(2)?;
+        Ok(SavedPassword {
+            url: row.get(0)?,
+            username: row.get(1)?,
+            encrypted_password,
+            date_created: row.get(3)?,
+            date_last_used: row.get(4)?,
+            times_used: row.get(5)?,
+        })
+    })?;
+
+    for password in password_iter {
+        passwords.push(password?);
+    }
+
+    // Cleanup temp file
+    let _ = std::fs::remove_file(&temp_db);
+
+    debug!(
+        "Read {} password entries from Chromium database (ENCRYPTED)",
+        passwords.len()
+    );
+    Ok(passwords)
+}
+
+/// ⚠️ Read extension metadata from Chromium Extensions directory
+/// WARNING: Only metadata is exported, not the actual extension files or settings
+#[allow(dead_code)] // Called by trait method which is reserved for future use
+fn read_chromium_extensions(extensions_path: &std::path::Path) -> Result<Vec<BrowserExtension>> {
+    let mut extensions = Vec::new();
+
+    if !extensions_path.exists() {
+        return Ok(extensions);
+    }
+
+    for entry in std::fs::read_dir(extensions_path)? {
+        let entry = entry?;
+        let ext_path = entry.path();
+
+        if !ext_path.is_dir() {
+            continue;
+        }
+
+        let ext_id = ext_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Skip temp and system directories
+        if ext_id.starts_with('.') || ext_id == "Temp" {
+            continue;
+        }
+
+        // Find the latest version directory
+        let mut latest_version: Option<PathBuf> = None;
+        if let Ok(versions) = std::fs::read_dir(&ext_path) {
+            for version_entry in versions.flatten() {
+                let version_path = version_entry.path();
+                if version_path.is_dir() {
+                    latest_version = Some(version_path);
+                }
+            }
+        }
+
+        if let Some(version_path) = latest_version {
+            let manifest_path = version_path.join("manifest.json");
+            if manifest_path.exists() {
+                if let Ok(manifest_content) = std::fs::read_to_string(&manifest_path) {
+                    if let Ok(manifest) =
+                        serde_json::from_str::<serde_json::Value>(&manifest_content)
+                    {
+                        let name = manifest
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&ext_id)
+                            .to_string();
+
+                        let version = manifest
+                            .get("version")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        let description = manifest
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
+                        let homepage_url = manifest
+                            .get("homepage_url")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
+                        let permissions: Vec<String> = manifest
+                            .get("permissions")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        extensions.push(BrowserExtension {
+                            id: ext_id,
+                            name,
+                            version,
+                            enabled: true, // Cannot determine from filesystem alone
+                            description,
+                            homepage_url,
+                            permissions,
+                            install_source: Some("Chrome Web Store".to_string()),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    debug!(
+        "Read {} extension metadata from Chromium Extensions directory",
+        extensions.len()
+    );
+    Ok(extensions)
 }
 
 #[cfg(test)]

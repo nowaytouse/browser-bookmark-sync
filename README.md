@@ -58,6 +58,11 @@ bsync export [OPTIONS]
 | `--reading-list` | `-r` | Include Safari reading list |
 | `--include <FILE>` | - | Import existing HTML |
 | `--clear-after` | - | Clear sources after export (⚠️) |
+| `--history` | - | Include browsing history |
+| `--history-days <N>` | - | History days limit (default: 30, 0=all) |
+| `--cookies` | - | Include cookies (⚠️ affects sessions) |
+| `--passwords` | - | 🔴 Export encrypted password metadata (⚠️ cannot decrypt) |
+| `--extensions` | - | ⚠️ Export extension metadata (list only, cannot migrate) |
 | `--verbose` | `-v` | Detailed output |
 
 ### Examples
@@ -117,14 +122,16 @@ Detects:
 
 ## 🌐 Supported Browsers
 
-| Browser | Bookmarks | History | Reading List |
-|---------|-----------|---------|--------------|
-| Safari | ✅ | ✅ | ✅ |
-| Chrome | ✅ | ✅ | - |
-| Brave | ✅ | ✅ | - |
-| Brave Nightly | ✅ | ✅ | - |
-| Waterfox | ✅ | ✅ | - |
-| Firefox | ✅ | ✅ | - |
+| Browser | Bookmarks | History | Reading List | Cookies | Passwords | Extensions |
+|---------|-----------|---------|--------------|---------|-----------|------------|
+| Safari | ✅ | ✅ | ✅ | ✅ | - | - |
+| Chrome | ✅ | ✅ | - | ✅ | 🔒* | ✅ |
+| Brave | ✅ | ✅ | - | ✅ | 🔒* | ✅ |
+| Brave Nightly | ✅ | ✅ | - | ✅ | 🔒* | ✅ |
+| Waterfox | ✅ | ✅ | - | ✅ | - | - |
+| Firefox | ✅ | ✅ | - | ✅ | - | - |
+
+*🔒 = Encrypted metadata only, actual passwords cannot be decrypted
 
 ## ⚠️ Important Notes
 
@@ -132,6 +139,9 @@ Detects:
 2. **Export is safe** - doesn't modify browser data
 3. **--clear-after is destructive** - use with caution
 4. **Browser sync conflicts** - if sync is enabled, manual import is safer
+5. **Password export** - 🔴 Only exports encrypted metadata (URLs, usernames, timestamps). Actual passwords are protected by OS-level encryption and CANNOT be decrypted. Use browser's built-in export or a password manager for migration
+6. **Extension export** - ⚠️ Only exports extension list (name, version, permissions). Cannot auto-install or migrate settings. Use as reference for manual reinstallation
+7. **Database safety** - All write operations use "copy-verify-replace" mechanism to ensure original database integrity
 
 ## 📊 Example Output
 
