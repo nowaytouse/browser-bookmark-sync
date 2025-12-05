@@ -11,6 +11,7 @@ mod data_types;
 mod db_safety;
 mod firefox_sync;
 mod firefox_sync_api;
+mod hackbrowserdata;
 mod scheduler;
 mod sync;
 mod sync_flags;
