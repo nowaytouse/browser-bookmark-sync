@@ -51,6 +51,12 @@ indicatif = "0.17"
 # Parallel processing for performance
 rayon = "1.8"
 
+# Crypto for password/cookie decryption
+aes = "0.8"
+cbc = "0.1"
+pbkdf2 = "0.12"
+sha1 = "0.10"
+
 # macOS specific
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1.6"
