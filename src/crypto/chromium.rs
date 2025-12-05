@@ -1,6 +1,10 @@
 //! Chromium password/cookie decryption for macOS
 //!
-//! Uses AES-128-CBC with fixed IV, key from macOS Keychain.
+//! macOS Chromium uses:
+//! - v10 prefix: AES-128-CBC with fixed IV (space characters)
+//! - Older versions: may use different schemes
+//!
+//! Key is derived from Keychain password using PBKDF2-HMAC-SHA1
 
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use anyhow::{anyhow, Result};
@@ -71,31 +75,53 @@ fn derive_chromium_key(password: &str) -> Result<Vec<u8>> {
 /// Decrypt Chromium encrypted data (password, cookie value, etc.)
 /// Returns decrypted plaintext
 pub fn decrypt_chromium_data(key: &[u8], encrypted: &[u8]) -> Result<String> {
-    // Check for "v10" or "v11" prefix (Chromium version markers)
+    // Check for "v10" prefix (macOS Chromium marker)
     if encrypted.len() < 3 {
         return Err(anyhow!("Encrypted data too short"));
     }
     
-    // Skip the version prefix (first 3 bytes: "v10" or "v11")
+    // v10 = macOS encryption scheme
+    if !encrypted.starts_with(b"v10") {
+        // Not encrypted or unknown scheme - return as-is if valid UTF-8
+        return String::from_utf8(encrypted.to_vec())
+            .map_err(|_| anyhow!("Unknown encryption scheme"));
+    }
+    
+    // Skip the "v10" prefix (3 bytes)
     let ciphertext = &encrypted[3..];
     
     if ciphertext.is_empty() {
         return Ok(String::new());
     }
     
-    // Decrypt using AES-128-CBC
+    // macOS uses AES-128-CBC with fixed IV
     let mut buf = ciphertext.to_vec();
-    let decrypted = Aes128CbcDec::new(key.into(), &CHROMIUM_MAC_IV.into())
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
-        .map_err(|e| anyhow!("Decryption failed: {:?}", e))?;
     
-    String::from_utf8(decrypted.to_vec())
-        .map_err(|e| anyhow!("UTF-8 conversion failed: {}", e))
+    // Try AES-128-CBC decryption
+    match Aes128CbcDec::new(key.into(), &CHROMIUM_MAC_IV.into())
+        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+    {
+        Ok(decrypted) => {
+            // Filter out non-printable characters that might be padding artifacts
+            let clean: Vec<u8> = decrypted.iter()
+                .take_while(|&&b| b >= 0x20 || b == 0x09 || b == 0x0A || b == 0x0D)
+                .cloned()
+                .collect();
+            
+            String::from_utf8(clean)
+                .or_else(|_| String::from_utf8(decrypted.to_vec()))
+                .map_err(|e| anyhow!("UTF-8 conversion failed: {}", e))
+        }
+        Err(e) => {
+            // Decryption failed - might be corrupted or different encryption
+            Err(anyhow!("AES-CBC decryption failed: {:?}. Ciphertext len: {}", e, ciphertext.len()))
+        }
+    }
 }
 
 /// Check if data is encrypted (has Chromium version prefix)
 pub fn is_encrypted(data: &[u8]) -> bool {
-    data.len() >= 3 && (data.starts_with(b"v10") || data.starts_with(b"v11"))
+    data.len() >= 3 && data.starts_with(b"v10")
 }
 
 #[cfg(test)]
@@ -105,8 +131,15 @@ mod tests {
     #[test]
     fn test_is_encrypted() {
         assert!(is_encrypted(b"v10encrypted_data"));
-        assert!(is_encrypted(b"v11encrypted_data"));
+        assert!(!is_encrypted(b"v11encrypted_data")); // v11 not used on macOS
         assert!(!is_encrypted(b"plain_text"));
         assert!(!is_encrypted(b"v1")); // Too short
     }
+    
+    #[test]
+    fn test_derive_key() {
+        let key = derive_chromium_key("test_password").unwrap();
+        assert_eq!(key.len(), 16);
+    }
 }
+
