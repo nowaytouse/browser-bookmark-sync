@@ -4,6 +4,7 @@ use tracing::{error, info, warn};
 
 mod browser_utils;
 mod browsers;
+mod chromium_sync;
 mod cleanup;
 mod cloud_reset;
 mod crypto;
