@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/opt/homebrew/bin/bash
 
 # Browser Bookmark Sync - Quick Start Guide
 
