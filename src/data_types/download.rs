@@ -23,14 +23,14 @@ pub struct Download {
 /// Extract downloads from Chromium-based browser
 pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<Download>> {
     let conn = Connection::open(db_path)?;
-    
+
     let mut stmt = conn.prepare(
         "SELECT tab_url, target_path, total_bytes, start_time, end_time, state 
-         FROM downloads"
+         FROM downloads",
     )?;
-    
+
     let mut downloads = Vec::new();
-    
+
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -41,15 +41,15 @@ pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<D
             row.get::<_, i32>(5)?,
         ))
     })?;
-    
+
     for row in rows {
         let (url, target_path, total_bytes, start_time, end_time, state) = row?;
-        
+
         let filename = Path::new(&target_path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        
+
         let state_str = match state {
             0 => "In Progress",
             1 => "Complete",
@@ -57,7 +57,7 @@ pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<D
             3 => "Interrupted",
             _ => "Unknown",
         };
-        
+
         downloads.push(Download {
             url,
             filename,
@@ -69,16 +69,17 @@ pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<D
             browser: browser.to_string(),
         });
     }
-    
+
     downloads.sort_by(|a, b| b.start_time.cmp(&a.start_time));
-    
+
     Ok(downloads)
 }
 
 /// Extract downloads from Firefox
+#[allow(dead_code)]
 pub fn extract_firefox_downloads(db_path: &Path) -> Result<Vec<Download>> {
     let conn = Connection::open(db_path)?;
-    
+
     // Firefox stores downloads in places.sqlite with moz_annos
     let mut stmt = conn.prepare(
         "SELECT p.url, a.content
@@ -86,51 +87,46 @@ pub fn extract_firefox_downloads(db_path: &Path) -> Result<Vec<Download>> {
          JOIN moz_annos a ON p.id = a.place_id
          WHERE a.anno_attribute_id IN (SELECT id FROM moz_anno_attributes WHERE name = 'downloads/destinationFileURI')"
     )?;
-    
+
     let mut downloads = Vec::new();
-    
+
     let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     });
-    
+
     if let Ok(rows) = rows {
-        for row in rows {
-            if let Ok((url, dest_uri)) = row {
-                let filename = dest_uri
-                    .replace("file://", "")
-                    .split('/')
-                    .last()
-                    .unwrap_or("")
-                    .to_string();
-                
-                downloads.push(Download {
-                    url,
-                    filename: filename.clone(),
-                    target_path: dest_uri,
-                    total_bytes: 0,
-                    start_time: 0,
-                    end_time: 0,
-                    state: "Complete".to_string(),
-                    browser: "Firefox".to_string(),
-                });
-            }
+        for (url, dest_uri) in rows.flatten() {
+            let filename = dest_uri
+                .replace("file://", "")
+                .split('/')
+                .next_back()
+                .unwrap_or("")
+                .to_string();
+
+            downloads.push(Download {
+                url,
+                filename: filename.clone(),
+                target_path: dest_uri,
+                total_bytes: 0,
+                start_time: 0,
+                end_time: 0,
+                state: "Complete".to_string(),
+                browser: "Firefox".to_string(),
+            });
         }
     }
-    
+
     Ok(downloads)
 }
 
 /// Export downloads to CSV format
 pub fn export_to_csv(downloads: &[Download], output_path: &Path) -> Result<()> {
     use std::io::Write;
-    
+
     let mut file = std::fs::File::create(output_path)?;
-    
+
     writeln!(file, "url,filename,size_bytes,start_time,state,browser")?;
-    
+
     for dl in downloads {
         writeln!(
             file,
@@ -143,6 +139,6 @@ pub fn export_to_csv(downloads: &[Download], output_path: &Path) -> Result<()> {
             dl.browser
         )?;
     }
-    
+
     Ok(())
 }

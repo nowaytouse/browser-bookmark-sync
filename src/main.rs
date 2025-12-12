@@ -534,129 +534,168 @@ async fn main() -> Result<()> {
         } => {
             let output_dir = expand_path(&output);
             std::fs::create_dir_all(&output_dir)?;
-            
+
             info!("🔐 Exporting browser data");
             info!("   Browser: {}", browser);
             info!("   Output: {}", output_dir);
             info!("   Format: {}", format);
-            
+
             let export_passwords = passwords || all;
             let export_cookies = cookies || all;
             let export_downloads = downloads || all;
-            
+
             // Get browser database paths
             let home = std::env::var("HOME").unwrap_or_default();
             let db_base = match browser.to_lowercase().as_str() {
-                "chrome" | "google chrome" => format!("{}/Library/Application Support/Google/Chrome/Default", home),
-                "edge" | "microsoft edge" => format!("{}/Library/Application Support/Microsoft Edge/Default", home),
-                "brave" => format!("{}/Library/Application Support/BraveSoftware/Brave-Browser/Default", home),
+                "chrome" | "google chrome" => {
+                    format!("{}/Library/Application Support/Google/Chrome/Default", home)
+                }
+                "edge" | "microsoft edge" => format!(
+                    "{}/Library/Application Support/Microsoft Edge/Default",
+                    home
+                ),
+                "brave" => format!(
+                    "{}/Library/Application Support/BraveSoftware/Brave-Browser/Default",
+                    home
+                ),
                 "arc" => format!("{}/Library/Application Support/Arc/User Data/Default", home),
                 _ => {
                     error!("❌ Unsupported browser: {}", browser);
                     return Ok(());
                 }
             };
-            
+
             // Copy databases to temp for safety
             let temp_dir = std::path::Path::new("/tmp/browser-sync-export");
             std::fs::create_dir_all(temp_dir)?;
-            
+
             if export_passwords {
                 info!("🔑 Exporting passwords...");
                 let login_db = format!("{}/Login Data", db_base);
                 let temp_db = temp_dir.join("LoginData");
-                
+
                 if std::path::Path::new(&login_db).exists() {
                     std::fs::copy(&login_db, &temp_db)?;
-                    
+
                     match data_types::extract_chromium_passwords(&temp_db, &browser) {
                         Ok(passwords) => {
                             let output_file = std::path::Path::new(&output_dir)
                                 .join(format!("passwords_{}.{}", browser, format));
-                            
+
                             match format.as_str() {
-                                "json" => data_types::password::export_to_json(&passwords, &output_file)?,
+                                "json" => {
+                                    data_types::password::export_to_json(&passwords, &output_file)?
+                                }
                                 _ => data_types::password::export_to_csv(&passwords, &output_file)?,
                             }
-                            
-                            info!("   ✅ {} passwords exported to {}", passwords.len(), output_file.display());
+
+                            info!(
+                                "   ✅ {} passwords exported to {}",
+                                passwords.len(),
+                                output_file.display()
+                            );
                         }
                         Err(e) => warn!("   ⚠️ Failed to export passwords: {}", e),
                     }
-                    
+
                     let _ = std::fs::remove_file(&temp_db);
                 } else {
                     warn!("   ⚠️ Login Data not found");
                 }
             }
-            
+
             if export_cookies {
                 info!("🍪 Exporting cookies...");
                 let cookies_db = format!("{}/Cookies", db_base);
                 let temp_db = temp_dir.join("Cookies");
-                
+
                 if std::path::Path::new(&cookies_db).exists() {
                     std::fs::copy(&cookies_db, &temp_db)?;
-                    
+
                     match data_types::extract_chromium_cookies(&temp_db, &browser) {
                         Ok(cookies) => {
-                            let output_file = std::path::Path::new(&output_dir)
-                                .join(format!("cookies_{}.{}", browser, 
-                                    if format == "netscape" { "txt" } else { &format }));
-                            
+                            let output_file = std::path::Path::new(&output_dir).join(format!(
+                                "cookies_{}.{}",
+                                browser,
+                                if format == "netscape" { "txt" } else { &format }
+                            ));
+
                             match format.as_str() {
-                                "netscape" => data_types::cookie::export_to_netscape(&cookies, &output_file)?,
-                                "json" => data_types::cookie::export_to_json(&cookies, &output_file)?,
+                                "netscape" => {
+                                    data_types::cookie::export_to_netscape(&cookies, &output_file)?
+                                }
+                                "json" => {
+                                    data_types::cookie::export_to_json(&cookies, &output_file)?
+                                }
                                 _ => {
                                     // Simple CSV for cookies
                                     use std::io::Write;
                                     let mut file = std::fs::File::create(&output_file)?;
-                                    writeln!(file, "host,name,value,path,expires,secure,http_only")?;
+                                    writeln!(
+                                        file,
+                                        "host,name,value,path,expires,secure,http_only"
+                                    )?;
                                     for c in &cookies {
-                                        writeln!(file, "\"{}\",\"{}\",\"{}\",\"{}\",{},{},{}", 
-                                            c.host, c.name, c.value.replace('"', "\"\""), 
-                                            c.path, c.expires, c.is_secure, c.is_http_only)?;
+                                        writeln!(
+                                            file,
+                                            "\"{}\",\"{}\",\"{}\",\"{}\",{},{},{}",
+                                            c.host,
+                                            c.name,
+                                            c.value.replace('"', "\"\""),
+                                            c.path,
+                                            c.expires,
+                                            c.is_secure,
+                                            c.is_http_only
+                                        )?;
                                     }
                                 }
                             }
-                            
-                            info!("   ✅ {} cookies exported to {}", cookies.len(), output_file.display());
+
+                            info!(
+                                "   ✅ {} cookies exported to {}",
+                                cookies.len(),
+                                output_file.display()
+                            );
                         }
                         Err(e) => warn!("   ⚠️ Failed to export cookies: {}", e),
                     }
-                    
+
                     let _ = std::fs::remove_file(&temp_db);
                 } else {
                     warn!("   ⚠️ Cookies database not found");
                 }
             }
-            
+
             if export_downloads {
                 info!("📥 Exporting download history...");
                 let history_db = format!("{}/History", db_base);
                 let temp_db = temp_dir.join("History");
-                
+
                 if std::path::Path::new(&history_db).exists() {
                     std::fs::copy(&history_db, &temp_db)?;
-                    
+
                     match data_types::extract_chromium_downloads(&temp_db, &browser) {
                         Ok(downloads) => {
                             let output_file = std::path::Path::new(&output_dir)
                                 .join(format!("downloads_{}.{}", browser, format));
-                            
+
                             data_types::download::export_to_csv(&downloads, &output_file)?;
-                            
-                            info!("   ✅ {} downloads exported to {}", downloads.len(), output_file.display());
+
+                            info!(
+                                "   ✅ {} downloads exported to {}",
+                                downloads.len(),
+                                output_file.display()
+                            );
                         }
                         Err(e) => warn!("   ⚠️ Failed to export downloads: {}", e),
                     }
-                    
+
                     let _ = std::fs::remove_file(&temp_db);
                 } else {
                     warn!("   ⚠️ History database not found");
                 }
             }
-            
+
             info!("");
             info!("✅ Export complete: {}", output_dir);
         }

@@ -2,6 +2,9 @@
 //!
 //! Uses the compiled Go binary for complete browser data extraction.
 //! Supports: passwords, cookies, history, bookmarks, downloads, localStorage, extensions
+//! Currently unused but kept for future integration.
+
+#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -14,13 +17,13 @@ fn get_binary_path() -> Result<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-    
+
     if let Some(dir) = exe_dir {
         let binary = dir.join("hack-browser-data");
         if binary.exists() {
             return Ok(binary);
         }
-        
+
         // Try parent directory
         if let Some(parent) = dir.parent() {
             let binary = parent.join("bin").join("hack-browser-data");
@@ -29,7 +32,7 @@ fn get_binary_path() -> Result<PathBuf> {
             }
         }
     }
-    
+
     // Try workspace bin
     let workspace_bin = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("bin")
@@ -37,8 +40,10 @@ fn get_binary_path() -> Result<PathBuf> {
     if workspace_bin.exists() {
         return Ok(workspace_bin);
     }
-    
-    Err(anyhow!("hack-browser-data binary not found. Please ensure it exists in bin/ directory"))
+
+    Err(anyhow!(
+        "hack-browser-data binary not found. Please ensure it exists in bin/ directory"
+    ))
 }
 
 /// Browser type for HackBrowserData
@@ -57,7 +62,7 @@ pub enum HackBrowser {
 }
 
 impl HackBrowser {
-    fn to_arg(&self) -> &str {
+    fn as_arg(self) -> &'static str {
         match self {
             HackBrowser::All => "all",
             HackBrowser::Chrome => "chrome",
@@ -71,7 +76,7 @@ impl HackBrowser {
             HackBrowser::Arc => "arc",
         }
     }
-    
+
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "chrome" => HackBrowser::Chrome,
@@ -90,16 +95,17 @@ impl HackBrowser {
 
 /// Export format
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum ExportFormat {
-    CSV,
-    JSON,
+    Csv,
+    Json,
 }
 
 impl ExportFormat {
-    fn to_arg(&self) -> &str {
+    fn as_arg(self) -> &'static str {
         match self {
-            ExportFormat::CSV => "csv",
-            ExportFormat::JSON => "json",
+            ExportFormat::Csv => "csv",
+            ExportFormat::Json => "json",
         }
     }
 }
@@ -112,27 +118,30 @@ pub fn export_browser_data(
     compress: bool,
 ) -> Result<PathBuf> {
     let binary = get_binary_path()?;
-    
+
     std::fs::create_dir_all(output_dir)?;
-    
+
     let mut cmd = Command::new(&binary);
-    cmd.arg("-b").arg(browser.to_arg())
-       .arg("-f").arg(format.to_arg())
-       .arg("--dir").arg(output_dir);
-    
+    cmd.arg("-b")
+        .arg(browser.as_arg())
+        .arg("-f")
+        .arg(format.as_arg())
+        .arg("--dir")
+        .arg(output_dir);
+
     if compress {
         cmd.arg("--zip");
     }
-    
+
     let output = cmd.output()?;
-    
+
     if !output.status.success() {
         return Err(anyhow!(
             "hack-browser-data failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    
+
     Ok(output_dir.to_path_buf())
 }
 
@@ -186,15 +195,15 @@ pub fn load_cookies(json_path: &Path) -> Result<Vec<HackCookie>> {
 pub fn get_passwords(browser: HackBrowser) -> Result<Vec<HackPassword>> {
     let temp_dir = std::env::temp_dir().join("browser-sync-hack");
     std::fs::create_dir_all(&temp_dir)?;
-    
-    export_browser_data(browser, &temp_dir, ExportFormat::JSON, false)?;
-    
+
+    export_browser_data(browser, &temp_dir, ExportFormat::Json, false)?;
+
     // Find password file
     let password_file = std::fs::read_dir(&temp_dir)?
         .filter_map(|e| e.ok())
         .find(|e| e.file_name().to_string_lossy().contains("password"))
         .map(|e| e.path());
-    
+
     if let Some(file) = password_file {
         load_passwords(&file)
     } else {
@@ -206,15 +215,15 @@ pub fn get_passwords(browser: HackBrowser) -> Result<Vec<HackPassword>> {
 pub fn get_cookies(browser: HackBrowser) -> Result<Vec<HackCookie>> {
     let temp_dir = std::env::temp_dir().join("browser-sync-hack");
     std::fs::create_dir_all(&temp_dir)?;
-    
-    export_browser_data(browser, &temp_dir, ExportFormat::JSON, false)?;
-    
+
+    export_browser_data(browser, &temp_dir, ExportFormat::Json, false)?;
+
     // Find cookie file
     let cookie_file = std::fs::read_dir(&temp_dir)?
         .filter_map(|e| e.ok())
         .find(|e| e.file_name().to_string_lossy().contains("cookie"))
         .map(|e| e.path());
-    
+
     if let Some(file) = cookie_file {
         load_cookies(&file)
     } else {
