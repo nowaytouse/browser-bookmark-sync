@@ -7724,3 +7724,208 @@ pub fn export_bookmarks_to_html_flat(
     
     Ok((final_count, flatten_stats, dedupe_stats, clean_stats))
 }
+
+// ============================================================================
+// Property-Based Tests for Export Quality
+// ============================================================================
+
+#[cfg(test)]
+mod export_quality_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Helper: create a bookmark
+    fn make_bookmark(title: &str, url: &str) -> Bookmark {
+        Bookmark {
+            id: format!("id-{}", title),
+            title: title.to_string(),
+            url: Some(url.to_string()),
+            folder: false,
+            children: vec![],
+            date_added: Some(1000000),
+            date_modified: None,
+        }
+    }
+
+    // Helper: create a folder
+    fn make_folder(title: &str, children: Vec<Bookmark>) -> Bookmark {
+        Bookmark {
+            id: format!("folder-{}", title),
+            title: title.to_string(),
+            url: None,
+            folder: true,
+            children,
+            date_added: Some(1000000),
+            date_modified: None,
+        }
+    }
+
+    // Strategy: generate random bookmark titles (including Unicode)
+    fn arb_title() -> impl Strategy<Value = String> {
+        prop::string::string_regex("[a-zA-Z0-9_\\-\\u4e00-\\u9fff]{1,20}")
+            .unwrap()
+            .prop_filter("non-empty", |s| !s.is_empty())
+    }
+
+    // Strategy: generate random URLs
+    fn arb_url() -> impl Strategy<Value = String> {
+        prop::string::string_regex("https?://[a-z0-9]+\\.[a-z]{2,4}/[a-z0-9]*")
+            .unwrap()
+    }
+
+    // **Feature: export-quality-improvement, Property 3: 扁平导出无根文件夹**
+    // **Validates: Requirements 2.1, 2.2**
+    proptest! {
+        #[test]
+        fn prop_flatten_removes_browser_roots(
+            user_folder in arb_title(),
+            bookmark_title in arb_title(),
+            url in arb_url()
+        ) {
+            // Create structure: Waterfox > user_folder > bookmark
+            let bookmark = make_bookmark(&bookmark_title, &url);
+            let user_folder_node = make_folder(&user_folder, vec![bookmark]);
+            let waterfox_root = make_folder("Waterfox", vec![user_folder_node]);
+            let bookmarks = vec![waterfox_root];
+
+            let config = FlatExportConfig {
+                flatten_root: true,
+                root_folders_to_remove: None,
+            };
+            let (result, stats) = flatten_bookmarks(&bookmarks, &config);
+
+            // Property: no browser root folders in result
+            for b in &result {
+                let title_lower = b.title.to_lowercase();
+                prop_assert!(!title_lower.contains("waterfox"));
+                prop_assert!(!title_lower.contains("brave"));
+                prop_assert!(!title_lower.contains("chrome"));
+            }
+            // At least one root was removed
+            prop_assert!(stats.root_folders_removed >= 1);
+        }
+    }
+
+    // **Feature: export-quality-improvement, Property 6: 去重正确性**
+    // **Validates: Requirements 5.1, 5.2**
+    proptest! {
+        #[test]
+        fn prop_dedupe_no_duplicate_urls(
+            title1 in arb_title(),
+            title2 in arb_title(),
+            url in arb_url()
+        ) {
+            // Create two bookmarks with same URL
+            let b1 = make_bookmark(&title1, &url);
+            let b2 = make_bookmark(&title2, &url);
+            let mut bookmarks = vec![b1, b2];
+
+            let stats = deduplicate_bookmarks(&mut bookmarks);
+
+            // Property: no duplicate URLs after deduplication
+            let urls: Vec<_> = bookmarks.iter()
+                .filter_map(|b| b.url.as_ref())
+                .map(|u| normalize_url_for_dedupe(u))
+                .collect();
+            let unique: std::collections::HashSet<_> = urls.iter().collect();
+            prop_assert_eq!(urls.len(), unique.len());
+            
+            // First bookmark should be kept
+            prop_assert_eq!(bookmarks.len(), 1);
+            prop_assert!(stats.duplicates_removed >= 1);
+        }
+    }
+
+    // **Feature: export-quality-improvement, Property 5: 空文件夹清理**
+    // **Validates: Requirements 4.1, 4.2**
+    proptest! {
+        #[test]
+        fn prop_clean_no_empty_folders(
+            folder_name in arb_title()
+        ) {
+            // Create empty folder
+            let empty_folder = make_folder(&folder_name, vec![]);
+            let mut bookmarks = vec![empty_folder];
+
+            let stats = clean_empty_folders(&mut bookmarks);
+
+            // Property: no empty folders after cleaning
+            fn has_empty_folder(bookmarks: &[Bookmark]) -> bool {
+                for b in bookmarks {
+                    if b.folder && b.children.is_empty() {
+                        return true;
+                    }
+                    if has_empty_folder(&b.children) {
+                        return true;
+                    }
+                }
+                false
+            }
+            prop_assert!(!has_empty_folder(&bookmarks));
+            prop_assert!(stats.empty_folders_removed >= 1);
+        }
+    }
+
+    // **Feature: export-quality-improvement, Property 1: 文件夹名称保真度**
+    // **Validates: Requirements 1.1, 1.2**
+    proptest! {
+        #[test]
+        fn prop_folder_name_preserved(
+            folder_name in arb_title()
+        ) {
+            let folder = make_folder(&folder_name, vec![make_bookmark("test", "http://test.com")]);
+            let bookmarks = vec![folder];
+
+            // Export to HTML string
+            let html = SyncEngine::export_bookmarks_to_html(&bookmarks);
+
+            // Property: folder name appears in HTML (escaped)
+            let escaped_name = html_escape(&folder_name);
+            prop_assert!(html.contains(&escaped_name), 
+                "Folder name '{}' (escaped: '{}') not found in HTML", folder_name, escaped_name);
+        }
+    }
+
+    // **Feature: export-quality-improvement, Property 2: HTML 特殊字符转义**
+    // **Validates: Requirements 1.3**
+    #[test]
+    fn test_html_escape_special_chars() {
+        // Test specific special characters
+        let test_cases = vec![
+            ("Test & More", "Test &amp; More"),
+            ("A < B", "A &lt; B"),
+            ("A > B", "A &gt; B"),
+            ("Say \"Hello\"", "Say &quot;Hello&quot;"),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = html_escape(input);
+            assert_eq!(result, expected, "Failed for input: {}", input);
+        }
+    }
+
+    // **Feature: export-quality-improvement, Property 7: 增量更新正确性**
+    // **Validates: Requirements 6.1, 6.2**
+    proptest! {
+        #[test]
+        fn prop_incremental_update_no_duplicates(
+            title in arb_title(),
+            url in arb_url()
+        ) {
+            // Existing bookmark
+            let existing = make_bookmark(&title, &url);
+            let mut existing_bookmarks = vec![existing];
+
+            // New bookmark with same URL
+            let new_bookmark = make_bookmark("new_title", &url);
+            let new_bookmarks = vec![new_bookmark];
+
+            let stats = merge_bookmarks_incremental(&mut existing_bookmarks, &new_bookmarks);
+
+            // Property: duplicate URL should be skipped
+            prop_assert_eq!(stats.skipped_duplicates, 1);
+            prop_assert_eq!(stats.new_added, 0);
+            prop_assert_eq!(existing_bookmarks.len(), 1);
+        }
+    }
+}
