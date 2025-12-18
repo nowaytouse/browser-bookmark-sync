@@ -83,16 +83,16 @@ enum Commands {
         #[arg(long, default_value = "30")]
         history_days: i32,
 
-        /// Remove duplicate bookmarks/URLs
-        #[arg(short, long)]
+        /// Remove duplicate bookmarks/URLs (default: true)
+        #[arg(short, long, default_value = "true")]
         deduplicate: bool,
 
         /// Merge into flat structure (no browser folders)
         #[arg(short, long)]
         merge: bool,
 
-        /// Remove empty folders
-        #[arg(long)]
+        /// Remove empty folders (default: true)
+        #[arg(long, default_value = "true")]
         clean: bool,
 
         /// Import from existing HTML file
@@ -117,8 +117,8 @@ enum Commands {
         folder: Option<String>,
 
         /// Flatten export: remove browser root folders (Waterfox, Brave, etc.)
-        /// Prevents nested "Imported > Waterfox > Brave" structure when importing
-        #[arg(long)]
+        /// Prevents nested "Imported > Waterfox > Brave" structure when importing (default: true)
+        #[arg(long, default_value = "true")]
         flat: bool,
 
         /// Update existing HTML file with new bookmarks (incremental export)
