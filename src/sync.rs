@@ -4943,13 +4943,25 @@ impl SyncEngine {
         // Determine target browsers
         let target_adapters: Vec<_> = if let Some(names) = browser_names {
             let browser_list: Vec<String> =
-                names.split(',').map(|s| s.trim().to_lowercase()).collect();
+                names.split(',').map(|s| s.trim().to_lowercase().replace('-', " ")).collect();
 
             self.adapters
                 .iter()
                 .filter(|a| {
                     let name = a.browser_type().name().to_lowercase();
-                    browser_list.iter().any(|b| name.contains(b))
+                    let name_normalized = name.replace('-', " ");
+                    browser_list.iter().any(|b| {
+                        // 精确匹配或完整词匹配
+                        if name == *b || name_normalized == *b {
+                            return true;
+                        }
+                        // "brave" 不应该匹配 "brave nightly"
+                        if *b == "brave" && name_normalized.contains("nightly") {
+                            return false;
+                        }
+                        // 部分匹配
+                        name.contains(b) || name_normalized.contains(b)
+                    })
                 })
                 .collect()
         } else {

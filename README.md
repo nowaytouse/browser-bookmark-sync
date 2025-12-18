@@ -68,6 +68,7 @@ bsync organize --dry-run
 |---------|-------------|
 | `list` | List detected browsers and bookmark counts |
 | `export` | Export bookmarks/history/cookies to file |
+| `check` | Check bookmark URL validity (dual-network) |
 | `analyze` | Check for duplicates, empty folders, issues |
 | `organize` | Smart organize by URL patterns (48+ rules) |
 | `validate` | Validate bookmark integrity |
@@ -75,6 +76,47 @@ bsync organize --dry-run
 | `backup` | Create full backup of all browser data |
 | `rules` | Show available classification rules |
 | `export-data` | Export sensitive data (passwords, cookies) |
+
+## URL Validity Check (NEW)
+
+Check if bookmark URLs are still valid using dual-network validation (proxy + direct).
+
+```bash
+# Check all bookmarks (direct connection only)
+bsync check
+
+# Check with proxy for geo-restricted URLs
+bsync check --proxy http://127.0.0.1:7890
+
+# Preview invalid bookmarks without deleting
+bsync check --dry-run --verbose
+
+# Delete confirmed invalid bookmarks
+bsync check --proxy http://127.0.0.1:7890 --delete
+
+# Check specific browser
+bsync check -b safari --verbose
+```
+
+### Check Options
+
+```bash
+bsync check [OPTIONS]
+
+-p, --proxy <URL>        Proxy server URL (e.g., http://127.0.0.1:7890)
+-t, --timeout <SECS>     Request timeout (default: 10)
+-c, --concurrency <N>    Concurrent requests (default: 10)
+-b, --browsers <LIST>    Target browsers (default: all)
+--delete                 Delete confirmed invalid bookmarks
+--dry-run                Preview mode, no actual changes
+-v, --verbose            Show HTTP status codes
+```
+
+### Validation Logic
+
+- **Valid**: Either proxy OR direct connection succeeds (HTTP 2xx/3xx)
+- **Invalid**: Both proxy AND direct connections fail (HTTP 4xx/5xx or error)
+- **Uncertain**: Single network mode failure, timeout, or conflicting results
 
 ## Export Options
 
@@ -166,6 +208,7 @@ bsync organize --dry-run
 |------|------|
 | `list` | 列出检测到的浏览器和书签数量 |
 | `export` | 导出书签/历史/cookies 到文件 |
+| `check` | 检查收藏夹URL有效性（双网络验证） |
 | `analyze` | 检查重复、空文件夹等问题 |
 | `organize` | 按 URL 模式智能整理（48+ 规则） |
 | `validate` | 验证书签完整性 |
@@ -173,6 +216,30 @@ bsync organize --dry-run
 | `backup` | 创建所有浏览器数据的完整备份 |
 | `rules` | 显示可用的分类规则 |
 | `export-data` | 导出敏感数据（密码、cookies） |
+
+## URL有效性检查（新功能）
+
+使用代理+直连双网络验证检查收藏夹URL是否有效。
+
+```bash
+# 检查所有收藏夹（仅直连）
+bsync check
+
+# 使用代理检查（适用于地域限制的URL）
+bsync check --proxy http://127.0.0.1:7890
+
+# 预览无效收藏夹（不删除）
+bsync check --dry-run --verbose
+
+# 删除确认无效的收藏夹
+bsync check --proxy http://127.0.0.1:7890 --delete
+```
+
+### 验证逻辑
+
+- **有效**: 代理或直连任一成功（HTTP 2xx/3xx）
+- **无效**: 代理和直连都失败（HTTP 4xx/5xx或连接错误）
+- **不确定**: 单网络模式失败、超时或结果冲突
 
 ---
 

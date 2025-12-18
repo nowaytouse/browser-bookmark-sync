@@ -10,12 +10,14 @@ mod cloud_reset;
 mod crypto;
 mod data_types;
 mod db_safety;
+mod enhanced_rules;
 mod firefox_sync;
 mod firefox_sync_api;
 mod hackbrowserdata;
 mod scheduler;
 mod sync;
 mod sync_flags;
+mod url_checker;
 mod validator;
 
 use sync::SyncEngine;
@@ -177,6 +179,42 @@ enum Commands {
 
     /// Show available classification rules
     Rules,
+
+    /// Check bookmark URL validity (dual-network validation)
+    #[command(alias = "c", alias = "chk")]
+    Check {
+        /// Proxy server URL (e.g., http://127.0.0.1:7890)
+        #[arg(short, long)]
+        proxy: Option<String>,
+
+        /// Request timeout in seconds
+        #[arg(short, long, default_value = "10")]
+        timeout: u64,
+
+        /// Number of concurrent requests
+        #[arg(short, long, default_value = "10")]
+        concurrency: usize,
+
+        /// Delete confirmed invalid bookmarks
+        #[arg(long)]
+        delete: bool,
+
+        /// Preview mode, no actual changes
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Verbose output (show HTTP status codes)
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Target browsers (comma-separated, or 'all')
+        #[arg(short, long, default_value = "all")]
+        browsers: String,
+
+        /// Limit number of URLs to check (0 = no limit)
+        #[arg(short, long, default_value = "0")]
+        limit: usize,
+    },
 
     /// Create full backup of all browser data
     Backup {
@@ -515,6 +553,200 @@ async fn main() -> Result<()> {
 
         Commands::Rules => {
             SyncEngine::print_builtin_rules();
+        }
+
+        Commands::Check {
+            proxy,
+            timeout,
+            concurrency,
+            delete,
+            dry_run,
+            verbose,
+            browsers,
+            limit,
+        } => {
+            use url_checker::{
+                CheckerConfig, UrlChecker, CheckReport, ValidationStatus,
+                collect_urls_from_bookmarks, remove_invalid_bookmarks,
+            };
+            use std::collections::HashSet;
+            use indicatif::{ProgressBar, ProgressStyle};
+
+            info!("🔍 检查收藏夹URL有效性");
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            if let Some(ref p) = proxy {
+                info!("代理: {}", p);
+            } else {
+                info!("代理: 未配置 (仅直连模式)");
+            }
+            info!("超时: {}秒", timeout);
+            info!("并发: {}", concurrency);
+            info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+            // 创建检查器
+            let config = CheckerConfig {
+                proxy_url: proxy.clone(),
+                timeout_secs: timeout,
+                concurrency,
+                retry_count: 1,
+            };
+            
+            let checker = match UrlChecker::new(config) {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("❌ 创建检查器失败: {}", e);
+                    return Ok(());
+                }
+            };
+
+            // 读取收藏夹
+            let _engine = SyncEngine::new()?; // 用于验证浏览器检测
+            let browser_list: Vec<String> = browsers.split(',')
+                .map(|s| s.trim().to_lowercase().replace('-', " ")) // 支持 brave-nightly 格式
+                .collect();
+            
+            let mut all_bookmarks = Vec::new();
+            let mut all_urls = Vec::new();
+            
+            // 精确匹配浏览器名称的辅助函数
+            let matches_browser = |name: &str, filter: &str| -> bool {
+                let name_lower = name.to_lowercase();
+                let name_normalized = name_lower.replace('-', " ");
+                let filter_lower = filter.to_lowercase();
+                
+                // 精确匹配或完整词匹配
+                if name_lower == filter_lower || name_normalized == filter_lower {
+                    return true;
+                }
+                // "brave" 不应该匹配 "brave nightly"，但 "nightly" 可以匹配 "brave nightly"
+                if filter_lower == "brave" && name_normalized.contains("nightly") {
+                    return false;
+                }
+                // 部分匹配（用于 "nightly" 匹配 "brave nightly"）
+                name_lower.contains(&filter_lower) || name_normalized.contains(&filter_lower)
+            };
+            
+            for adapter in crate::browsers::get_all_adapters() {
+                let name = adapter.browser_type().name();
+                if browsers == "all" || browser_list.iter().any(|b| matches_browser(name, b)) {
+                    match adapter.read_bookmarks() {
+                        Ok(bookmarks) => {
+                            let urls = collect_urls_from_bookmarks(&bookmarks);
+                            info!("📖 {} : {} 个收藏夹", adapter.browser_type().name(), urls.len());
+                            all_urls.extend(urls);
+                            all_bookmarks.push((adapter.browser_type(), bookmarks));
+                        }
+                        Err(e) => {
+                            warn!("⚠️  {} 读取失败: {}", adapter.browser_type().name(), e);
+                        }
+                    }
+                }
+            }
+
+            if all_urls.is_empty() {
+                info!("没有找到收藏夹");
+                return Ok(());
+            }
+
+            // 去重URL
+            let mut unique_urls: Vec<String> = all_urls.into_iter()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            
+            // 应用限制
+            if limit > 0 && unique_urls.len() > limit {
+                info!("📊 共 {} 个唯一URL，限制检查前 {} 个", unique_urls.len(), limit);
+                unique_urls.truncate(limit);
+            } else {
+                info!("\n📊 共 {} 个唯一URL待检查", unique_urls.len());
+            }
+
+            // 创建进度条
+            let pb = ProgressBar::new(unique_urls.len() as u64);
+            pb.set_style(ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                .unwrap()
+                .progress_chars("#>-"));
+
+            // 执行检查
+            let start_time = std::time::Instant::now();
+            let results = checker.check_batch(unique_urls, |current, _total, url| {
+                pb.set_position(current as u64);
+                if verbose {
+                    pb.set_message(format!("{}", url));
+                }
+            }).await;
+            pb.finish_with_message("检查完成");
+
+            let duration = start_time.elapsed().as_secs_f64();
+            let report = CheckReport::from_results(&results, duration);
+
+            // 显示结果
+            println!("\n📊 检查结果");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("  总计检查:   {}", report.total_checked);
+            println!("  ✅ 有效:    {}", report.valid_count);
+            println!("  ❌ 无效:    {}", report.invalid_count);
+            println!("  ❓ 不确定:  {}", report.uncertain_count);
+            println!("  ⏭️  跳过:    {}", report.skipped_count);
+            println!("  ⏱️  耗时:    {:.2}秒", report.check_duration_secs);
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+            // 显示无效URL详情
+            if verbose && !report.invalid_urls.is_empty() {
+                println!("\n❌ 无效URL列表:");
+                for invalid in &report.invalid_urls {
+                    println!("  • {}", invalid.url);
+                    if let Some(ref pe) = invalid.proxy_error {
+                        println!("    代理: {}", pe);
+                    }
+                    if let Some(ref de) = invalid.direct_error {
+                        println!("    直连: {}", de);
+                    }
+                }
+            }
+
+            // 处理删除
+            if delete && report.invalid_count > 0 {
+                let invalid_urls: HashSet<String> = results.iter()
+                    .filter(|r| r.status == ValidationStatus::Invalid)
+                    .map(|r| r.url.clone())
+                    .collect();
+
+                if dry_run {
+                    println!("\n🏃 Dry-run模式 - 以下URL将被删除:");
+                    for url in &invalid_urls {
+                        println!("  • {}", url);
+                    }
+                    println!("\n共 {} 个URL将被删除 (实际未删除)", invalid_urls.len());
+                } else {
+                    println!("\n🗑️  正在删除无效收藏夹...");
+                    
+                    for (browser_type, mut bookmarks) in all_bookmarks {
+                        // 备份
+                        for adapter in crate::browsers::get_all_adapters() {
+                            if adapter.browser_type() == browser_type {
+                                match adapter.backup_bookmarks() {
+                                    Ok(path) => info!("💾 {} 备份: {:?}", browser_type.name(), path),
+                                    Err(e) => warn!("⚠️  {} 备份失败: {}", browser_type.name(), e),
+                                }
+                                
+                                let removed = remove_invalid_bookmarks(&mut bookmarks, &invalid_urls);
+                                if removed > 0 {
+                                    match adapter.write_bookmarks(&bookmarks) {
+                                        Ok(_) => info!("✅ {} 删除了 {} 个无效收藏夹", browser_type.name(), removed),
+                                        Err(e) => error!("❌ {} 写入失败: {}", browser_type.name(), e),
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    
+                    println!("\n✅ 删除完成");
+                }
+            }
         }
 
         Commands::Backup { output } => {
