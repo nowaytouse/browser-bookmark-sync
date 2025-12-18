@@ -115,6 +115,16 @@ enum Commands {
         /// Searches all browsers for folders matching this name
         #[arg(short = 'f', long)]
         folder: Option<String>,
+
+        /// Flatten export: remove browser root folders (Waterfox, Brave, etc.)
+        /// Prevents nested "Imported > Waterfox > Brave" structure when importing
+        #[arg(long)]
+        flat: bool,
+
+        /// Update existing HTML file with new bookmarks (incremental export)
+        /// Skips bookmarks that already exist in the target file
+        #[arg(short = 'u', long)]
+        update: Option<String>,
     },
 
     /// Analyze bookmarks (duplicates, empty folders, NSFW)
@@ -128,9 +138,17 @@ enum Commands {
     /// Smart organize bookmarks by URL patterns
     #[command(alias = "org", alias = "o")]
     Organize {
-        /// Target browsers
+        /// Target browsers (ignored if --file is specified)
         #[arg(short, long)]
         browsers: Option<String>,
+
+        /// Input bookmark file (HTML/JSON) - organize from exported file instead of browser
+        #[arg(short, long)]
+        file: Option<String>,
+
+        /// Output file path (required when using --file)
+        #[arg(short, long)]
+        output: Option<String>,
 
         /// Custom rules file (JSON)
         #[arg(short, long)]
@@ -145,7 +163,7 @@ enum Commands {
         dry_run: bool,
 
         /// Verbose output
-        #[arg(short, long)]
+        #[arg(short = 'V', long)]
         verbose: bool,
     },
 
@@ -214,6 +232,18 @@ enum Commands {
         /// Limit number of URLs to check (0 = no limit)
         #[arg(short, long, default_value = "0")]
         limit: usize,
+
+        /// Export invalid bookmarks to HTML file before deletion
+        #[arg(short = 'e', long)]
+        export_invalid: Option<String>,
+
+        /// Export all results to directory (valid.html, invalid.html, uncertain.html, skipped.html)
+        #[arg(long)]
+        export_dir: Option<String>,
+
+        /// Keep empty folders after deletion (default: remove empty folders)
+        #[arg(long)]
+        keep_empty: bool,
     },
 
     /// Create full backup of all browser data
@@ -299,6 +329,8 @@ async fn main() -> Result<()> {
             extensions,
             verbose,
             folder,
+            flat,
+            update,
         } => {
             // Create sync flags from arguments
             let sync_flags = SyncFlags {
@@ -467,6 +499,7 @@ async fn main() -> Result<()> {
                 clean_empty: clean,
                 verbose,
                 folder_filter: folder.clone(),
+                flat,
             };
 
             // Show folder filter info
@@ -474,15 +507,55 @@ async fn main() -> Result<()> {
                 info!("📁 Folder filter: \"{}\"", folder_name);
                 info!("   Only bookmarks from folders matching this name will be exported");
             }
+            
+            // Show flat export info
+            if flat {
+                info!("📦 Flat export: browser root folders will be removed");
+            }
+            
+            // Show update info
+            if let Some(ref update_file) = update {
+                info!("📝 Incremental update: merging with {}", update_file);
+            }
 
-            let count = engine
-                .export_to_html_with_extra(
+            // Handle incremental update mode
+            let count = if let Some(ref update_file) = update {
+                // Read existing bookmarks from target file
+                let expanded_update = expand_path(update_file);
+                let mut existing_bookmarks = match sync::import_bookmarks_from_html(&expanded_update) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!("⚠️  Could not read existing file ({}), creating new file", e);
+                        Vec::new()
+                    }
+                };
+                let existing_count = existing_bookmarks.iter().map(count_tree).sum::<usize>();
+                
+                // Get new bookmarks from browsers
+                let new_bookmarks = engine.collect_bookmarks_for_export(
                     Some(&browsers),
-                    &output,
                     &export_config,
                     extra_bookmarks,
-                )
-                .await?;
+                ).await?;
+                
+                // Merge new into existing
+                let stats = sync::merge_bookmarks_incremental(&mut existing_bookmarks, &new_bookmarks);
+                info!("📊 Incremental update: {} new added, {} duplicates skipped", 
+                    stats.new_added, stats.skipped_duplicates);
+                
+                // Export merged result
+                sync::export_bookmarks_to_html(&existing_bookmarks, &expand_path(&output))?;
+                existing_count + stats.new_added
+            } else {
+                engine
+                    .export_to_html_with_extra(
+                        Some(&browsers),
+                        &output,
+                        &export_config,
+                        extra_bookmarks,
+                    )
+                    .await?
+            };
 
             info!("");
             info!("✅ Exported {} bookmarks to {}", count, output);
@@ -507,27 +580,48 @@ async fn main() -> Result<()> {
 
         Commands::Organize {
             browsers,
+            file,
+            output,
             rules,
             stats,
             dry_run,
             verbose,
         } => {
-            if !dry_run {
-                print_sync_warning();
+            if let Some(input_file) = file {
+                // 从导出文件整理
+                let output_path = output.unwrap_or_else(|| {
+                    let path = std::path::Path::new(&input_file);
+                    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                    let ext = path.extension().unwrap_or_default().to_string_lossy();
+                    format!("{}_organized.{}", stem, ext)
+                });
+                info!("🧠 Organizing bookmarks from file: {}", input_file);
+                let mut engine = SyncEngine::new()?;
+                engine
+                    .smart_organize_file(&input_file, &output_path, rules.as_deref(), stats, dry_run, verbose)
+                    .await?;
+                if !dry_run {
+                    info!("✅ Organized bookmarks saved to: {}", output_path);
+                }
+            } else {
+                // 从浏览器整理
+                if !dry_run {
+                    print_sync_warning();
+                }
+                info!("🧠 Smart organizing bookmarks...");
+                let mut engine = SyncEngine::new()?;
+                engine
+                    .smart_organize(
+                        browsers.as_deref(),
+                        rules.as_deref(),
+                        false,
+                        stats,
+                        dry_run,
+                        verbose,
+                    )
+                    .await?;
+                info!("✅ Organization complete!");
             }
-            info!("🧠 Smart organizing bookmarks...");
-            let mut engine = SyncEngine::new()?;
-            engine
-                .smart_organize(
-                    browsers.as_deref(),
-                    rules.as_deref(),
-                    false,
-                    stats,
-                    dry_run,
-                    verbose,
-                )
-                .await?;
-            info!("✅ Organization complete!");
         }
 
         Commands::Validate { detailed } => {
@@ -564,10 +658,15 @@ async fn main() -> Result<()> {
             verbose,
             browsers,
             limit,
+            export_invalid,
+            export_dir,
+            keep_empty,
         } => {
             use url_checker::{
                 CheckerConfig, UrlChecker, CheckReport, ValidationStatus,
-                collect_urls_from_bookmarks, remove_invalid_bookmarks,
+                collect_urls_from_bookmarks, 
+                remove_invalid_bookmarks_preserve_structure, RemoveConfig,
+                extract_by_status_preserve_structure,
             };
             use std::collections::HashSet;
             use indicatif::{ProgressBar, ProgressStyle};
@@ -707,21 +806,127 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // 收集无效URL
+            let invalid_urls: HashSet<String> = results.iter()
+                .filter(|r| r.status == ValidationStatus::Invalid)
+                .map(|r| r.url.clone())
+                .collect();
+
+            // 收集各状态的 URL
+            let valid_urls: HashSet<String> = results.iter()
+                .filter(|r| r.status == ValidationStatus::Valid)
+                .map(|r| r.url.clone())
+                .collect();
+            let uncertain_urls: HashSet<String> = results.iter()
+                .filter(|r| r.status == ValidationStatus::Uncertain)
+                .map(|r| r.url.clone())
+                .collect();
+            let skipped_urls: HashSet<String> = results.iter()
+                .filter(|r| r.status == ValidationStatus::Skipped)
+                .map(|r| r.url.clone())
+                .collect();
+
+            // 导出所有分类到目录
+            if let Some(ref dir) = export_dir {
+                let dir_path = expand_path(dir);
+                std::fs::create_dir_all(&dir_path).ok();
+                println!("\n📤 导出检查结果到: {}", dir_path);
+                
+                // 导出有效书签 (保持文件夹结构)
+                if !valid_urls.is_empty() {
+                    let mut valid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    for (_browser_type, bookmarks) in &all_bookmarks {
+                        let extracted = extract_by_status_preserve_structure(bookmarks, &valid_urls);
+                        valid_bookmarks.extend(extracted);
+                    }
+                    let path = format!("{}/valid.html", dir_path);
+                    match sync::export_bookmarks_to_html(&valid_bookmarks, &path) {
+                        Ok(_) => info!("  ✅ valid.html: {} 个有效书签 (保持文件夹结构)", valid_bookmarks.len()),
+                        Err(e) => error!("  ❌ valid.html 导出失败: {}", e),
+                    }
+                }
+                
+                // 导出无效书签 (保持文件夹结构)
+                if !invalid_urls.is_empty() {
+                    let mut invalid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    for (_browser_type, bookmarks) in &all_bookmarks {
+                        let extracted = extract_by_status_preserve_structure(bookmarks, &invalid_urls);
+                        invalid_bookmarks.extend(extracted);
+                    }
+                    let path = format!("{}/invalid.html", dir_path);
+                    match sync::export_bookmarks_to_html(&invalid_bookmarks, &path) {
+                        Ok(_) => info!("  ❌ invalid.html: {} 个无效书签 (保持文件夹结构)", invalid_bookmarks.len()),
+                        Err(e) => error!("  ❌ invalid.html 导出失败: {}", e),
+                    }
+                }
+                
+                // 导出不确定书签 (保持文件夹结构)
+                if !uncertain_urls.is_empty() {
+                    let mut uncertain_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    for (_browser_type, bookmarks) in &all_bookmarks {
+                        let extracted = extract_by_status_preserve_structure(bookmarks, &uncertain_urls);
+                        uncertain_bookmarks.extend(extracted);
+                    }
+                    let path = format!("{}/uncertain.html", dir_path);
+                    match sync::export_bookmarks_to_html(&uncertain_bookmarks, &path) {
+                        Ok(_) => info!("  ❓ uncertain.html: {} 个不确定书签 (保持文件夹结构)", uncertain_bookmarks.len()),
+                        Err(e) => error!("  ❌ uncertain.html 导出失败: {}", e),
+                    }
+                }
+                
+                // 导出跳过书签 (保持文件夹结构)
+                if !skipped_urls.is_empty() {
+                    let mut skipped_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    for (_browser_type, bookmarks) in &all_bookmarks {
+                        let extracted = extract_by_status_preserve_structure(bookmarks, &skipped_urls);
+                        skipped_bookmarks.extend(extracted);
+                    }
+                    let path = format!("{}/skipped.html", dir_path);
+                    match sync::export_bookmarks_to_html(&skipped_bookmarks, &path) {
+                        Ok(_) => info!("  ⏭️  skipped.html: {} 个跳过书签 (保持文件夹结构)", skipped_bookmarks.len()),
+                        Err(e) => error!("  ❌ skipped.html 导出失败: {}", e),
+                    }
+                }
+                
+                println!("✅ 导出完成");
+            }
+
+            // 导出无效收藏夹到HTML文件 (旧参数兼容, 保持文件夹结构)
+            if let Some(ref export_path) = export_invalid {
+                if !invalid_urls.is_empty() {
+                    let export_path = expand_path(export_path);
+                    println!("\n📤 导出无效收藏夹到: {} (保持文件夹结构)", export_path);
+                    
+                    let mut invalid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    for (_browser_type, bookmarks) in &all_bookmarks {
+                        let extracted = extract_by_status_preserve_structure(bookmarks, &invalid_urls);
+                        invalid_bookmarks.extend(extracted);
+                    }
+                    
+                    match sync::export_bookmarks_to_html(&invalid_bookmarks, &export_path) {
+                        Ok(_) => info!("✅ 导出了 {} 个无效收藏夹到 {} (保持文件夹结构)", invalid_bookmarks.len(), export_path),
+                        Err(e) => error!("❌ 导出失败: {}", e),
+                    }
+                }
+            }
+
             // 处理删除
             if delete && report.invalid_count > 0 {
-                let invalid_urls: HashSet<String> = results.iter()
-                    .filter(|r| r.status == ValidationStatus::Invalid)
-                    .map(|r| r.url.clone())
-                    .collect();
-
                 if dry_run {
                     println!("\n🏃 Dry-run模式 - 以下URL将被删除:");
                     for url in &invalid_urls {
                         println!("  • {}", url);
                     }
                     println!("\n共 {} 个URL将被删除 (实际未删除)", invalid_urls.len());
+                    if keep_empty {
+                        println!("📁 空文件夹将被保留 (--keep-empty)");
+                    } else {
+                        println!("📁 空文件夹将被删除 (默认行为)");
+                    }
                 } else {
-                    println!("\n🗑️  正在删除无效收藏夹...");
+                    println!("\n🗑️  正在删除无效收藏夹 (保持文件夹结构)...");
+                    
+                    let remove_config = RemoveConfig { keep_empty_folders: keep_empty };
                     
                     for (browser_type, mut bookmarks) in all_bookmarks {
                         // 备份
@@ -732,10 +937,21 @@ async fn main() -> Result<()> {
                                     Err(e) => warn!("⚠️  {} 备份失败: {}", browser_type.name(), e),
                                 }
                                 
-                                let removed = remove_invalid_bookmarks(&mut bookmarks, &invalid_urls);
-                                if removed > 0 {
+                                let stats = remove_invalid_bookmarks_preserve_structure(
+                                    &mut bookmarks, 
+                                    &invalid_urls,
+                                    &remove_config,
+                                );
+                                
+                                if stats.bookmarks_removed > 0 || stats.empty_folders_removed > 0 {
                                     match adapter.write_bookmarks(&bookmarks) {
-                                        Ok(_) => info!("✅ {} 删除了 {} 个无效收藏夹", browser_type.name(), removed),
+                                        Ok(_) => {
+                                            info!("✅ {} 删除了 {} 个无效书签", browser_type.name(), stats.bookmarks_removed);
+                                            if stats.empty_folders_removed > 0 {
+                                                info!("   清理了 {} 个空文件夹", stats.empty_folders_removed);
+                                            }
+                                            info!("   保留了 {} 个文件夹", stats.folders_preserved);
+                                        }
                                         Err(e) => error!("❌ {} 写入失败: {}", browser_type.name(), e),
                                     }
                                 }
@@ -744,7 +960,7 @@ async fn main() -> Result<()> {
                         }
                     }
                     
-                    println!("\n✅ 删除完成");
+                    println!("\n✅ 删除完成 (文件夹结构已保持)");
                 }
             }
         }

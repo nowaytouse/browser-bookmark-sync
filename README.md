@@ -23,9 +23,12 @@ Cross-browser bookmark management tool for macOS. Export, merge, deduplicate, an
 ### Smart Processing
 - **Deduplication** - Remove duplicate bookmarks by URL
 - **Merge** - Flatten folder structure from multiple browsers
+- **Flat Export** - Remove browser root folders (prevents nested "Imported > Waterfox > Brave")
 - **Folder Filter** - Export only specific folders (e.g., "Temp" or "临时")
 - **Smart Organize** - Auto-classify bookmarks using 48+ built-in rules
 - **Empty Folder Cleanup** - Remove empty folders during export
+- **Incremental Update** - Merge new bookmarks into existing export file
+- **Unicode/Emoji Support** - Preserve folder names with emoji and special characters
 
 ### Safety Features
 - **Non-destructive by default** - Export only, no modifications
@@ -127,6 +130,7 @@ bsync export [OPTIONS]
 -b, --browsers <LIST>    Source browsers (comma-separated, or 'all')
 -d, --deduplicate        Remove duplicate bookmarks
 -m, --merge              Flatten into single structure
+--flat                   Remove browser root folders (Waterfox, Brave, etc.)
 -r, --reading-list       Include Safari reading list
 -f, --folder <NAME>      Only export specific folder
 --history                Include browsing history
@@ -134,7 +138,31 @@ bsync export [OPTIONS]
 --cookies                Include cookies
 --clean                  Remove empty folders
 --include <FILE>         Import from existing HTML file
+-u, --update <FILE>      Incremental update: merge into existing file
 -v, --verbose            Verbose output
+```
+
+### Flat Export (NEW)
+
+Prevents nested folder structure when importing to browsers:
+
+```bash
+# Without --flat: Imported > Waterfox > Brave Nightly > ...
+# With --flat: Your folders appear directly at top level
+
+bsync export --flat -d --clean -o bookmarks.html
+```
+
+### Incremental Update (NEW)
+
+Add new bookmarks to existing export without duplicates:
+
+```bash
+# First export
+bsync export -o bookmarks.html
+
+# Later: add only new bookmarks
+bsync export -u bookmarks.html -o bookmarks.html
 ```
 
 ## Dependencies
@@ -163,9 +191,12 @@ cargo build --release
 ### 智能处理
 - **去重** - 按 URL 去除重复书签
 - **合并** - 将多个浏览器的文件夹结构扁平化
+- **扁平导出** - 移除浏览器根文件夹（避免 "Imported > Waterfox > Brave" 嵌套）
 - **文件夹过滤** - 仅导出特定文件夹（如"临时"）
 - **智能整理** - 使用 48+ 内置规则自动分类书签
 - **清理空文件夹** - 导出时移除空文件夹
+- **增量更新** - 将新书签合并到现有导出文件
+- **Unicode/Emoji 支持** - 保留带 emoji 和特殊字符的文件夹名称
 
 ### 安全特性
 - **默认非破坏性** - 仅导出，不修改

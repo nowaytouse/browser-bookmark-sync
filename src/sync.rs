@@ -34,6 +34,8 @@ pub struct ExportConfig {
     pub verbose: bool,
     /// Only export bookmarks from folders matching this name
     pub folder_filter: Option<String>,
+    /// Flatten export: remove browser root folders to prevent nested imports
+    pub flat: bool,
 }
 
 /// Location information for a bookmark in the tree
@@ -2405,6 +2407,9 @@ pub struct ClassificationRule {
     pub priority: i32,
     /// Rule description
     pub description: String,
+    /// Rule specificity (auto-calculated: path=100, domain=50, title=10)
+    #[serde(default)]
+    pub specificity: i32,
 }
 
 /// Builder for ClassificationRule
@@ -2462,6 +2467,12 @@ impl ClassificationRuleBuilder {
     }
 
     pub fn build(self) -> ClassificationRule {
+        // 自动计算 specificity: 路径=100, 域名=50, 标题=10
+        let specificity = Self::calculate_specificity(
+            &self.path_patterns,
+            &self.domain_patterns,
+            &self.title_patterns,
+        );
         ClassificationRule {
             name: self.name,
             folder_name: self.folder_name,
@@ -2472,7 +2483,27 @@ impl ClassificationRuleBuilder {
             title_patterns: self.title_patterns,
             priority: self.priority,
             description: self.description,
+            specificity,
         }
+    }
+
+    /// 计算规则具体度: 路径匹配=100, 域名匹配=50, 标题匹配=10
+    fn calculate_specificity(
+        path_patterns: &[String],
+        domain_patterns: &[String],
+        title_patterns: &[String],
+    ) -> i32 {
+        let mut score = 0;
+        if !path_patterns.is_empty() {
+            score += 100;
+        }
+        if !domain_patterns.is_empty() {
+            score += 50;
+        }
+        if !title_patterns.is_empty() {
+            score += 10;
+        }
+        score
     }
 }
 
@@ -2498,6 +2529,12 @@ impl ClassificationRule {
         priority: i32,
         description: &str,
     ) -> Self {
+        // 自动计算 specificity
+        let specificity = Self::calculate_specificity_from_patterns(
+            !path_patterns.is_empty(),
+            !domain_patterns.is_empty(),
+            !title_patterns.is_empty(),
+        );
         Self {
             name: name.to_string(),
             folder_name: folder_name.to_string(),
@@ -2508,10 +2545,11 @@ impl ClassificationRule {
             title_patterns: title_patterns.iter().map(|s| s.to_lowercase()).collect(),
             priority,
             description: description.to_string(),
+            specificity,
         }
     }
 
-    /// Check if a bookmark matches this rule (optimized)
+    /// Check if a bookmark matches this rule (improved accuracy)
     fn matches(&self, url: &str, title: &str) -> bool {
         let url_lower = url.to_lowercase();
         let title_lower = title.to_lowercase();
@@ -2519,28 +2557,28 @@ impl ClassificationRule {
         // Extract domain and path from URL
         let (domain, path) = Self::parse_url_parts(&url_lower);
 
-        // Check URL patterns (already lowercase)
+        // Check URL patterns (substring match for full URL patterns)
         for pattern in &self.url_patterns {
             if url_lower.contains(pattern) {
                 return true;
             }
         }
 
-        // Check domain patterns (already lowercase)
+        // Check domain patterns (EXACT match with wildcard support)
         for pattern in &self.domain_patterns {
-            if domain.contains(pattern) {
+            if Self::match_domain_exact(&domain, pattern) {
                 return true;
             }
         }
 
-        // Check path patterns (already lowercase)
+        // Check path patterns (PREFIX match instead of contains)
         for pattern in &self.path_patterns {
-            if path.contains(pattern) {
+            if path.starts_with(pattern) {
                 return true;
             }
         }
 
-        // Check title patterns (already lowercase)
+        // Check title patterns (keyword match)
         for pattern in &self.title_patterns {
             if title_lower.contains(pattern) {
                 return true;
@@ -2548,6 +2586,58 @@ impl ClassificationRule {
         }
 
         false
+    }
+    
+    /// Check if a bookmark matches this rule and return the match reason
+    fn matches_with_reason(&self, url: &str, title: &str) -> Option<String> {
+        let url_lower = url.to_lowercase();
+        let title_lower = title.to_lowercase();
+        let (domain, path) = Self::parse_url_parts(&url_lower);
+
+        // Check URL patterns
+        for pattern in &self.url_patterns {
+            if url_lower.contains(pattern) {
+                return Some(format!("url_pattern: {}", pattern));
+            }
+        }
+
+        // Check domain patterns
+        for pattern in &self.domain_patterns {
+            if Self::match_domain_exact(&domain, pattern) {
+                return Some(format!("domain: {}", pattern));
+            }
+        }
+
+        // Check path patterns
+        for pattern in &self.path_patterns {
+            if path.starts_with(pattern) {
+                return Some(format!("path: {}", pattern));
+            }
+        }
+
+        // Check title patterns
+        for pattern in &self.title_patterns {
+            if title_lower.contains(pattern) {
+                return Some(format!("title: {}", pattern));
+            }
+        }
+
+        None
+    }
+
+    /// Exact domain matching with wildcard support
+    /// - "example.com" matches only "example.com"
+    /// - "*.example.com" matches "sub.example.com" and "example.com"
+    fn match_domain_exact(domain: &str, pattern: &str) -> bool {
+        if pattern.starts_with("*.") {
+            // Wildcard match: *.example.com
+            let suffix = &pattern[2..];
+            // Match sub.example.com or example.com itself
+            domain == suffix || domain.ends_with(&format!(".{}", suffix))
+        } else {
+            // Exact match
+            domain == pattern
+        }
     }
 
     fn parse_url_parts(url: &str) -> (String, String) {
@@ -2562,6 +2652,25 @@ impl ClassificationRule {
         } else {
             (without_protocol.to_string(), String::new())
         }
+    }
+
+    /// 计算规则具体度: 路径匹配=100, 域名匹配=50, 标题匹配=10
+    fn calculate_specificity_from_patterns(
+        has_path: bool,
+        has_domain: bool,
+        has_title: bool,
+    ) -> i32 {
+        let mut score = 0;
+        if has_path {
+            score += 100;
+        }
+        if has_domain {
+            score += 50;
+        }
+        if has_title {
+            score += 10;
+        }
+        score
     }
 }
 
@@ -4826,6 +4935,35 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             51,
             "Korean platforms and services",
         ),
+        // 91. VPN/代理工具
+        ClassificationRule::new(
+            "vpn",
+            "VPN工具",
+            "VPN & Proxy Tools",
+            vec!["v2ray", "clash", "shadowsocks", "trojan", "xray", "sing-box"],
+            vec![
+                "v2ray.com",
+                "v2fly.org",
+                "clash.dev",
+                "clashverge.dev",
+                "shadowsocks.org",
+                "trojan-gfw.github.io",
+                "xtls.github.io",
+                "sing-box.sagernet.org",
+                "wireguard.com",
+                "openvpn.net",
+                "nordvpn.com",
+                "expressvpn.com",
+                "surfshark.com",
+                "protonvpn.com",
+                "mullvad.net",
+                "privateinternetaccess.com",
+            ],
+            vec![],
+            vec!["vpn", "proxy", "翻墙", "科学上网", "机场"],
+            75,
+            "VPN and proxy tools",
+        ),
     ]
 }
 
@@ -4935,8 +5073,13 @@ impl SyncEngine {
             rules.extend(custom_rules);
         }
 
-        // Sort rules by priority (higher first)
-        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        // Sort rules by priority (higher first), then by specificity (higher first)
+        rules.sort_by(|a, b| {
+            match b.priority.cmp(&a.priority) {
+                std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
+                other => other,
+            }
+        });
 
         info!("📋 Loaded {} classification rules", rules.len());
 
@@ -5012,12 +5155,14 @@ impl SyncEngine {
                         let title = &bookmark.title;
 
                         let mut matched = false;
+                        let mut tried_rules: Vec<String> = Vec::new();
+                        
                         for rule in &rules {
-                            if rule.matches(url, title) {
+                            if let Some(reason) = rule.matches_with_reason(url, title) {
                                 if verbose {
-                                    debug!(
-                                        "  ✓ '{}' -> {} (rule: {})",
-                                        title, rule.folder_name, rule.name
+                                    info!(
+                                        "  ✓ '{}' -> {} (rule: {}, reason: {})",
+                                        title, rule.folder_name, rule.name, reason
                                     );
                                 }
                                 classified
@@ -5030,10 +5175,18 @@ impl SyncEngine {
                                     .or_insert(0) += 1;
                                 matched = true;
                                 break;
+                            } else if verbose {
+                                tried_rules.push(rule.name.clone());
                             }
                         }
 
                         if !matched {
+                            if verbose && !tried_rules.is_empty() {
+                                debug!(
+                                    "  ❓ '{}' unclassified (tried {} rules)",
+                                    title, tried_rules.len()
+                                );
+                            }
                             unclassified.push(bookmark);
                             stats.unclassified += 1;
                         }
@@ -5288,6 +5441,239 @@ impl SyncEngine {
         for &i in indices_to_remove.iter().rev() {
             bookmarks.remove(i);
         }
+    }
+
+    /// Smart organize bookmarks from an exported file (HTML/JSON)
+    pub async fn smart_organize_file(
+        &mut self,
+        input_file: &str,
+        output_file: &str,
+        rules_file: Option<&str>,
+        show_stats: bool,
+        dry_run: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        info!("🧠 Organizing bookmarks from file: {}", input_file);
+
+        // Load rules
+        let mut rules = get_builtin_rules();
+        if let Some(file_path) = rules_file {
+            info!("📂 Loading custom rules from: {}", file_path);
+            let content = std::fs::read_to_string(file_path).context("Failed to read rules file")?;
+            let custom_rules: Vec<ClassificationRule> =
+                serde_json::from_str(&content).context("Failed to parse rules file")?;
+            info!("✅ Loaded {} custom rules", custom_rules.len());
+            rules.extend(custom_rules);
+        }
+
+        // Sort rules by priority then specificity
+        rules.sort_by(|a, b| {
+            match b.priority.cmp(&a.priority) {
+                std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
+                other => other,
+            }
+        });
+
+        info!("📋 Loaded {} classification rules", rules.len());
+
+        // Read input file
+        let content = std::fs::read_to_string(input_file)
+            .context(format!("Failed to read input file: {}", input_file))?;
+
+        // Parse bookmarks based on file type
+        let mut bookmarks = if input_file.ends_with(".json") {
+            serde_json::from_str::<Vec<Bookmark>>(&content)
+                .context("Failed to parse JSON bookmark file")?
+        } else if input_file.ends_with(".html") || input_file.ends_with(".htm") {
+            parse_safari_html(&content)?
+        } else {
+            // Try JSON first, then HTML
+            serde_json::from_str::<Vec<Bookmark>>(&content)
+                .or_else(|_| parse_safari_html(&content))
+                .context("Failed to parse bookmark file (tried JSON and HTML)")?
+        };
+
+        info!("📖 Loaded {} bookmarks from file", Self::count_all_bookmarks(&bookmarks));
+
+        let mut stats = ClassificationStats::default();
+
+        // Collect all bookmarks for classification
+        let mut to_classify: Vec<Bookmark> = Vec::new();
+        Self::collect_all_bookmarks_for_classification(&mut bookmarks, &mut to_classify);
+        stats.total_processed = to_classify.len();
+
+        info!("  📖 Found {} bookmarks to classify", to_classify.len());
+
+        // Classify bookmarks
+        let mut classified: std::collections::HashMap<String, Vec<Bookmark>> = std::collections::HashMap::new();
+        let mut unclassified: Vec<Bookmark> = Vec::new();
+
+        for bookmark in to_classify {
+            let url = bookmark.url.as_deref().unwrap_or("");
+            let title = &bookmark.title;
+
+            let mut matched = false;
+            let mut tried_rules: Vec<String> = Vec::new();
+            
+            for rule in &rules {
+                if let Some(reason) = rule.matches_with_reason(url, title) {
+                    if verbose {
+                        info!("  ✓ '{}' -> {} (rule: {}, reason: {})", title, rule.folder_name, rule.name, reason);
+                    }
+                    classified.entry(rule.folder_name.clone()).or_default().push(bookmark.clone());
+                    *stats.by_category.entry(rule.folder_name.clone()).or_insert(0) += 1;
+                    matched = true;
+                    break;
+                } else if verbose {
+                    tried_rules.push(rule.name.clone());
+                }
+            }
+
+            if !matched {
+                if verbose && !tried_rules.is_empty() {
+                    debug!("  ❓ '{}' unclassified (tried {} rules)", title, tried_rules.len());
+                }
+                unclassified.push(bookmark);
+                stats.unclassified += 1;
+            }
+        }
+
+        stats.total_classified = stats.total_processed - stats.unclassified;
+
+        // Create folders for classified bookmarks
+        for (folder_name, items) in &classified {
+            let existing_folder = bookmarks.iter_mut().find(|b| b.folder && b.title == *folder_name);
+
+            if let Some(folder) = existing_folder {
+                folder.children.extend(items.clone());
+            } else {
+                let new_folder = Bookmark {
+                    id: format!("smart-folder-{}", chrono::Utc::now().timestamp_millis()),
+                    title: folder_name.clone(),
+                    url: None,
+                    folder: true,
+                    children: items.clone(),
+                    date_added: Some(chrono::Utc::now().timestamp_millis()),
+                    date_modified: Some(chrono::Utc::now().timestamp_millis()),
+                };
+                bookmarks.push(new_folder);
+            }
+
+            info!("  📁 {} : {} bookmarks", folder_name, items.len());
+        }
+
+        // Handle unclassified bookmarks
+        if !unclassified.is_empty() {
+            info!("  ❓ Unclassified: {} bookmarks", unclassified.len());
+            let unclassified_folder = bookmarks.iter_mut().find(|b| b.folder && b.title == "未分类");
+
+            if let Some(folder) = unclassified_folder {
+                folder.children.extend(unclassified.clone());
+            } else {
+                let new_folder = Bookmark {
+                    id: format!("unclassified-folder-{}", chrono::Utc::now().timestamp_millis()),
+                    title: "未分类".to_string(),
+                    url: None,
+                    folder: true,
+                    children: unclassified.clone(),
+                    date_added: Some(chrono::Utc::now().timestamp_millis()),
+                    date_modified: Some(chrono::Utc::now().timestamp_millis()),
+                };
+                bookmarks.push(new_folder);
+            }
+        }
+
+        // Show statistics
+        if show_stats {
+            println!("\n📊 Classification Statistics:");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("  Total processed:  {}", stats.total_processed);
+            println!(
+                "  Total classified: {} ({:.1}%)",
+                stats.total_classified,
+                if stats.total_processed > 0 {
+                    stats.total_classified as f64 / stats.total_processed as f64 * 100.0
+                } else {
+                    0.0
+                }
+            );
+            println!("  Unclassified:     {}", stats.unclassified);
+            println!("\n  By category:");
+
+            let mut categories: Vec<_> = stats.by_category.iter().collect();
+            categories.sort_by(|a, b| b.1.cmp(a.1));
+            for (category, count) in categories {
+                println!("    📁 {} : {}", category, count);
+            }
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        }
+
+        if dry_run {
+            info!(
+                "  🏃 Dry run - would classify {} bookmarks into {} folders",
+                stats.total_classified,
+                classified.len()
+            );
+        } else {
+            // Write output file
+            let output_content = if output_file.ends_with(".json") {
+                serde_json::to_string_pretty(&bookmarks)?
+            } else {
+                // Export as HTML
+                Self::export_bookmarks_to_html(&bookmarks)
+            };
+
+            std::fs::write(output_file, output_content)
+                .context(format!("Failed to write output file: {}", output_file))?;
+
+            info!("  ✅ Organized bookmarks saved to: {}", output_file);
+        }
+
+        Ok(())
+    }
+
+    /// Export bookmarks to HTML format (Netscape Bookmark File Format)
+    fn export_bookmarks_to_html(bookmarks: &[Bookmark]) -> String {
+        let mut html = String::from(
+            "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n\
+             <META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n\
+             <TITLE>Bookmarks</TITLE>\n\
+             <H1>Bookmarks</H1>\n\
+             <DL><p>\n",
+        );
+
+        fn write_bookmark(html: &mut String, bookmark: &Bookmark, indent: usize) {
+            let indent_str = "    ".repeat(indent);
+            if bookmark.folder {
+                html.push_str(&format!("{}<DT><H3>{}</H3>\n", indent_str, html_escape(&bookmark.title)));
+                html.push_str(&format!("{}<DL><p>\n", indent_str));
+                for child in &bookmark.children {
+                    write_bookmark(html, child, indent + 1);
+                }
+                html.push_str(&format!("{}</DL><p>\n", indent_str));
+            } else if let Some(url) = &bookmark.url {
+                html.push_str(&format!(
+                    "{}<DT><A HREF=\"{}\">{}</A>\n",
+                    indent_str,
+                    html_escape(url),
+                    html_escape(&bookmark.title)
+                ));
+            }
+        }
+
+        fn html_escape(s: &str) -> String {
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+        }
+
+        for bookmark in bookmarks {
+            write_bookmark(&mut html, bookmark, 1);
+        }
+
+        html.push_str("</DL><p>\n");
+        html
     }
 }
 
@@ -5656,6 +6042,316 @@ mod tests {
         // Login should have highest priority (100)
         assert_eq!(rules[0].name, "login");
         assert_eq!(rules[0].priority, 100);
+    }
+
+    #[test]
+    fn test_domain_exact_match_no_substring() {
+        // 精确匹配: github.com 不应该匹配 mygithub.com
+        assert!(!ClassificationRule::match_domain_exact("mygithub.com", "github.com"));
+        assert!(!ClassificationRule::match_domain_exact("notgithub.com", "github.com"));
+        assert!(ClassificationRule::match_domain_exact("github.com", "github.com"));
+    }
+
+    #[test]
+    fn test_domain_wildcard_match() {
+        // 通配符匹配: *.github.com
+        assert!(ClassificationRule::match_domain_exact("gist.github.com", "*.github.com"));
+        assert!(ClassificationRule::match_domain_exact("api.github.com", "*.github.com"));
+        assert!(ClassificationRule::match_domain_exact("github.com", "*.github.com"));
+        // 不应该匹配不相关的域名
+        assert!(!ClassificationRule::match_domain_exact("fakegithub.com", "*.github.com"));
+    }
+}
+
+/// Property-based tests for organize-accuracy-improvement
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// **Feature: organize-accuracy-improvement, Property 1: 精确域名匹配**
+    /// **Validates: Requirements 1.1, 1.3**
+    /// 对于任意域名 D 和模式 P，如果 P 不包含通配符，则 D 必须完全等于 P 才能匹配
+    proptest! {
+        #[test]
+        fn prop_exact_domain_match_no_substring(
+            base in "[a-z]{3,8}",
+            tld in prop_oneof!["com", "org", "net", "io"],
+            prefix in "[a-z]{1,5}",
+        ) {
+            let domain = format!("{}.{}", base, tld);
+            let prefixed_domain = format!("{}{}.{}", prefix, base, tld);
+            
+            // 精确匹配模式不应该匹配带前缀的域名
+            prop_assert!(!ClassificationRule::match_domain_exact(&prefixed_domain, &domain));
+            // 但应该匹配自身
+            prop_assert!(ClassificationRule::match_domain_exact(&domain, &domain));
+        }
+
+        #[test]
+        fn prop_exact_domain_case_insensitive(
+            base in "[a-zA-Z]{3,8}",
+            tld in prop_oneof!["com", "org", "net"],
+        ) {
+            let domain = format!("{}.{}", base, tld);
+            let domain_lower = domain.to_lowercase();
+            
+            // 大小写不敏感匹配 (调用者负责转换为小写，这里验证小写匹配)
+            prop_assert!(ClassificationRule::match_domain_exact(&domain_lower, &domain_lower));
+        }
+    }
+
+    /// **Feature: organize-accuracy-improvement, Property 2: 通配符域名匹配**
+    /// **Validates: Requirements 1.2**
+    /// 对于任意域名 D 和通配符模式 *.suffix，D 匹配当且仅当 D == suffix 或 D 以 .suffix 结尾
+    proptest! {
+        #[test]
+        fn prop_wildcard_domain_match_subdomain(
+            subdomain in "[a-z]{2,6}",
+            base in "[a-z]{3,8}",
+            tld in prop_oneof!["com", "org", "net"],
+        ) {
+            let suffix = format!("{}.{}", base, tld);
+            let pattern = format!("*.{}", suffix);
+            let full_domain = format!("{}.{}", subdomain, suffix);
+            
+            // 子域名应该匹配通配符模式
+            prop_assert!(ClassificationRule::match_domain_exact(&full_domain, &pattern));
+            // 基础域名也应该匹配
+            prop_assert!(ClassificationRule::match_domain_exact(&suffix, &pattern));
+        }
+
+        #[test]
+        fn prop_wildcard_domain_no_match_unrelated(
+            unrelated in "[a-z]{3,8}",
+            base in "[a-z]{3,8}",
+            tld in prop_oneof!["com", "org", "net"],
+        ) {
+            prop_assume!(unrelated != base);
+            
+            let pattern = format!("*.{}.{}", base, tld);
+            let unrelated_domain = format!("{}.{}", unrelated, tld);
+            
+            // 不相关的域名不应该匹配
+            prop_assert!(!ClassificationRule::match_domain_exact(&unrelated_domain, &pattern));
+        }
+    }
+
+    /// **Feature: organize-accuracy-improvement, Property 3: 路径前缀匹配**
+    /// **Validates: Requirements 2.1**
+    /// 对于任意 URL 路径和前缀列表，如果路径以任一前缀开头，则匹配成功
+    proptest! {
+        #[test]
+        fn prop_path_prefix_match(
+            prefix in "/[a-z]{1,5}/",
+            suffix in "[a-z]{1,10}",
+        ) {
+            let full_path = format!("{}{}", prefix, suffix);
+            let url = format!("https://example.com{}", full_path);
+            
+            let rule = ClassificationRule::new(
+                "test", "测试", "Test",
+                vec![],
+                vec!["example.com"],
+                vec![&prefix],
+                vec![],
+                50,
+                "Test rule",
+            );
+            
+            // 路径以前缀开头应该匹配
+            prop_assert!(rule.matches(&url, "Test"));
+        }
+
+        #[test]
+        fn prop_path_prefix_no_match_middle(
+            prefix in "/[a-z]{2,5}/",
+            before in "/[a-z]{1,3}",
+        ) {
+            // 前缀出现在路径中间，不应该匹配
+            let path = format!("{}{}", before, prefix);
+            let url = format!("https://example.com{}", path);
+            
+            let rule = ClassificationRule::new(
+                "test", "测试", "Test",
+                vec![],
+                vec!["example.com"],
+                vec![&prefix],
+                vec![],
+                50,
+                "Test rule",
+            );
+            
+            // 前缀不在开头，不应该匹配（除非域名匹配）
+            // 注意：由于域名匹配，这里会返回 true，所以我们测试不同的域名
+            let url_other = format!("https://other.com{}", path);
+            let rule_no_domain = ClassificationRule::new(
+                "test", "测试", "Test",
+                vec![],
+                vec![],
+                vec![&prefix],
+                vec![],
+                50,
+                "Test rule",
+            );
+            
+            prop_assert!(!rule_no_domain.matches(&url_other, "Test"));
+        }
+    }
+
+    /// **Feature: organize-accuracy-improvement, Property 7: 规则排序正确性**
+    /// **Validates: Requirements 6.1, 6.2**
+    /// 对于任意规则列表，排序后应按 priority 降序，相同 priority 按 specificity 降序
+    proptest! {
+        #[test]
+        fn prop_rule_sorting_by_priority_then_specificity(
+            p1 in 1..100i32,
+            p2 in 1..100i32,
+            s1 in 0..200i32,
+            s2 in 0..200i32,
+        ) {
+            let mut rules = vec![
+                ClassificationRule {
+                    name: "rule1".to_string(),
+                    folder_name: "文件夹1".to_string(),
+                    folder_name_en: "Folder1".to_string(),
+                    url_patterns: vec![],
+                    domain_patterns: vec![],
+                    path_patterns: vec![],
+                    title_patterns: vec![],
+                    priority: p1,
+                    description: "Rule 1".to_string(),
+                    specificity: s1,
+                },
+                ClassificationRule {
+                    name: "rule2".to_string(),
+                    folder_name: "文件夹2".to_string(),
+                    folder_name_en: "Folder2".to_string(),
+                    url_patterns: vec![],
+                    domain_patterns: vec![],
+                    path_patterns: vec![],
+                    title_patterns: vec![],
+                    priority: p2,
+                    description: "Rule 2".to_string(),
+                    specificity: s2,
+                },
+            ];
+            
+            // 排序
+            rules.sort_by(|a, b| {
+                match b.priority.cmp(&a.priority) {
+                    std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
+                    other => other,
+                }
+            });
+            
+            // 验证排序正确性
+            if rules[0].priority == rules[1].priority {
+                // 相同 priority，按 specificity 降序
+                prop_assert!(rules[0].specificity >= rules[1].specificity);
+            } else {
+                // 不同 priority，按 priority 降序
+                prop_assert!(rules[0].priority > rules[1].priority);
+            }
+        }
+    }
+
+    /// **Feature: organize-accuracy-improvement, Property 8: Specificity 计算正确性**
+    /// **Validates: Requirements 6.3**
+    /// 路径匹配的 specificity > 域名匹配的 specificity > 标题匹配的 specificity
+    proptest! {
+        #[test]
+        fn prop_specificity_calculation_order(
+            _dummy in 0..10i32,  // 只是为了让 proptest 运行多次
+        ) {
+            // 只有路径
+            let path_only = ClassificationRule::new(
+                "path", "路径", "Path",
+                vec![],
+                vec![],
+                vec!["/test/"],
+                vec![],
+                50,
+                "Path only",
+            );
+            
+            // 只有域名
+            let domain_only = ClassificationRule::new(
+                "domain", "域名", "Domain",
+                vec![],
+                vec!["example.com"],
+                vec![],
+                vec![],
+                50,
+                "Domain only",
+            );
+            
+            // 只有标题
+            let title_only = ClassificationRule::new(
+                "title", "标题", "Title",
+                vec![],
+                vec![],
+                vec![],
+                vec!["keyword"],
+                50,
+                "Title only",
+            );
+            
+            // 验证: 路径 > 域名 > 标题
+            prop_assert!(path_only.specificity > domain_only.specificity);
+            prop_assert!(domain_only.specificity > title_only.specificity);
+            
+            // 验证具体值
+            prop_assert_eq!(path_only.specificity, 100);
+            prop_assert_eq!(domain_only.specificity, 50);
+            prop_assert_eq!(title_only.specificity, 10);
+        }
+    }
+
+    /// **Feature: organize-accuracy-improvement, Property 9: 更具体规则优先**
+    /// **Validates: Requirements 1.4, 2.3**
+    /// 对于任意书签和多个匹配规则，应选择 specificity 最高的规则
+    proptest! {
+        #[test]
+        fn prop_more_specific_rule_wins(
+            priority in 50..100i32,
+        ) {
+            // 创建两个规则：一个只有域名，一个有域名+路径
+            let domain_rule = ClassificationRule::new(
+                "domain_only", "域名规则", "Domain Rule",
+                vec![],
+                vec!["example.com"],
+                vec![],
+                vec![],
+                priority,
+                "Domain only rule",
+            );
+            
+            let path_rule = ClassificationRule::new(
+                "domain_path", "路径规则", "Path Rule",
+                vec![],
+                vec!["example.com"],
+                vec!["/docs/"],
+                vec![],
+                priority,  // 相同优先级
+                "Domain + path rule",
+            );
+            
+            // 路径规则应该有更高的 specificity
+            prop_assert!(path_rule.specificity > domain_rule.specificity);
+            
+            // 排序后，路径规则应该排在前面（相同 priority 时按 specificity 降序）
+            let mut rules = vec![domain_rule.clone(), path_rule.clone()];
+            rules.sort_by(|a, b| {
+                match b.priority.cmp(&a.priority) {
+                    std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
+                    other => other,
+                }
+            });
+            
+            prop_assert_eq!(&rules[0].name, "domain_path");
+            prop_assert_eq!(&rules[1].name, "domain_only");
+        }
     }
 }
 
@@ -6059,6 +6755,72 @@ impl SyncEngine {
             .await
     }
 
+    /// Collect bookmarks from browsers for export (without writing to file)
+    pub async fn collect_bookmarks_for_export(
+        &self,
+        browser_names: Option<&str>,
+        config: &ExportConfig,
+        extra_bookmarks: Vec<Bookmark>,
+    ) -> Result<Vec<Bookmark>> {
+        let merge = config.merge;
+        
+        // Determine target browsers
+        let target_adapters: Vec<_> = if let Some(names) = browser_names {
+            let browser_list: Vec<String> =
+                names.split(',').map(|s| s.trim().to_lowercase()).collect();
+            self.adapters
+                .iter()
+                .filter(|a| {
+                    let name = a.browser_type().name().to_lowercase();
+                    let name_normalized = name.replace([' ', '_'], "-");
+                    browser_list.iter().any(|b| {
+                        let b_normalized = b.replace([' ', '_'], "-");
+                        name_normalized == b_normalized ||
+                        name.contains(b) || b.contains(&name) ||
+                        (b.contains("nightly") && name.contains("nightly")) ||
+                        (b == "all")
+                    })
+                })
+                .collect()
+        } else {
+            self.adapters.iter().collect()
+        };
+
+        let mut all_bookmarks: Vec<Bookmark> = Vec::new();
+        
+        // Add extra bookmarks first
+        if !extra_bookmarks.is_empty() {
+            all_bookmarks.extend(extra_bookmarks);
+        }
+
+        for adapter in &target_adapters {
+            let browser_name = adapter.browser_type().name();
+            match adapter.read_bookmarks() {
+                Ok(bookmarks) => {
+                    if merge {
+                        all_bookmarks.extend(bookmarks);
+                    } else {
+                        let browser_folder = Bookmark {
+                            id: format!("browser-{}", browser_name.to_lowercase().replace(' ', "-")),
+                            title: browser_name.to_string(),
+                            url: None,
+                            folder: true,
+                            children: bookmarks,
+                            date_added: Some(chrono::Utc::now().timestamp_millis()),
+                            date_modified: None,
+                        };
+                        all_bookmarks.push(browser_folder);
+                    }
+                }
+                Err(e) => {
+                    warn!("  ⚠️  {} : read failed - {}", browser_name, e);
+                }
+            }
+        }
+
+        Ok(all_bookmarks)
+    }
+
     /// Export all bookmarks with additional bookmarks from external sources
     pub async fn export_to_html_with_extra(
         &self,
@@ -6194,6 +6956,21 @@ impl SyncEngine {
             }
             if total_empty_removed > 0 {
                 info!("  ✅ Removed {} empty folders", total_empty_removed);
+            }
+        }
+
+        // Flatten export: remove browser root folders
+        if config.flat {
+            info!("📦 Flattening: removing browser root folders...");
+            let flat_config = FlatExportConfig {
+                flatten_root: true,
+                root_folders_to_remove: None,
+            };
+            let (flattened, stats) = flatten_bookmarks(&all_bookmarks, &flat_config);
+            all_bookmarks = flattened;
+            if stats.root_folders_removed > 0 {
+                info!("  ✅ Removed {} browser root folders, promoted {} items", 
+                    stats.root_folders_removed, stats.bookmarks_promoted);
             }
         }
 
@@ -6630,4 +7407,320 @@ fn html_unescape(s: &str) -> String {
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
+}
+
+// ============================================================================
+// Export Quality Improvement - Flat Export, Dedupe, Clean Empty
+// ============================================================================
+
+/// 浏览器根文件夹名称列表（用于扁平导出时移除）
+const BROWSER_ROOT_FOLDERS: &[&str] = &[
+    "waterfox", "brave", "brave nightly", "chrome", "safari", "edge", 
+    "firefox", "opera", "vivaldi", "arc", "chromium",
+    "书签栏", "bookmarks bar", "bookmark bar", "toolbar",
+    "其他书签", "other bookmarks", "other",
+    "移动设备书签", "mobile bookmarks",
+];
+
+/// 扁平导出配置
+#[derive(Debug, Clone, Default)]
+pub struct FlatExportConfig {
+    /// 是否移除浏览器根文件夹
+    pub flatten_root: bool,
+    /// 要移除的根文件夹名称列表（可选，默认使用内置列表）
+    pub root_folders_to_remove: Option<Vec<String>>,
+}
+
+/// 扁平导出统计
+#[derive(Debug, Clone, Default)]
+pub struct FlattenStats {
+    pub root_folders_removed: usize,
+    pub bookmarks_promoted: usize,
+}
+
+/// 扁平化书签结构，移除浏览器特定根文件夹
+/// 将 Waterfox/Brave/Chrome 等根文件夹的内容提升到顶层
+pub fn flatten_bookmarks(bookmarks: &[Bookmark], config: &FlatExportConfig) -> (Vec<Bookmark>, FlattenStats) {
+    let mut stats = FlattenStats::default();
+    
+    if !config.flatten_root {
+        return (bookmarks.to_vec(), stats);
+    }
+    
+    let root_folders: Vec<String> = config.root_folders_to_remove
+        .clone()
+        .unwrap_or_else(|| BROWSER_ROOT_FOLDERS.iter().map(|s| s.to_string()).collect());
+    
+    let mut result = Vec::new();
+    
+    for bookmark in bookmarks {
+        if bookmark.folder {
+            let title_lower = bookmark.title.to_lowercase();
+            // 检查是否是浏览器根文件夹
+            let is_browser_root = root_folders.iter().any(|rf| {
+                title_lower == rf.to_lowercase() || 
+                title_lower.contains(&rf.to_lowercase())
+            });
+            
+            if is_browser_root {
+                // 移除根文件夹，将其子内容提升到顶层
+                stats.root_folders_removed += 1;
+                stats.bookmarks_promoted += bookmark.children.len();
+                // 递归处理子内容
+                let (flattened_children, child_stats) = flatten_bookmarks(&bookmark.children, config);
+                stats.root_folders_removed += child_stats.root_folders_removed;
+                stats.bookmarks_promoted += child_stats.bookmarks_promoted;
+                result.extend(flattened_children);
+            } else {
+                // 保留文件夹，但递归处理其子内容
+                let (flattened_children, child_stats) = flatten_bookmarks(&bookmark.children, config);
+                stats.root_folders_removed += child_stats.root_folders_removed;
+                stats.bookmarks_promoted += child_stats.bookmarks_promoted;
+                let mut new_bookmark = bookmark.clone();
+                new_bookmark.children = flattened_children;
+                result.push(new_bookmark);
+            }
+        } else {
+            // 非文件夹直接保留
+            result.push(bookmark.clone());
+        }
+    }
+    
+    (result, stats)
+}
+
+/// 去重统计
+#[derive(Debug, Clone, Default)]
+pub struct DedupeStats {
+    pub total_before: usize,
+    pub duplicates_removed: usize,
+    pub total_after: usize,
+}
+
+/// 去除重复书签（基于 URL），保留第一个出现的
+pub fn deduplicate_bookmarks(bookmarks: &mut Vec<Bookmark>) -> DedupeStats {
+    let mut stats = DedupeStats::default();
+    let mut seen_urls: HashSet<String> = HashSet::new();
+    
+    fn count_bookmarks(bookmarks: &[Bookmark]) -> usize {
+        bookmarks.iter().map(|b| {
+            if b.folder { count_bookmarks(&b.children) } else { 1 }
+        }).sum()
+    }
+    
+    stats.total_before = count_bookmarks(bookmarks);
+    
+    fn dedupe_recursive(bookmarks: &mut Vec<Bookmark>, seen: &mut HashSet<String>) -> usize {
+        let mut removed = 0;
+        
+        // 先递归处理子文件夹
+        for bookmark in bookmarks.iter_mut() {
+            if bookmark.folder {
+                removed += dedupe_recursive(&mut bookmark.children, seen);
+            }
+        }
+        
+        // 然后处理当前层级
+        bookmarks.retain(|b| {
+            if b.folder {
+                true // 保留文件夹
+            } else if let Some(ref url) = b.url {
+                let normalized = normalize_url_for_dedupe(url);
+                if seen.contains(&normalized) {
+                    removed += 1;
+                    false // 移除重复
+                } else {
+                    seen.insert(normalized);
+                    true
+                }
+            } else {
+                true // 保留无 URL 的书签
+            }
+        });
+        
+        removed
+    }
+    
+    stats.duplicates_removed = dedupe_recursive(bookmarks, &mut seen_urls);
+    stats.total_after = count_bookmarks(bookmarks);
+    stats
+}
+
+/// 标准化 URL 用于去重比较
+fn normalize_url_for_dedupe(url: &str) -> String {
+    let mut normalized = url.trim().to_lowercase();
+    // 移除尾部斜杠
+    while normalized.ends_with('/') {
+        normalized.pop();
+    }
+    // 移除 fragment
+    if let Some(pos) = normalized.find('#') {
+        normalized.truncate(pos);
+    }
+    // 移除 www. 前缀
+    normalized = normalized.replace("://www.", "://");
+    normalized
+}
+
+/// 清理统计
+#[derive(Debug, Clone, Default)]
+pub struct CleanStats {
+    pub empty_folders_removed: usize,
+}
+
+/// 递归移除空文件夹
+pub fn clean_empty_folders(bookmarks: &mut Vec<Bookmark>) -> CleanStats {
+    let mut stats = CleanStats::default();
+    
+    fn clean_recursive(bookmarks: &mut Vec<Bookmark>) -> usize {
+        let mut removed = 0;
+        
+        // 先递归处理子文件夹
+        for bookmark in bookmarks.iter_mut() {
+            if bookmark.folder {
+                removed += clean_recursive(&mut bookmark.children);
+            }
+        }
+        
+        // 然后移除空文件夹
+        let before_len = bookmarks.len();
+        bookmarks.retain(|b| {
+            if b.folder && b.children.is_empty() {
+                false // 移除空文件夹
+            } else {
+                true
+            }
+        });
+        removed += before_len - bookmarks.len();
+        
+        removed
+    }
+    
+    stats.empty_folders_removed = clean_recursive(bookmarks);
+    stats
+}
+
+/// 更新统计
+#[derive(Debug, Clone, Default)]
+pub struct UpdateStats {
+    pub new_added: usize,
+    pub skipped_duplicates: usize,
+}
+
+/// 将新书签合并到现有书签（增量更新）
+pub fn merge_bookmarks_incremental(
+    existing: &mut Vec<Bookmark>,
+    new_bookmarks: &[Bookmark],
+) -> UpdateStats {
+    let mut stats = UpdateStats::default();
+    
+    // 收集现有的所有 URL
+    fn collect_urls(bookmarks: &[Bookmark], urls: &mut HashSet<String>) {
+        for b in bookmarks {
+            if b.folder {
+                collect_urls(&b.children, urls);
+            } else if let Some(ref url) = b.url {
+                urls.insert(normalize_url_for_dedupe(url));
+            }
+        }
+    }
+    
+    let mut existing_urls = HashSet::new();
+    collect_urls(existing, &mut existing_urls);
+    
+    // 添加新书签（跳过已存在的）
+    fn add_new_bookmarks(
+        target: &mut Vec<Bookmark>,
+        source: &[Bookmark],
+        existing_urls: &HashSet<String>,
+        stats: &mut UpdateStats,
+    ) {
+        for bookmark in source {
+            if bookmark.folder {
+                // 查找或创建同名文件夹
+                let existing_folder = target.iter_mut().find(|b| {
+                    b.folder && b.title.to_lowercase() == bookmark.title.to_lowercase()
+                });
+                
+                if let Some(folder) = existing_folder {
+                    // 递归合并到现有文件夹
+                    add_new_bookmarks(&mut folder.children, &bookmark.children, existing_urls, stats);
+                } else {
+                    // 创建新文件夹并添加内容
+                    let mut new_folder = bookmark.clone();
+                    new_folder.children = Vec::new();
+                    add_new_bookmarks(&mut new_folder.children, &bookmark.children, existing_urls, stats);
+                    if !new_folder.children.is_empty() || bookmark.children.is_empty() {
+                        target.push(new_folder);
+                    }
+                }
+            } else if let Some(ref url) = bookmark.url {
+                let normalized = normalize_url_for_dedupe(url);
+                if existing_urls.contains(&normalized) {
+                    stats.skipped_duplicates += 1;
+                } else {
+                    target.push(bookmark.clone());
+                    stats.new_added += 1;
+                }
+            }
+        }
+    }
+    
+    add_new_bookmarks(existing, new_bookmarks, &existing_urls, &mut stats);
+    stats
+}
+
+/// 带扁平导出选项的 HTML 导出
+pub fn export_bookmarks_to_html_flat(
+    bookmarks: &[Bookmark],
+    output_path: &str,
+    flat_config: Option<&FlatExportConfig>,
+    dedupe: bool,
+    clean_empty: bool,
+) -> Result<(usize, FlattenStats, DedupeStats, CleanStats)> {
+    let mut working_bookmarks = bookmarks.to_vec();
+    let mut flatten_stats = FlattenStats::default();
+    let mut dedupe_stats = DedupeStats::default();
+    let mut clean_stats = CleanStats::default();
+    
+    // 1. 扁平化（如果配置了）
+    if let Some(config) = flat_config {
+        let (flattened, stats) = flatten_bookmarks(&working_bookmarks, config);
+        working_bookmarks = flattened;
+        flatten_stats = stats;
+        if flatten_stats.root_folders_removed > 0 {
+            info!("📦 扁平化: 移除 {} 个浏览器根文件夹，提升 {} 个项目", 
+                flatten_stats.root_folders_removed, flatten_stats.bookmarks_promoted);
+        }
+    }
+    
+    // 2. 去重（如果启用）
+    if dedupe {
+        dedupe_stats = deduplicate_bookmarks(&mut working_bookmarks);
+        if dedupe_stats.duplicates_removed > 0 {
+            info!("🔄 去重: 移除 {} 个重复书签 ({} → {})", 
+                dedupe_stats.duplicates_removed, dedupe_stats.total_before, dedupe_stats.total_after);
+        }
+    }
+    
+    // 3. 清理空文件夹（如果启用）
+    if clean_empty {
+        clean_stats = clean_empty_folders(&mut working_bookmarks);
+        if clean_stats.empty_folders_removed > 0 {
+            info!("🧹 清理: 移除 {} 个空文件夹", clean_stats.empty_folders_removed);
+        }
+    }
+    
+    // 4. 导出
+    export_bookmarks_to_html(&working_bookmarks, output_path)?;
+    
+    // 计算最终书签数
+    fn count_final(bookmarks: &[Bookmark]) -> usize {
+        bookmarks.iter().map(|b| {
+            if b.folder { count_final(&b.children) } else { 1 }
+        }).sum()
+    }
+    let final_count = count_final(&working_bookmarks);
+    
+    Ok((final_count, flatten_stats, dedupe_stats, clean_stats))
 }
