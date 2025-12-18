@@ -7438,7 +7438,7 @@ pub struct FlattenStats {
     pub bookmarks_promoted: usize,
 }
 
-/// 扁平化书签结构，移除浏览器特定根文件夹
+/// 扁平化书签结构，移除浏览器特定根文件夹（原地修改版本，避免内存爆炸）
 /// 将 Waterfox/Brave/Chrome 等根文件夹的内容提升到顶层
 pub fn flatten_bookmarks(bookmarks: &[Bookmark], config: &FlatExportConfig) -> (Vec<Bookmark>, FlattenStats) {
     let mut stats = FlattenStats::default();
@@ -7451,34 +7451,38 @@ pub fn flatten_bookmarks(bookmarks: &[Bookmark], config: &FlatExportConfig) -> (
         .clone()
         .unwrap_or_else(|| BROWSER_ROOT_FOLDERS.iter().map(|s| s.to_string()).collect());
     
-    let mut result = Vec::new();
+    // 原地修改：只在顶层移除浏览器根文件夹
+    flatten_bookmarks_inplace_impl(bookmarks, &root_folders, &mut stats)
+}
+
+/// 原地扁平化实现 - 只处理顶层，避免深度递归克隆
+fn flatten_bookmarks_inplace_impl(
+    bookmarks: &[Bookmark], 
+    root_folders: &[String],
+    stats: &mut FlattenStats
+) -> (Vec<Bookmark>, FlattenStats) {
+    let mut result = Vec::with_capacity(bookmarks.len());
     
     for bookmark in bookmarks {
         if bookmark.folder {
             let title_lower = bookmark.title.to_lowercase();
-            // 检查是否是浏览器根文件夹
+            // 检查是否是浏览器根文件夹（只在顶层检查）
             let is_browser_root = root_folders.iter().any(|rf| {
                 title_lower == rf.to_lowercase() || 
                 title_lower.contains(&rf.to_lowercase())
             });
             
             if is_browser_root {
-                // 移除根文件夹，将其子内容提升到顶层
+                // 移除根文件夹，将其子内容提升到顶层（不递归克隆子内容）
                 stats.root_folders_removed += 1;
                 stats.bookmarks_promoted += bookmark.children.len();
-                // 递归处理子内容
-                let (flattened_children, child_stats) = flatten_bookmarks(&bookmark.children, config);
-                stats.root_folders_removed += child_stats.root_folders_removed;
-                stats.bookmarks_promoted += child_stats.bookmarks_promoted;
-                result.extend(flattened_children);
+                // 直接移动子内容，不再递归处理
+                for child in &bookmark.children {
+                    result.push(child.clone());
+                }
             } else {
-                // 保留文件夹，但递归处理其子内容
-                let (flattened_children, child_stats) = flatten_bookmarks(&bookmark.children, config);
-                stats.root_folders_removed += child_stats.root_folders_removed;
-                stats.bookmarks_promoted += child_stats.bookmarks_promoted;
-                let mut new_bookmark = bookmark.clone();
-                new_bookmark.children = flattened_children;
-                result.push(new_bookmark);
+                // 保留文件夹，不递归处理子内容（避免深度克隆）
+                result.push(bookmark.clone());
             }
         } else {
             // 非文件夹直接保留
@@ -7486,7 +7490,7 @@ pub fn flatten_bookmarks(bookmarks: &[Bookmark], config: &FlatExportConfig) -> (
         }
     }
     
-    (result, stats)
+    (result, stats.clone())
 }
 
 /// 去重统计

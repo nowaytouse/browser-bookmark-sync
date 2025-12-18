@@ -209,8 +209,8 @@ enum Commands {
         #[arg(short, long, default_value = "10")]
         timeout: u64,
 
-        /// Number of concurrent requests
-        #[arg(short, long, default_value = "10")]
+        /// Number of concurrent requests (max 5 to prevent system overload)
+        #[arg(short, long, default_value = "5")]
         concurrency: usize,
 
         /// Delete confirmed invalid bookmarks
@@ -229,8 +229,8 @@ enum Commands {
         #[arg(short, long, default_value = "all")]
         browsers: String,
 
-        /// Limit number of URLs to check (0 = no limit)
-        #[arg(short, long, default_value = "0")]
+        /// Limit number of URLs to check (default: 100, 0 = no limit - USE WITH CAUTION!)
+        #[arg(short, long, default_value = "100")]
         limit: usize,
 
         /// Export invalid bookmarks to HTML file before deletion
@@ -679,14 +679,26 @@ async fn main() -> Result<()> {
                 info!("代理: 未配置 (仅直连模式)");
             }
             info!("超时: {}秒", timeout);
-            info!("并发: {}", concurrency);
+            
+            // 安全限制：并发数最大 10，防止系统过载
+            let safe_concurrency = concurrency.min(10);
+            if concurrency > 10 {
+                warn!("⚠️  并发数已限制为 10（原请求: {}）", concurrency);
+            }
+            info!("并发: {}", safe_concurrency);
+            
+            // 安全警告：无限制检查
+            if limit == 0 {
+                warn!("⚠️  警告: 无限制检查模式！大量书签可能导致系统过载");
+                warn!("   建议使用 --limit 100 限制检查数量");
+            }
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
             // 创建检查器
             let config = CheckerConfig {
                 proxy_url: proxy.clone(),
                 timeout_secs: timeout,
-                concurrency,
+                concurrency: safe_concurrency,
                 retry_count: 1,
             };
             
