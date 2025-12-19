@@ -937,8 +937,9 @@ async fn main() -> Result<()> {
                         valid_bookmarks.extend(extracted);
                     }
                     let path = format!("{}/valid.html", dir_path);
+                    let actual_count: usize = valid_bookmarks.iter().map(count_tree).sum();
                     match sync::export_bookmarks_to_html(&valid_bookmarks, &path) {
-                        Ok(_) => info!("  ✅ valid.html: {} 个有效书签 (保持文件夹结构)", valid_bookmarks.len()),
+                        Ok(_) => info!("  ✅ valid.html: {} 个有效书签 (保持文件夹结构)", actual_count),
                         Err(e) => error!("  ❌ valid.html 导出失败: {}", e),
                     }
                 }
@@ -951,8 +952,9 @@ async fn main() -> Result<()> {
                         invalid_bookmarks.extend(extracted);
                     }
                     let path = format!("{}/invalid.html", dir_path);
+                    let actual_count: usize = invalid_bookmarks.iter().map(count_tree).sum();
                     match sync::export_bookmarks_to_html(&invalid_bookmarks, &path) {
-                        Ok(_) => info!("  ❌ invalid.html: {} 个无效书签 (保持文件夹结构)", invalid_bookmarks.len()),
+                        Ok(_) => info!("  ❌ invalid.html: {} 个无效书签 (保持文件夹结构)", actual_count),
                         Err(e) => error!("  ❌ invalid.html 导出失败: {}", e),
                     }
                 }
@@ -965,8 +967,9 @@ async fn main() -> Result<()> {
                         uncertain_bookmarks.extend(extracted);
                     }
                     let path = format!("{}/uncertain.html", dir_path);
+                    let actual_count: usize = uncertain_bookmarks.iter().map(count_tree).sum();
                     match sync::export_bookmarks_to_html(&uncertain_bookmarks, &path) {
-                        Ok(_) => info!("  ❓ uncertain.html: {} 个不确定书签 (保持文件夹结构)", uncertain_bookmarks.len()),
+                        Ok(_) => info!("  ❓ uncertain.html: {} 个不确定书签 (保持文件夹结构)", actual_count),
                         Err(e) => error!("  ❌ uncertain.html 导出失败: {}", e),
                     }
                 }
@@ -979,8 +982,9 @@ async fn main() -> Result<()> {
                         skipped_bookmarks.extend(extracted);
                     }
                     let path = format!("{}/skipped.html", dir_path);
+                    let actual_count: usize = skipped_bookmarks.iter().map(count_tree).sum();
                     match sync::export_bookmarks_to_html(&skipped_bookmarks, &path) {
-                        Ok(_) => info!("  ⏭️  skipped.html: {} 个跳过书签 (保持文件夹结构)", skipped_bookmarks.len()),
+                        Ok(_) => info!("  ⏭️  skipped.html: {} 个跳过书签 (保持文件夹结构)", actual_count),
                         Err(e) => error!("  ❌ skipped.html 导出失败: {}", e),
                     }
                 }
