@@ -36,6 +36,10 @@ pub struct ExportConfig {
     pub folder_filter: Option<String>,
     /// Flatten export: remove browser root folders to prevent nested imports
     pub flat: bool,
+    /// Custom wrap folder name (default: "📁镜像文件夹")
+    pub wrap_folder: Option<String>,
+    /// Disable wrapping (default: false, wrapping is enabled by default)
+    pub no_wrap: bool,
 }
 
 /// Location information for a bookmark in the tree
@@ -5390,10 +5394,22 @@ impl SyncEngine {
         // 跳过的系统文件夹（不收集其中的书签，但也不递归）
         let skip_folders = ["com.apple.ReadingList", "阅读列表", "History"];
 
+        // 临时文件夹名称（需要抽离整理的）
+        let temp_folders = ["👀临时", "👀 临时", "临时", "temp", "temporary"];
+
         // First pass: recursively process children
         for bookmark in bookmarks.iter_mut() {
             if bookmark.folder {
-                if bookmark.title == "未分类" {
+                let title_lower = bookmark.title.to_lowercase();
+                let is_temp_folder = temp_folders.iter().any(|tf| {
+                    title_lower == tf.to_lowercase() || title_lower.contains(&tf.to_lowercase())
+                });
+                
+                if is_temp_folder {
+                    // 特殊处理：收集临时文件夹中的所有书签进行分类整理
+                    info!("  📦 从临时文件夹 '{}' 抽取书签进行整理", bookmark.title);
+                    Self::collect_from_temp_folder(&mut bookmark.children, collected);
+                } else if bookmark.title == "未分类" {
                     // 特殊处理：收集"未分类"文件夹中的所有书签进行重新分类
                     Self::collect_from_unclassified(&mut bookmark.children, collected);
                 } else if skip_folders.contains(&bookmark.title.as_str()) {
@@ -5440,6 +5456,42 @@ impl SyncEngine {
         // Remove collected bookmarks from "未分类" folder
         for &i in indices_to_remove.iter().rev() {
             bookmarks.remove(i);
+        }
+    }
+
+    /// Collect all bookmarks from temp folder (👀临时) for organization
+    /// 从临时文件夹抽取书签进行整理，分类后从临时文件夹移除
+    fn collect_from_temp_folder(bookmarks: &mut Vec<Bookmark>, collected: &mut Vec<Bookmark>) {
+        let mut indices_to_remove = Vec::new();
+
+        for (i, bookmark) in bookmarks.iter().enumerate() {
+            if bookmark.folder {
+                // 递归处理子文件夹
+                let mut sub_collected = Vec::new();
+                Self::collect_from_temp_folder_recursive(&bookmark.children, &mut sub_collected);
+                collected.extend(sub_collected);
+                // 标记整个子文件夹待移除（如果里面的书签都被抽走了）
+                indices_to_remove.push(i);
+            } else {
+                collected.push(bookmark.clone());
+                indices_to_remove.push(i);
+            }
+        }
+
+        // Remove collected items from temp folder
+        for &i in indices_to_remove.iter().rev() {
+            bookmarks.remove(i);
+        }
+    }
+
+    /// Recursively collect bookmarks from temp folder (read-only, for nested folders)
+    fn collect_from_temp_folder_recursive(bookmarks: &[Bookmark], collected: &mut Vec<Bookmark>) {
+        for bookmark in bookmarks {
+            if bookmark.folder {
+                Self::collect_from_temp_folder_recursive(&bookmark.children, collected);
+            } else {
+                collected.push(bookmark.clone());
+            }
         }
     }
 
@@ -5494,6 +5546,21 @@ impl SyncEngine {
         };
 
         info!("📖 Loaded {} bookmarks from file", Self::count_all_bookmarks(&bookmarks));
+
+        // Flatten: remove browser root folders (Brave, Brave Nightly, Waterfox, etc.)
+        info!("📦 Flattening: removing browser root folders...");
+        let flat_config = FlatExportConfig {
+            flatten_root: true,
+            root_folders_to_remove: None,
+        };
+        let (flattened, flatten_stats) = flatten_bookmarks(&bookmarks, &flat_config);
+        bookmarks = flattened;
+        if flatten_stats.root_folders_removed > 0 {
+            info!(
+                "  ✅ Removed {} browser root folders, promoted {} items",
+                flatten_stats.root_folders_removed, flatten_stats.bookmarks_promoted
+            );
+        }
 
         let mut stats = ClassificationStats::default();
 
@@ -5615,6 +5682,43 @@ impl SyncEngine {
                 classified.len()
             );
         } else {
+            // Wrap all bookmarks in 📁镜像文件夹 + merge temp folders
+            info!("📦 Wrapping all bookmarks in root folder: \"📁镜像文件夹\"");
+            
+            // Extract and MERGE all protected folders (👀临时) into one
+            let mut merged_temp_children: Vec<Bookmark> = Vec::new();
+            bookmarks.retain(|b| {
+                if b.folder && PROTECTED_FOLDERS.iter().any(|p| b.title.to_lowercase().contains(&p.to_lowercase())) {
+                    merged_temp_children.extend(b.children.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            
+            let wrapped = Bookmark {
+                id: "wrap-mirror-folder".to_string(),
+                title: "📁镜像文件夹".to_string(),
+                url: None,
+                folder: true,
+                children: bookmarks,
+                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                date_modified: None,
+            };
+            
+            let temp_folder = Bookmark {
+                id: "temp-folder".to_string(),
+                title: "👀临时".to_string(),
+                url: None,
+                folder: true,
+                children: merged_temp_children,
+                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                date_modified: None,
+            };
+            
+            bookmarks = vec![wrapped, temp_folder];
+            info!("  ✅ Merged all temp folders into single 👀临时");
+
             // Write output file
             let output_content = if output_file.ends_with(".json") {
                 serde_json::to_string_pretty(&bookmarks)?
@@ -6974,6 +7078,54 @@ impl SyncEngine {
             }
         }
 
+        // Wrap all bookmarks in a single root folder (default behavior)
+        // Use wrap_folder name or default "📁镜像文件夹"
+        let wrap_name = config.wrap_folder.clone().unwrap_or_else(|| "📁镜像文件夹".to_string());
+        
+        if !config.no_wrap {
+            info!("📦 Wrapping all bookmarks in root folder: \"{}\"", wrap_name);
+            
+            // Extract and MERGE all protected folders (👀临时) into one
+            let mut merged_temp_children: Vec<Bookmark> = Vec::new();
+            all_bookmarks.retain(|b| {
+                if b.folder && PROTECTED_FOLDERS.iter().any(|p| b.title.to_lowercase().contains(&p.to_lowercase())) {
+                    // Merge children into single temp folder
+                    merged_temp_children.extend(b.children.clone());
+                    false // Remove from all_bookmarks
+                } else {
+                    true // Keep in all_bookmarks
+                }
+            });
+            
+            let wrapped = Bookmark {
+                id: format!("wrap-{}", wrap_name.to_lowercase().replace(' ', "-")),
+                title: wrap_name,
+                url: None,
+                folder: true,
+                children: all_bookmarks,
+                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                date_modified: None,
+            };
+            
+            // Create single merged temp folder at top level
+            let temp_folder = Bookmark {
+                id: "temp-folder".to_string(),
+                title: "👀临时".to_string(),
+                url: None,
+                folder: true,
+                children: merged_temp_children,
+                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                date_modified: None,
+            };
+            
+            // Top level: wrap folder + single merged temp folder
+            all_bookmarks = vec![wrapped, temp_folder];
+            info!("  ✅ Merged all temp folders into single 👀临时");
+        } else {
+            // No wrap - just ensure protected folders exist
+            ensure_protected_folders(&mut all_bookmarks);
+        }
+
         let final_count = Self::count_all_bookmarks(&all_bookmarks);
 
         // Export to HTML
@@ -7335,35 +7487,121 @@ pub fn import_bookmarks_from_html(html_path: &str) -> Result<Vec<Bookmark>> {
 }
 
 fn parse_html_bookmarks(html: &str) -> Result<Vec<Bookmark>> {
-    let mut bookmarks = Vec::new();
+    // 使用栈来追踪文件夹层级，保留完整的文件夹结构
+    let mut root_bookmarks: Vec<Bookmark> = Vec::new();
+    let mut folder_stack: Vec<Bookmark> = Vec::new();
     let mut id_counter = 0u64;
-
-    // Simple flat parsing - just extract all bookmarks
-    for line in html.lines() {
-        let trimmed = line.trim();
-
-        // Parse bookmark links
-        if (trimmed.contains("<DT><A") || trimmed.contains("<dt><a"))
+    let mut bookmark_count = 0usize;
+    let mut folder_count = 0usize;
+    
+    // 预处理：将多行合并，处理跨行的标签
+    let lines: Vec<&str> = html.lines().collect();
+    let mut i = 0;
+    
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        
+        // 检测文件夹开始: <DT><H3...>FolderName</H3>
+        if (trimmed.contains("<DT><H3") || trimmed.contains("<dt><h3")) {
+            if let Some(folder_title) = extract_folder_title(trimmed) {
+                id_counter += 1;
+                folder_count += 1;
+                let add_date = extract_add_date(trimmed);
+                let folder = Bookmark {
+                    id: format!("folder-{}", id_counter),
+                    title: folder_title,
+                    url: None,
+                    folder: true,
+                    children: Vec::new(),
+                    date_added: add_date,
+                    date_modified: None,
+                };
+                folder_stack.push(folder);
+            }
+        }
+        // 检测文件夹内容结束: </DL>
+        else if trimmed.to_lowercase().starts_with("</dl>") {
+            if let Some(completed_folder) = folder_stack.pop() {
+                // 将完成的文件夹添加到父级或根级
+                if let Some(parent) = folder_stack.last_mut() {
+                    parent.children.push(completed_folder);
+                } else {
+                    root_bookmarks.push(completed_folder);
+                }
+            }
+        }
+        // 检测书签: <DT><A HREF="...">Title</A>
+        else if (trimmed.contains("<DT><A") || trimmed.contains("<dt><a"))
             && (trimmed.contains("HREF=") || trimmed.contains("href="))
         {
             if let Some((url, title)) = extract_bookmark_info(trimmed) {
                 id_counter += 1;
+                bookmark_count += 1;
+                let add_date = extract_add_date(trimmed);
                 let bookmark = Bookmark {
                     id: format!("imported-{}", id_counter),
                     title,
                     url: Some(url),
                     folder: false,
                     children: Vec::new(),
-                    date_added: Some(chrono::Utc::now().timestamp_millis()),
+                    date_added: add_date,
                     date_modified: None,
                 };
-                bookmarks.push(bookmark);
+                // 添加到当前文件夹或根级
+                if let Some(current_folder) = folder_stack.last_mut() {
+                    current_folder.children.push(bookmark);
+                } else {
+                    root_bookmarks.push(bookmark);
+                }
             }
+        }
+        
+        i += 1;
+    }
+    
+    // 处理未闭合的文件夹（容错）
+    while let Some(unclosed_folder) = folder_stack.pop() {
+        warn!("⚠️  未闭合的文件夹: {}", unclosed_folder.title);
+        if let Some(parent) = folder_stack.last_mut() {
+            parent.children.push(unclosed_folder);
+        } else {
+            root_bookmarks.push(unclosed_folder);
         }
     }
 
-    info!("📖 HTML解析完成: {} 书签", bookmarks.len());
-    Ok(bookmarks)
+    info!("📖 HTML解析完成: {} 书签, {} 文件夹 (保留结构)", bookmark_count, folder_count);
+    Ok(root_bookmarks)
+}
+
+/// 从H3标签提取文件夹标题
+fn extract_folder_title(line: &str) -> Option<String> {
+    // 查找 <H3...> 和 </H3> 之间的内容
+    let line_lower = line.to_lowercase();
+    let h3_start = line_lower.find("<h3")?;
+    let content_start = line[h3_start..].find('>')? + h3_start + 1;
+    let h3_end = line_lower.find("</h3>")?;
+    
+    if content_start < h3_end {
+        let title = html_unescape(&line[content_start..h3_end]);
+        Some(title.trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// 从标签提取ADD_DATE属性
+fn extract_add_date(line: &str) -> Option<i64> {
+    let line_lower = line.to_lowercase();
+    if let Some(pos) = line_lower.find("add_date=\"") {
+        let start = pos + 10;
+        if let Some(end_offset) = line[start..].find('"') {
+            if let Ok(timestamp) = line[start..start + end_offset].parse::<i64>() {
+                // HTML格式是秒，转换为毫秒
+                return Some(timestamp * 1000);
+            }
+        }
+    }
+    Some(chrono::Utc::now().timestamp_millis())
 }
 
 fn extract_tag_content(line: &str, tag: &str) -> Option<String> {
@@ -7420,6 +7658,12 @@ const BROWSER_ROOT_FOLDERS: &[&str] = &[
     "书签栏", "bookmarks bar", "bookmark bar", "toolbar",
     "其他书签", "other bookmarks", "other",
     "移动设备书签", "mobile bookmarks",
+    "imported", // 浏览器导入时自动创建的文件夹
+];
+
+/// 受保护的文件夹名称（即使为空也保留）
+const PROTECTED_FOLDERS: &[&str] = &[
+    "👀临时", "👀 临时", "临时", "temp", "temporary",
 ];
 
 /// 扁平导出配置
@@ -7455,7 +7699,7 @@ pub fn flatten_bookmarks(bookmarks: &[Bookmark], config: &FlatExportConfig) -> (
     flatten_bookmarks_inplace_impl(bookmarks, &root_folders, &mut stats)
 }
 
-/// 原地扁平化实现 - 只处理顶层，避免深度递归克隆
+/// 递归扁平化实现 - 处理所有层级的浏览器根文件夹
 fn flatten_bookmarks_inplace_impl(
     bookmarks: &[Bookmark], 
     root_folders: &[String],
@@ -7466,23 +7710,26 @@ fn flatten_bookmarks_inplace_impl(
     for bookmark in bookmarks {
         if bookmark.folder {
             let title_lower = bookmark.title.to_lowercase();
-            // 检查是否是浏览器根文件夹（只在顶层检查）
+            // 检查是否是浏览器根文件夹
             let is_browser_root = root_folders.iter().any(|rf| {
-                title_lower == rf.to_lowercase() || 
-                title_lower.contains(&rf.to_lowercase())
+                let rf_lower = rf.to_lowercase();
+                title_lower == rf_lower || 
+                title_lower.contains(&rf_lower)
             });
             
             if is_browser_root {
-                // 移除根文件夹，将其子内容提升到顶层（不递归克隆子内容）
+                // 移除根文件夹，将其子内容提升（递归处理子内容中的浏览器文件夹）
                 stats.root_folders_removed += 1;
                 stats.bookmarks_promoted += bookmark.children.len();
-                // 直接移动子内容，不再递归处理
-                for child in &bookmark.children {
-                    result.push(child.clone());
-                }
+                // 递归处理子内容，继续移除嵌套的浏览器根文件夹
+                let (flattened_children, _) = flatten_bookmarks_inplace_impl(&bookmark.children, root_folders, stats);
+                result.extend(flattened_children);
             } else {
-                // 保留文件夹，不递归处理子内容（避免深度克隆）
-                result.push(bookmark.clone());
+                // 保留文件夹，但递归处理其子内容
+                let mut new_bookmark = bookmark.clone();
+                let (flattened_children, _) = flatten_bookmarks_inplace_impl(&bookmark.children, root_folders, stats);
+                new_bookmark.children = flattened_children;
+                result.push(new_bookmark);
             }
         } else {
             // 非文件夹直接保留
@@ -7572,7 +7819,16 @@ pub struct CleanStats {
     pub empty_folders_removed: usize,
 }
 
-/// 递归移除空文件夹
+/// 检查文件夹是否受保护（即使为空也保留）
+fn is_protected_folder(title: &str) -> bool {
+    let title_lower = title.to_lowercase();
+    PROTECTED_FOLDERS.iter().any(|pf| {
+        let pf_lower = pf.to_lowercase();
+        title_lower == pf_lower || title_lower.contains(&pf_lower)
+    })
+}
+
+/// 递归移除空文件夹（保护特定文件夹）
 pub fn clean_empty_folders(bookmarks: &mut Vec<Bookmark>) -> CleanStats {
     let mut stats = CleanStats::default();
     
@@ -7586,11 +7842,16 @@ pub fn clean_empty_folders(bookmarks: &mut Vec<Bookmark>) -> CleanStats {
             }
         }
         
-        // 然后移除空文件夹
+        // 然后移除空文件夹（但保护特定文件夹）
         let before_len = bookmarks.len();
         bookmarks.retain(|b| {
             if b.folder && b.children.is_empty() {
-                false // 移除空文件夹
+                // 检查是否是受保护的文件夹
+                if is_protected_folder(&b.title) {
+                    true // 保留受保护的空文件夹
+                } else {
+                    false // 移除普通空文件夹
+                }
             } else {
                 true
             }
@@ -7602,6 +7863,29 @@ pub fn clean_empty_folders(bookmarks: &mut Vec<Bookmark>) -> CleanStats {
     
     stats.empty_folders_removed = clean_recursive(bookmarks);
     stats
+}
+
+/// 确保受保护的文件夹存在（如 👀临时）
+pub fn ensure_protected_folders(bookmarks: &mut Vec<Bookmark>) {
+    // 检查 👀临时 文件夹是否存在
+    let temp_folder_exists = bookmarks.iter().any(|b| {
+        b.folder && is_protected_folder(&b.title)
+    });
+    
+    if !temp_folder_exists {
+        // 添加 👀临时 文件夹到顶层
+        let temp_folder = Bookmark {
+            id: "protected-temp-folder".to_string(),
+            title: "👀临时".to_string(),
+            url: None,
+            folder: true,
+            children: vec![],
+            date_added: Some(chrono::Utc::now().timestamp_millis()),
+            date_modified: None,
+        };
+        bookmarks.push(temp_folder);
+        info!("  ✅ Added protected folder: 👀临时");
+    }
 }
 
 /// 更新统计

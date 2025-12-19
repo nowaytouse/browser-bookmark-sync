@@ -423,10 +423,14 @@ impl UrlChecker {
     /// 创建新的URL检查器
     pub fn new(config: CheckerConfig) -> Result<Self> {
         let timeout = Duration::from_secs(config.timeout_secs);
+        let connect_timeout = Duration::from_secs(10); // 连接超时固定10秒
         
         // 创建直连客户端
         let direct_client = Client::builder()
             .timeout(timeout)
+            .connect_timeout(connect_timeout)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(10)
             .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()?;
@@ -437,6 +441,9 @@ impl UrlChecker {
             let proxy = reqwest::Proxy::all(proxy_url)?;
             Some(Client::builder()
                 .timeout(timeout)
+                .connect_timeout(connect_timeout)
+                .pool_idle_timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(10)
                 .proxy(proxy)
                 .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
                 .redirect(reqwest::redirect::Policy::limited(5))

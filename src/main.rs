@@ -121,6 +121,14 @@ enum Commands {
         #[arg(long, default_value = "true")]
         flat: bool,
 
+        /// Custom wrap folder name (default: "📁镜像文件夹")
+        #[arg(short = 'w', long)]
+        wrap: Option<String>,
+
+        /// Disable wrapping all bookmarks in root folder (default: wrapping is ON)
+        #[arg(long)]
+        no_wrap: bool,
+
         /// Update existing HTML file with new bookmarks (incremental export)
         /// Skips bookmarks that already exist in the target file
         #[arg(short = 'u', long)]
@@ -201,6 +209,14 @@ enum Commands {
     /// Check bookmark URL validity (dual-network validation)
     #[command(alias = "c", alias = "chk")]
     Check {
+        /// Input bookmark file (HTML) - check from exported file instead of browser
+        #[arg(short, long)]
+        file: Option<String>,
+
+        /// Output file path (required when using --file, saves valid bookmarks)
+        #[arg(short, long)]
+        output: Option<String>,
+
         /// Proxy server URL (e.g., http://127.0.0.1:7890)
         #[arg(short, long)]
         proxy: Option<String>,
@@ -225,12 +241,12 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
 
-        /// Target browsers (comma-separated, or 'all')
+        /// Target browsers (comma-separated, or 'all') - ignored if --file is specified
         #[arg(short, long, default_value = "all")]
         browsers: String,
 
         /// Limit number of URLs to check (default: 100, 0 = no limit - USE WITH CAUTION!)
-        #[arg(short, long, default_value = "100")]
+        #[arg(short = 'L', long, default_value = "100")]
         limit: usize,
 
         /// Export invalid bookmarks to HTML file before deletion
@@ -330,6 +346,8 @@ async fn main() -> Result<()> {
             verbose,
             folder,
             flat,
+            wrap,
+            no_wrap,
             update,
         } => {
             // Create sync flags from arguments
@@ -500,6 +518,8 @@ async fn main() -> Result<()> {
                 verbose,
                 folder_filter: folder.clone(),
                 flat,
+                wrap_folder: wrap.clone(),
+                no_wrap,
             };
 
             // Show folder filter info
@@ -511,6 +531,12 @@ async fn main() -> Result<()> {
             // Show flat export info
             if flat {
                 info!("📦 Flat export: browser root folders will be removed");
+            }
+            
+            // Show wrap folder info
+            if !no_wrap {
+                let wrap_name = wrap.as_deref().unwrap_or("📁镜像文件夹");
+                info!("📦 Wrap folder: all bookmarks will be inside \"{}\"", wrap_name);
             }
             
             // Show update info
@@ -650,6 +676,8 @@ async fn main() -> Result<()> {
         }
 
         Commands::Check {
+            file,
+            output,
             proxy,
             timeout,
             concurrency,
@@ -671,8 +699,17 @@ async fn main() -> Result<()> {
             use std::collections::HashSet;
             use indicatif::{ProgressBar, ProgressStyle};
 
+            // 从文件模式
+            let from_file = file.is_some();
+            
             info!("🔍 检查收藏夹URL有效性");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            if from_file {
+                info!("输入文件: {}", file.as_ref().unwrap());
+                if let Some(ref out) = output {
+                    info!("输出文件: {}", out);
+                }
+            }
             if let Some(ref p) = proxy {
                 info!("代理: {}", p);
             } else {
@@ -710,45 +747,62 @@ async fn main() -> Result<()> {
                 }
             };
 
-            // 读取收藏夹
-            let _engine = SyncEngine::new()?; // 用于验证浏览器检测
-            let browser_list: Vec<String> = browsers.split(',')
-                .map(|s| s.trim().to_lowercase().replace('-', " ")) // 支持 brave-nightly 格式
-                .collect();
-            
-            let mut all_bookmarks = Vec::new();
+            // 读取收藏夹 - 支持从文件或浏览器读取
+            let mut all_bookmarks: Vec<(crate::browsers::BrowserType, Vec<crate::browsers::Bookmark>)> = Vec::new();
             let mut all_urls = Vec::new();
+            let mut file_bookmarks: Option<Vec<crate::browsers::Bookmark>> = None;
             
-            // 精确匹配浏览器名称的辅助函数
-            let matches_browser = |name: &str, filter: &str| -> bool {
-                let name_lower = name.to_lowercase();
-                let name_normalized = name_lower.replace('-', " ");
-                let filter_lower = filter.to_lowercase();
+            if let Some(ref input_file) = file {
+                // 从文件读取
+                let expanded = expand_path(input_file);
+                info!("📖 从文件读取: {}", expanded);
+                match sync::import_bookmarks_from_html(&expanded) {
+                    Ok(bookmarks) => {
+                        let urls = collect_urls_from_bookmarks(&bookmarks);
+                        let bookmark_count: usize = bookmarks.iter().map(count_tree).sum();
+                        info!("   {} 个书签, {} 个URL", bookmark_count, urls.len());
+                        all_urls.extend(urls);
+                        file_bookmarks = Some(bookmarks);
+                    }
+                    Err(e) => {
+                        error!("❌ 读取文件失败: {}", e);
+                        return Ok(());
+                    }
+                }
+            } else {
+                // 从浏览器读取
+                let _engine = SyncEngine::new()?;
+                let browser_list: Vec<String> = browsers.split(',')
+                    .map(|s| s.trim().to_lowercase().replace('-', " "))
+                    .collect();
                 
-                // 精确匹配或完整词匹配
-                if name_lower == filter_lower || name_normalized == filter_lower {
-                    return true;
-                }
-                // "brave" 不应该匹配 "brave nightly"，但 "nightly" 可以匹配 "brave nightly"
-                if filter_lower == "brave" && name_normalized.contains("nightly") {
-                    return false;
-                }
-                // 部分匹配（用于 "nightly" 匹配 "brave nightly"）
-                name_lower.contains(&filter_lower) || name_normalized.contains(&filter_lower)
-            };
-            
-            for adapter in crate::browsers::get_all_adapters() {
-                let name = adapter.browser_type().name();
-                if browsers == "all" || browser_list.iter().any(|b| matches_browser(name, b)) {
-                    match adapter.read_bookmarks() {
-                        Ok(bookmarks) => {
-                            let urls = collect_urls_from_bookmarks(&bookmarks);
-                            info!("📖 {} : {} 个收藏夹", adapter.browser_type().name(), urls.len());
-                            all_urls.extend(urls);
-                            all_bookmarks.push((adapter.browser_type(), bookmarks));
-                        }
-                        Err(e) => {
-                            warn!("⚠️  {} 读取失败: {}", adapter.browser_type().name(), e);
+                let matches_browser = |name: &str, filter: &str| -> bool {
+                    let name_lower = name.to_lowercase();
+                    let name_normalized = name_lower.replace('-', " ");
+                    let filter_lower = filter.to_lowercase();
+                    
+                    if name_lower == filter_lower || name_normalized == filter_lower {
+                        return true;
+                    }
+                    if filter_lower == "brave" && name_normalized.contains("nightly") {
+                        return false;
+                    }
+                    name_lower.contains(&filter_lower) || name_normalized.contains(&filter_lower)
+                };
+                
+                for adapter in crate::browsers::get_all_adapters() {
+                    let name = adapter.browser_type().name();
+                    if browsers == "all" || browser_list.iter().any(|b| matches_browser(name, b)) {
+                        match adapter.read_bookmarks() {
+                            Ok(bookmarks) => {
+                                let urls = collect_urls_from_bookmarks(&bookmarks);
+                                info!("📖 {} : {} 个收藏夹", adapter.browser_type().name(), urls.len());
+                                all_urls.extend(urls);
+                                all_bookmarks.push((adapter.browser_type(), bookmarks));
+                            }
+                            Err(e) => {
+                                warn!("⚠️  {} 读取失败: {}", adapter.browser_type().name(), e);
+                            }
                         }
                     }
                 }
@@ -838,16 +892,47 @@ async fn main() -> Result<()> {
                 .map(|r| r.url.clone())
                 .collect();
 
+            // 文件模式: 导出有效书签到输出文件
+            if from_file {
+                if let Some(ref out_path) = output {
+                    let out_expanded = expand_path(out_path);
+                    println!("\n📤 导出有效书签到: {}", out_expanded);
+                    
+                    if let Some(ref bookmarks) = file_bookmarks {
+                        // 移除无效和不确定的书签，保留有效和跳过的
+                        let keep_urls: HashSet<String> = valid_urls.union(&skipped_urls).cloned().collect();
+                        let valid_bookmarks = extract_by_status_preserve_structure(bookmarks, &keep_urls);
+                        
+                        match sync::export_bookmarks_to_html(&valid_bookmarks, &out_expanded) {
+                            Ok(_) => {
+                                let count: usize = valid_bookmarks.iter().map(count_tree).sum();
+                                info!("✅ 导出了 {} 个有效书签到 {}", count, out_expanded);
+                            }
+                            Err(e) => error!("❌ 导出失败: {}", e),
+                        }
+                    }
+                } else {
+                    warn!("⚠️  文件模式需要指定 --output 参数来保存有效书签");
+                }
+            }
+
             // 导出所有分类到目录
             if let Some(ref dir) = export_dir {
                 let dir_path = expand_path(dir);
                 std::fs::create_dir_all(&dir_path).ok();
                 println!("\n📤 导出检查结果到: {}", dir_path);
                 
+                // 根据模式选择书签源
+                let source_bookmarks: Vec<&Vec<crate::browsers::Bookmark>> = if from_file {
+                    file_bookmarks.as_ref().map(|b| vec![b]).unwrap_or_default()
+                } else {
+                    all_bookmarks.iter().map(|(_, b)| b).collect()
+                };
+                
                 // 导出有效书签 (保持文件夹结构)
                 if !valid_urls.is_empty() {
                     let mut valid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
-                    for (_browser_type, bookmarks) in &all_bookmarks {
+                    for bookmarks in &source_bookmarks {
                         let extracted = extract_by_status_preserve_structure(bookmarks, &valid_urls);
                         valid_bookmarks.extend(extracted);
                     }
@@ -861,7 +946,7 @@ async fn main() -> Result<()> {
                 // 导出无效书签 (保持文件夹结构)
                 if !invalid_urls.is_empty() {
                     let mut invalid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
-                    for (_browser_type, bookmarks) in &all_bookmarks {
+                    for bookmarks in &source_bookmarks {
                         let extracted = extract_by_status_preserve_structure(bookmarks, &invalid_urls);
                         invalid_bookmarks.extend(extracted);
                     }
@@ -875,7 +960,7 @@ async fn main() -> Result<()> {
                 // 导出不确定书签 (保持文件夹结构)
                 if !uncertain_urls.is_empty() {
                     let mut uncertain_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
-                    for (_browser_type, bookmarks) in &all_bookmarks {
+                    for bookmarks in &source_bookmarks {
                         let extracted = extract_by_status_preserve_structure(bookmarks, &uncertain_urls);
                         uncertain_bookmarks.extend(extracted);
                     }
@@ -889,7 +974,7 @@ async fn main() -> Result<()> {
                 // 导出跳过书签 (保持文件夹结构)
                 if !skipped_urls.is_empty() {
                     let mut skipped_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
-                    for (_browser_type, bookmarks) in &all_bookmarks {
+                    for bookmarks in &source_bookmarks {
                         let extracted = extract_by_status_preserve_structure(bookmarks, &skipped_urls);
                         skipped_bookmarks.extend(extracted);
                     }
@@ -910,9 +995,16 @@ async fn main() -> Result<()> {
                     println!("\n📤 导出无效收藏夹到: {} (保持文件夹结构)", export_path);
                     
                     let mut invalid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
-                    for (_browser_type, bookmarks) in &all_bookmarks {
-                        let extracted = extract_by_status_preserve_structure(bookmarks, &invalid_urls);
-                        invalid_bookmarks.extend(extracted);
+                    if from_file {
+                        if let Some(ref bookmarks) = file_bookmarks {
+                            let extracted = extract_by_status_preserve_structure(bookmarks, &invalid_urls);
+                            invalid_bookmarks.extend(extracted);
+                        }
+                    } else {
+                        for (_browser_type, bookmarks) in &all_bookmarks {
+                            let extracted = extract_by_status_preserve_structure(bookmarks, &invalid_urls);
+                            invalid_bookmarks.extend(extracted);
+                        }
                     }
                     
                     match sync::export_bookmarks_to_html(&invalid_bookmarks, &export_path) {
