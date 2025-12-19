@@ -39,12 +39,12 @@ impl ValidationStatus {
         }
         
         // 检查是否有被拦截的情况（CF 验证、WAF 等）
+        // 403/503/429 说明服务器在线，浏览器通常能正常访问，视为有效
         let proxy_blocked = proxy_result.map(|r| r.is_blocked()).unwrap_or(false);
         let direct_blocked = direct_result.map(|r| r.is_blocked()).unwrap_or(false);
         
-        // 如果任一网络返回"被拦截"状态，标记为不确定（浏览器可能可以访问）
         if proxy_blocked || direct_blocked {
-            return ValidationStatus::Uncertain;
+            return ValidationStatus::Valid; // 服务器在线，浏览器可访问
         }
         
         // 检查是否双网络都有确定性失败结果（404/410/DNS失败）
