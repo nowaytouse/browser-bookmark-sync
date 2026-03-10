@@ -150,17 +150,26 @@ enum Commands {
         #[arg(short, long)]
         browsers: Option<String>,
 
-        /// Input bookmark file (HTML/JSON) - organize from exported file instead of browser
-        #[arg(short, long)]
-        file: Option<String>,
+        /// Input bookmark files (HTML/JSON) - organize from exported files instead of browser
+        /// Multiple files will be merged before organizing
+        #[arg(short, long, num_args = 1..)]
+        file: Option<Vec<String>>,
 
-        /// Output file path (required when using --file)
+        /// Output file path (auto-generated if not specified)
         #[arg(short, long)]
         output: Option<String>,
 
         /// Custom rules file (JSON)
         #[arg(short, long)]
         rules: Option<String>,
+
+        /// Remove duplicate bookmarks by URL (default: true)
+        #[arg(short, long, default_value = "true")]
+        deduplicate: bool,
+
+        /// Remove empty folders after organizing (default: true)
+        #[arg(long, default_value = "true")]
+        clean: bool,
 
         /// Show statistics
         #[arg(short, long)]
@@ -609,23 +618,45 @@ async fn main() -> Result<()> {
             file,
             output,
             rules,
+            deduplicate,
+            clean,
             stats,
             dry_run,
             verbose,
         } => {
-            if let Some(input_file) = file {
-                // 从导出文件整理
+            if let Some(input_files) = file {
+                // 从本地文件整理（支持多个文件合并）
                 let output_path = output.unwrap_or_else(|| {
-                    let path = std::path::Path::new(&input_file);
+                    let first_file = &input_files[0];
+                    let path = std::path::Path::new(first_file);
                     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
                     let ext = path.extension().unwrap_or_default().to_string_lossy();
-                    format!("{}_organized.{}", stem, ext)
+                    if input_files.len() > 1 {
+                        format!("merged_organized.{}", if ext.is_empty() { "html" } else { &ext })
+                    } else {
+                        format!("{}_organized.{}", stem, if ext.is_empty() { "html" } else { &ext })
+                    }
                 });
-                info!("🧠 Organizing bookmarks from file: {}", input_file);
-                let mut engine = SyncEngine::new()?;
-                engine
-                    .smart_organize_file(&input_file, &output_path, rules.as_deref(), stats, dry_run, verbose)
-                    .await?;
+                if input_files.len() > 1 {
+                    info!("🧠 Organizing bookmarks from {} files:", input_files.len());
+                    for f in &input_files {
+                        info!("   📄 {}", f);
+                    }
+                } else {
+                    info!("🧠 Organizing bookmarks from file: {}", input_files[0]);
+                }
+                info!("   📤 Output: {}", output_path);
+                // 文件模式不需要初始化浏览器引擎
+                sync::smart_organize_files(
+                    &input_files.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &output_path,
+                    rules.as_deref(),
+                    deduplicate,
+                    clean,
+                    stats,
+                    dry_run,
+                    verbose,
+                ).await?;
                 if !dry_run {
                     info!("✅ Organized bookmarks saved to: {}", output_path);
                 }

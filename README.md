@@ -25,7 +25,7 @@ Cross-browser bookmark management tool for macOS. Export, merge, deduplicate, an
 - **Merge** - Flatten folder structure from multiple browsers
 - **Flat Export** - Remove browser root folders (prevents nested "Imported > Waterfox > Brave")
 - **Folder Filter** - Export only specific folders (e.g., "Temp" or "临时")
-- **Smart Organize** - Auto-classify bookmarks using 48+ built-in rules
+- **Smart Organize** - Auto-classify bookmarks using 98+ built-in rules
 - **Empty Folder Cleanup** - Remove empty folders during export
 - **Incremental Update** - Merge new bookmarks into existing export file
 - **Unicode/Emoji Support** - Preserve folder names with emoji and special characters
@@ -73,7 +73,7 @@ bsync organize --dry-run
 | `export` | Export bookmarks/history/cookies to file |
 | `check` | Check bookmark URL validity (dual-network) |
 | `analyze` | Check for duplicates, empty folders, issues |
-| `organize` | Smart organize by URL patterns (48+ rules) |
+| `organize` | Smart organize by URL patterns (98+ rules) |
 | `validate` | Validate bookmark integrity |
 | `history` | Sync history between browsers |
 | `backup` | Create full backup of all browser data |
@@ -153,6 +153,23 @@ Prevents nested folder structure when importing to browsers:
 bsync export --flat -d --clean -o bookmarks.html
 ```
 
+### Organize Options (NEW)
+
+The `organize` command now supports merging and organizing multiple local files without needing browser access:
+
+```bash
+# Organize from multiple local files, deduplicate, and merge into one
+bsync organize -f safari.html brave.html -o merged_organized.html -d --clean
+
+# File mode usage (no browser engine needed)
+bsync organize [OPTIONS]
+
+-f, --file <FILE>...       Input bookmark files (HTML/JSON). Multiple files are merged.
+-o, --output <OUTPUT>      Output file path (auto-generated if not specified)
+-d, --deduplicate          Remove duplicate bookmarks by URL (default: true)
+    --clean                Remove empty folders after organizing (default: true)
+```
+
 ### Incremental Update (NEW)
 
 Add new bookmarks to existing export without duplicates:
@@ -193,7 +210,7 @@ cargo build --release
 - **合并** - 将多个浏览器的文件夹结构扁平化
 - **扁平导出** - 移除浏览器根文件夹（避免 "Imported > Waterfox > Brave" 嵌套）
 - **文件夹过滤** - 仅导出特定文件夹（如"临时"）
-- **智能整理** - 使用 48+ 内置规则自动分类书签
+- **智能整理** - 使用 98+ 内置规则自动分类书签
 - **清理空文件夹** - 导出时移除空文件夹
 - **增量更新** - 将新书签合并到现有导出文件
 - **Unicode/Emoji 支持** - 保留带 emoji 和特殊字符的文件夹名称
@@ -241,12 +258,29 @@ bsync organize --dry-run
 | `export` | 导出书签/历史/cookies 到文件 |
 | `check` | 检查收藏夹URL有效性（双网络验证） |
 | `analyze` | 检查重复、空文件夹等问题 |
-| `organize` | 按 URL 模式智能整理（48+ 规则） |
+| `organize` | 按 URL 模式智能整理（98+ 规则） |
 | `validate` | 验证书签完整性 |
 | `history` | 在浏览器间同步历史记录 |
 | `backup` | 创建所有浏览器数据的完整备份 |
 | `rules` | 显示可用的分类规则 |
 | `export-data` | 导出敏感数据（密码、cookies） |
+
+## 智能整理选项 (NEW)
+
+`organize` 命令现在支持合并整理多个本地收藏夹文件，无需浏览器引擎依赖：
+
+```bash
+# 从多个本地文件合并、去重并智能整理为一个文件
+bsync organize -f safari.html brave.html -o merged_organized.html -d --clean
+
+# 文件模式参数说明
+bsync organize [OPTIONS]
+
+-f, --file <FILE>...       输入书签文件 (HTML/JSON)。支持多个文件合并
+-o, --output <OUTPUT>      输出文件路径（未指定时自动生成）
+-d, --deduplicate          按 URL 移除重复书签（默认：true）
+    --clean                整理后移除空文件夹（默认：true）
+```
 
 ## URL有效性检查（新功能）
 

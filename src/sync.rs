@@ -603,7 +603,7 @@ impl SyncEngine {
 
     /// Recursively deduplicate bookmarks with smart selection
     /// Priority: 1. Deeper in folder structure, 2. Newer bookmarks, 3. Root level keeps newest
-    fn deduplicate_bookmarks_global(bookmarks: &mut Vec<Bookmark>) {
+    pub(crate) fn deduplicate_bookmarks_global(bookmarks: &mut Vec<Bookmark>) {
         // Two-pass strategy:
         // Pass 1: Collect all bookmarks with their metadata
         // Pass 2: For each URL, decide which one to keep, mark others for deletion
@@ -746,7 +746,7 @@ impl SyncEngine {
         count
     }
 
-    fn count_all_bookmarks(bookmarks: &[Bookmark]) -> usize {
+    pub(crate) fn count_all_bookmarks(bookmarks: &[Bookmark]) -> usize {
         let mut count = 0;
         for b in bookmarks {
             if b.folder {
@@ -759,7 +759,7 @@ impl SyncEngine {
     }
 
     /// Remove empty folders and folders with invalid names
-    fn cleanup_empty_folders(bookmarks: &mut Vec<Bookmark>) -> usize {
+    pub(crate) fn cleanup_empty_folders(bookmarks: &mut Vec<Bookmark>) -> usize {
         let mut removed_count = 0;
 
         // Recursively clean up folders
@@ -2741,12 +2741,15 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "telegra.ph",
                 // Reddit short
                 "redd.it",
-                // Fediverse
+                // Fediverse & New Social
                 "misskey.io",
                 "pleroma.",
                 "lemmy.",
-                // VK
+                "blueskyweb.xyz",
+                "bsky.app",
+                // VK & Others
                 "vk.com",
+                "xiaohongshu.com",
             ],
             vec![],
             vec![],
@@ -2774,6 +2777,9 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "v.qq.com",
                 "mgtv.com",
                 "tv.sohu.com",
+                "crunchyroll.com",
+                "douyu.com",
+                "huya.com",
             ],
             vec!["/video", "/watch", "/play"],
             vec![],
@@ -2839,6 +2845,10 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "dev.to",
                 "hashnode.dev",
                 "hackernoon.com",
+                "cursor.com",
+                "vultr.com",
+                "digitalocean.com",
+                "cloudflare.com",
             ],
             vec!["/api/", "/docs/", "/documentation", "/developer", "/sdk"],
             vec!["api 文档", "api doc", "developer", "开发者"],
@@ -3027,6 +3037,10 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
                 "perplexity.ai",
                 "poe.com",
                 "character.ai",
+                "deepseek.com",
+                "kimi.moonshot.cn",
+                "coze.com",
+                "v0.dev",
             ],
             vec!["/chat", "/ai", "/generate"],
             vec!["chatgpt", "ai助手", "人工智能", "机器学习"],
@@ -4968,6 +4982,156 @@ pub fn get_builtin_rules() -> Vec<ClassificationRule> {
             75,
             "VPN and proxy tools",
         ),
+        // 92. Crypto & Web3
+        ClassificationRule::new(
+            "crypto",
+            "加密货币与Web3",
+            "Crypto & Web3",
+            vec!["crypto", "web3", "nft", "blockchain"],
+            vec![
+                "coinbase.com",
+                "binance.com",
+                "etherscan.io",
+                "opensea.io",
+                "metamask.io",
+                "coinmarketcap.com",
+                "kraken.com",
+            ],
+            vec![],
+            vec!["crypto", "nft", "区块链", "比特币", "以太坊", "web3"],
+            48,
+            "Cryptocurrency, NFTs, and Web3 resources",
+        ),
+        // 93. Travel & Booking
+        ClassificationRule::new(
+            "travel",
+            "旅行机酒",
+            "Travel & Booking",
+            vec!["flight", "hotel", "booking"],
+            vec![
+                "booking.com",
+                "agoda.com",
+                "airbnb.com",
+                "trip.com",
+                "expedia.com",
+                "skyscanner.net",
+                "kayak.com",
+                "ctrip.com",
+                "qunar.com",
+                "fliggy.com",
+            ],
+            vec!["/hotel", "/flight", "/travel"],
+            vec!["旅行", "旅游", "酒店", "机票", "travel", "flight", "hotel"],
+            65,
+            "Travel, flights, and hotel bookings",
+        ),
+        // 94. Health & Fitness
+        ClassificationRule::new(
+            "health",
+            "医疗健康",
+            "Health & Fitness",
+            vec!["health", "fitness", "medical"],
+            vec![
+                "webmd.com",
+                "mayoclinic.org",
+                "nih.gov",
+                "myfitnesspal.com",
+                "keep.com",
+                "haodf.com",
+                "dxy.cn",
+                "111.com.cn",
+            ],
+            vec![],
+            vec!["health", "medical", "健康", "医疗", "健身", "寻医问药"],
+            58,
+            "Healthcare, medicine, and fitness",
+        ),
+        // 95. Real Estate
+        ClassificationRule::new(
+            "real_estate",
+            "房产交易",
+            "Real Estate",
+            vec!["real-estate", "property", "housing"],
+            vec![
+                "zillow.com",
+                "realtor.com",
+                "lianjia.com",
+                "ke.com",
+                "anjuke.com",
+                "fang.com",
+                "redfin.com",
+                "rightmove.co.uk",
+            ],
+            vec![],
+            vec!["房产", "二手房", "租房", "新房", "real estate", "property"],
+            53,
+            "Real estate and property listings",
+        ),
+        // 96. Reading & Literature
+        ClassificationRule::new(
+            "reading",
+            "阅读与文学",
+            "Reading & Literature",
+            vec!["novel", "reading", "book"],
+            vec![
+                "goodreads.com",
+                "wattpad.com",
+                "qidian.com",
+                "jjwxc.net",
+                "zongheng.com",
+                "weread.qq.com",
+                "douban.com/book",
+                "fanfiction.net",
+                "archiveofourown.org",
+            ],
+            vec!["/book", "/novel", "/read"],
+            vec!["小说", "阅读", "文学", "图书", "novel", "book"],
+            38,
+            "Reading, novels, and literature platforms",
+        ),
+        // 97. Job & Career
+        ClassificationRule::new(
+            "jobs",
+            "职场招聘",
+            "Jobs & Career",
+            vec!["job", "career", "hiring"],
+            vec![
+                "indeed.com",
+                "glassdoor.com",
+                "zhipin.com",
+                "liepin.com",
+                "51job.com",
+                "lagou.com",
+                "zhaopin.com",
+                "monster.com",
+                "levels.fyi",
+            ],
+            vec!["/jobs", "/career"],
+            vec!["job", "招聘", "求职", "面试", "职场"],
+            68,
+            "Job hunting and professional networks",
+        ),
+        // 98. Government & Public Services
+        ClassificationRule::new(
+            "gov",
+            "政府服务",
+            "Government & Public Services",
+            vec![".gov"],
+            vec![
+                "gov.cn",
+                "europa.eu",
+                "usa.gov",
+                "gov.uk",
+                "gov.au",
+                "canada.ca",
+                "12306.cn",
+                "tax.gov.cn",
+            ],
+            vec![],
+            vec!["政府", "政务", "税务", "government", "public service"],
+            72,
+            "Government portals and public services",
+        ),
     ]
 }
 
@@ -5333,7 +5497,7 @@ impl SyncEngine {
     }
 
     /// Collect all bookmarks from entire tree for classification
-    fn collect_all_bookmarks_for_classification(
+    pub(crate) fn collect_all_bookmarks_for_classification(
         bookmarks: &mut Vec<Bookmark>,
         collected: &mut Vec<Bookmark>,
     ) {
@@ -5724,7 +5888,7 @@ impl SyncEngine {
                 serde_json::to_string_pretty(&bookmarks)?
             } else {
                 // Export as HTML
-                Self::export_bookmarks_to_html(&bookmarks)
+                Self::export_bookmarks_to_html_internal(&bookmarks)
             };
 
             std::fs::write(output_file, output_content)
@@ -5737,7 +5901,7 @@ impl SyncEngine {
     }
 
     /// Export bookmarks to HTML format (Netscape Bookmark File Format)
-    fn export_bookmarks_to_html(bookmarks: &[Bookmark]) -> String {
+    pub(crate) fn export_bookmarks_to_html_internal(bookmarks: &[Bookmark]) -> String {
         let mut html = String::from(
             "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n\
              <META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n\
@@ -7408,6 +7572,280 @@ fn collect_urls_recursive(
     }
 }
 
+/// Standalone function: organize bookmarks from multiple local files (no browser engine needed)
+///
+/// Reads multiple HTML/JSON bookmark files, merges them, deduplicates,
+/// classifies using built-in + custom rules, and exports a single organized file.
+pub async fn smart_organize_files(
+    input_files: &[&str],
+    output_file: &str,
+    rules_file: Option<&str>,
+    deduplicate: bool,
+    clean_empty: bool,
+    show_stats: bool,
+    dry_run: bool,
+    verbose: bool,
+) -> Result<()> {
+    // Load rules
+    let mut rules = get_builtin_rules();
+    if let Some(file_path) = rules_file {
+        info!("📂 Loading custom rules from: {}", file_path);
+        let content = std::fs::read_to_string(file_path).context("Failed to read rules file")?;
+        let custom_rules: Vec<ClassificationRule> =
+            serde_json::from_str(&content).context("Failed to parse rules file")?;
+        info!("✅ Loaded {} custom rules", custom_rules.len());
+        rules.extend(custom_rules);
+    }
+
+    // Sort rules by priority then specificity
+    rules.sort_by(|a, b| {
+        match b.priority.cmp(&a.priority) {
+            std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
+            other => other,
+        }
+    });
+
+    info!("📋 Loaded {} classification rules", rules.len());
+
+    // Read and merge all input files
+    let mut bookmarks: Vec<Bookmark> = Vec::new();
+    for input_file in input_files {
+        let content = std::fs::read_to_string(input_file)
+            .context(format!("Failed to read input file: {}", input_file))?;
+
+        let file_bookmarks = if input_file.ends_with(".json") {
+            serde_json::from_str::<Vec<Bookmark>>(&content)
+                .context(format!("Failed to parse JSON bookmark file: {}", input_file))?
+        } else if input_file.ends_with(".html") || input_file.ends_with(".htm") {
+            parse_safari_html(&content)?
+        } else {
+            serde_json::from_str::<Vec<Bookmark>>(&content)
+                .or_else(|_| parse_safari_html(&content))
+                .context(format!("Failed to parse bookmark file (tried JSON and HTML): {}", input_file))?
+        };
+
+        let count = SyncEngine::count_all_bookmarks(&file_bookmarks);
+        info!("📖 Loaded {} bookmarks from: {}", count, input_file);
+        bookmarks.extend(file_bookmarks);
+    }
+
+    let total_loaded = SyncEngine::count_all_bookmarks(&bookmarks);
+    if input_files.len() > 1 {
+        info!("📊 Total: {} bookmarks from {} files", total_loaded, input_files.len());
+    }
+
+    // Flatten: remove browser root folders (Brave, Brave Nightly, Waterfox, etc.)
+    info!("📦 Flattening: removing browser root folders...");
+    let flat_config = FlatExportConfig {
+        flatten_root: true,
+        root_folders_to_remove: None,
+    };
+    let (flattened, flatten_stats) = flatten_bookmarks(&bookmarks, &flat_config);
+    bookmarks = flattened;
+    if flatten_stats.root_folders_removed > 0 {
+        info!(
+            "  ✅ Removed {} browser root folders, promoted {} items",
+            flatten_stats.root_folders_removed, flatten_stats.bookmarks_promoted
+        );
+    }
+
+    // Deduplicate if requested
+    if deduplicate {
+        let before = SyncEngine::count_all_bookmarks(&bookmarks);
+        SyncEngine::deduplicate_bookmarks_global(&mut bookmarks);
+        let after = SyncEngine::count_all_bookmarks(&bookmarks);
+        if before > after {
+            info!("🔄 Deduplicated: removed {} duplicates ({} → {})", before - after, before, after);
+        }
+    }
+
+    // Clean empty folders if requested
+    if clean_empty {
+        let removed = SyncEngine::cleanup_empty_folders(&mut bookmarks);
+        if removed > 0 {
+            info!("🧹 Cleaned {} empty folders", removed);
+        }
+    }
+
+    let mut stats = ClassificationStats::default();
+
+    // Collect all bookmarks for classification
+    let mut to_classify: Vec<Bookmark> = Vec::new();
+    SyncEngine::collect_all_bookmarks_for_classification(&mut bookmarks, &mut to_classify);
+    stats.total_processed = to_classify.len();
+
+    info!("  📖 Found {} bookmarks to classify", to_classify.len());
+
+    // Classify bookmarks
+    let mut classified: HashMap<String, Vec<Bookmark>> = HashMap::new();
+    let mut unclassified: Vec<Bookmark> = Vec::new();
+
+    for bookmark in to_classify {
+        let url = bookmark.url.as_deref().unwrap_or("");
+        let title = &bookmark.title;
+
+        let mut matched = false;
+        let mut tried_rules: Vec<String> = Vec::new();
+        
+        for rule in &rules {
+            if let Some(reason) = rule.matches_with_reason(url, title) {
+                if verbose {
+                    info!("  ✓ '{}' -> {} (rule: {}, reason: {})", title, rule.folder_name, rule.name, reason);
+                }
+                classified.entry(rule.folder_name.clone()).or_default().push(bookmark.clone());
+                *stats.by_category.entry(rule.folder_name.clone()).or_insert(0) += 1;
+                matched = true;
+                break;
+            } else if verbose {
+                tried_rules.push(rule.name.clone());
+            }
+        }
+
+        if !matched {
+            if verbose && !tried_rules.is_empty() {
+                debug!("  ❓ '{}' unclassified (tried {} rules)", title, tried_rules.len());
+            }
+            unclassified.push(bookmark);
+            stats.unclassified += 1;
+        }
+    }
+
+    stats.total_classified = stats.total_processed - stats.unclassified;
+
+    // Create folders for classified bookmarks
+    for (folder_name, items) in &classified {
+        let existing_folder = bookmarks.iter_mut().find(|b| b.folder && b.title == *folder_name);
+
+        if let Some(folder) = existing_folder {
+            folder.children.extend(items.clone());
+        } else {
+            let new_folder = Bookmark {
+                id: format!("smart-folder-{}", chrono::Utc::now().timestamp_millis()),
+                title: folder_name.clone(),
+                url: None,
+                folder: true,
+                children: items.clone(),
+                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                date_modified: Some(chrono::Utc::now().timestamp_millis()),
+            };
+            bookmarks.push(new_folder);
+        }
+
+        info!("  📁 {} : {} bookmarks", folder_name, items.len());
+    }
+
+    // Handle unclassified bookmarks
+    if !unclassified.is_empty() {
+        info!("  ❓ Unclassified: {} bookmarks", unclassified.len());
+        let unclassified_folder = bookmarks.iter_mut().find(|b| b.folder && b.title == "未分类");
+
+        if let Some(folder) = unclassified_folder {
+            folder.children.extend(unclassified.clone());
+        } else {
+            let new_folder = Bookmark {
+                id: format!("unclassified-folder-{}", chrono::Utc::now().timestamp_millis()),
+                title: "未分类".to_string(),
+                url: None,
+                folder: true,
+                children: unclassified.clone(),
+                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                date_modified: Some(chrono::Utc::now().timestamp_millis()),
+            };
+            bookmarks.push(new_folder);
+        }
+    }
+
+    // Show statistics
+    if show_stats {
+        println!("\n📊 Classification Statistics:");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("  Total processed:  {}", stats.total_processed);
+        println!(
+            "  Total classified: {} ({:.1}%)",
+            stats.total_classified,
+            if stats.total_processed > 0 {
+                stats.total_classified as f64 / stats.total_processed as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!("  Unclassified:     {}", stats.unclassified);
+        println!("\n  By category:");
+
+        let mut categories: Vec<_> = stats.by_category.iter().collect();
+        categories.sort_by(|a, b| b.1.cmp(a.1));
+        for (category, count) in categories {
+            println!("    📁 {} : {}", category, count);
+        }
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    }
+
+    if dry_run {
+        info!(
+            "  🏃 Dry run - would classify {} bookmarks into {} folders",
+            stats.total_classified,
+            classified.len()
+        );
+    } else {
+        // Wrap all bookmarks in 📁镜像文件夹 + merge temp folders
+        info!("📦 Wrapping all bookmarks in root folder: \"📁镜像文件夹\"");
+        
+        // Extract and MERGE all protected folders (👀临时) into one
+        let mut merged_temp_children: Vec<Bookmark> = Vec::new();
+        bookmarks.retain(|b| {
+            if b.folder && PROTECTED_FOLDERS.iter().any(|p| b.title.to_lowercase().contains(&p.to_lowercase())) {
+                merged_temp_children.extend(b.children.clone());
+                false
+            } else {
+                true
+            }
+        });
+        
+        let wrapped = Bookmark {
+            id: "wrap-mirror-folder".to_string(),
+            title: "📁镜像文件夹".to_string(),
+            url: None,
+            folder: true,
+            children: bookmarks,
+            date_added: Some(chrono::Utc::now().timestamp_millis()),
+            date_modified: None,
+        };
+        
+        let temp_folder = Bookmark {
+            id: "temp-folder".to_string(),
+            title: "👀临时".to_string(),
+            url: None,
+            folder: true,
+            children: merged_temp_children,
+            date_added: Some(chrono::Utc::now().timestamp_millis()),
+            date_modified: None,
+        };
+        
+        bookmarks = vec![wrapped, temp_folder];
+        info!("  ✅ Merged all temp folders into single 👀临时");
+
+        // Final clean: remove empty folders again after all processing
+        if clean_empty {
+            SyncEngine::cleanup_empty_folders(&mut bookmarks);
+        }
+
+        // Write output file
+        let output_content = if output_file.ends_with(".json") {
+            serde_json::to_string_pretty(&bookmarks)?
+        } else {
+            SyncEngine::export_bookmarks_to_html_internal(&bookmarks)
+        };
+
+        std::fs::write(output_file, output_content)
+            .context(format!("Failed to write output file: {}", output_file))?;
+
+        let final_count = SyncEngine::count_all_bookmarks(&bookmarks);
+        info!("  ✅ Organized {} bookmarks saved to: {}", final_count, output_file);
+    }
+
+    Ok(())
+}
+
 /// Export bookmarks to Netscape HTML format (standard bookmark format)
 pub fn export_bookmarks_to_html(bookmarks: &[Bookmark], output_path: &str) -> Result<()> {
     use std::io::Write;
@@ -8165,7 +8603,7 @@ mod export_quality_tests {
             let bookmarks = vec![folder];
 
             // Export to HTML string
-            let html = SyncEngine::export_bookmarks_to_html(&bookmarks);
+            let html = SyncEngine::export_bookmarks_to_html_internal(&bookmarks);
 
             // Property: folder name appears in HTML (escaped)
             let escaped_name = html_escape(&folder_name);
