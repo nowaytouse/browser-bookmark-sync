@@ -6343,14 +6343,25 @@ pub fn merge_check_result_files(result_dir: &str, output_path: &str) -> Result<u
         if file_path.exists() {
             match import_bookmarks_from_html(&file_path.to_string_lossy()) {
                 Ok(bookmarks) => {
-                    let count = count_tree_bookmarks(&bookmarks);
+                    // Strip the top-level 📁镜像文件夹 wrapper if present,
+                    // extracting its children directly — equivalent to shell's extract_inner().
+                    let inner: Vec<Bookmark> = if bookmarks.len() == 1
+                        && bookmarks[0].folder
+                        && bookmarks[0].title.contains("镜像文件夹")
+                    {
+                        bookmarks.into_iter().next().unwrap().children
+                    } else {
+                        bookmarks
+                    };
+
+                    let count = count_tree_bookmarks(&inner);
                     info!("   {}: {} bookmarks", section_title, count);
                     let folder = Bookmark {
                         id: format!("section-{}", file_name.replace(".html", "")),
                         title: section_title.to_string(),
                         url: None,
                         folder: true,
-                        children: bookmarks,
+                        children: inner,
                         date_added: Some(chrono::Utc::now().timestamp_millis()),
                         date_modified: None,
                     };

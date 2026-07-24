@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Browser Sync Team"]
 description = "A reliable cross-browser bookmark synchronization tool"
+default-run = "browser-bookmark-sync"
 
 [dependencies]
 # CLI framework
