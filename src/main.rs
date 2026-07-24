@@ -13,6 +13,7 @@ mod db_safety;
 mod enhanced_rules;
 mod firefox_sync;
 mod firefox_sync_api;
+mod gui;
 mod hackbrowserdata;
 mod scheduler;
 mod sync;
@@ -380,6 +381,14 @@ enum Commands {
         /// Output file path
         #[arg(short, long, default_value = "~/Downloads/waterfox_cleaned.html")]
         output: String,
+    },
+
+    /// Launch local web GUI in browser (default: http://127.0.0.1:7890)
+    #[command(alias = "ui", alias = "dashboard")]
+    Gui {
+        /// Port number for the local web server
+        #[arg(short, long, default_value = "7890")]
+        port: u16,
     },
 }
 
@@ -1576,12 +1585,16 @@ async fn main() -> Result<()> {
             engine.export_to_html_with_extra(Some("waterfox"), &expanded_output, &config, vec![]).await?;
             info!("✅ Waterfox cleanup export complete: {}", expanded_output);
         }
+
+        Commands::Gui { port } => {
+            gui::start_gui(port).await?;
+        }
     }
 
     Ok(())
 }
 
-fn expand_path(path: &str) -> String {
+pub fn expand_path(path: &str) -> String {
     if path.starts_with("~/") {
         path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
     } else {

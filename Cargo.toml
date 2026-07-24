@@ -43,6 +43,12 @@ futures = "0.3"
 # HTTP client for Firefox Sync API
 reqwest = { version = "0.12", features = ["json"] }
 
+# Local GUI server
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+open = "5"
+tokio-stream = { version = "0.1", features = ["sync"] }
+
 # SQLite for Firefox-based browsers
 rusqlite = { version = "0.33", features = ["bundled"] }
 

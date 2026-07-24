@@ -1,350 +1,156 @@
 # Browser Bookmark Sync (bsync)
 
-Cross-browser bookmark management tool for macOS. Export, merge, deduplicate, and organize bookmarks across multiple browsers.
+> A high-performance, cross-browser bookmark synchronization, deduplication, dead-link checking, and export toolkit for macOS built in Rust — now featuring a modern Web GUI!
 
-[English](#features) | [中文](#功能特性)
+[English](#features) | [简体中文](#功能特性)
 
 ---
 
-## Features
+## Key Features
 
-### Multi-Browser Support
-- Safari, Chrome, Brave, Edge, Arc, Waterfox, Firefox
-- Auto-detection of installed browsers
-- Reading list export (Safari)
+### 🌐 Modern Web GUI Dashboard (`bsync gui`)
+- **Visual Control Panel**: Launch a local dark-mode glassmorphism Web GUI with `bsync gui` or `bsync ui`.
+- **Browser Auto-Detection**: Live scan of installed browsers (Safari, Chrome, Brave, Waterfox, LibreWolf, Firefox Nightly) and exact bookmark counts.
+- **One-Click Export & Merge**: Visually configure export rules, deduplication, and merge operations.
+- **Real-Time Log Stream**: Built-in Server-Sent Events (SSE) log terminal tracking live engine activity.
 
-### Export Capabilities
-- **Bookmarks** - Standard Netscape HTML format
-- **History** - Browsing history with configurable date range
-- **Cookies** - Export to CSV, JSON, or Netscape format
-- **Passwords** - Chromium-based browsers (requires keychain access)
-- **Downloads** - Download history
+### 📚 Multi-Browser & All-Profile Support
+- **Supported Browsers**: Safari, Chrome, Brave, Edge, Arc, Waterfox, Firefox, LibreWolf.
+- **All User Profiles**: Scans all user profiles across Chromium and Gecko browser directories to merge hidden or multi-account bookmarks into one file.
+- **Safari Special Support**: Export Reading Lists directly as accessible HTML bookmarks.
 
-### Smart Processing
-- **Deduplication** - Remove duplicate bookmarks by URL
-- **Merge** - Flatten folder structure from multiple browsers
-- **Flat Export** - Remove browser root folders (prevents nested "Imported > Waterfox > Brave")
-- **Folder Filter** - Export only specific folders (e.g., "Temp" or "临时")
-- **Smart Organize** - Auto-classify bookmarks with local Ollama models, with built-in JSON rules as fallback
-- **Empty Folder Cleanup** - Remove empty folders during export
-- **Incremental Update** - Merge new bookmarks into existing export file
-- **Unicode/Emoji Support** - Preserve folder names with emoji and special characters
+### ⚡ Smart Processing & Exporting
+- **URL Deduplication**: Automatically eliminate duplicate links by canonical URL matching.
+- **Flat Structure Export**: Strip unnecessary root directory nesting (e.g. `Imported > Waterfox > Brave`) to keep top-level folders clean.
+- **Smart Categorization**: Classify bookmarks with local Ollama AI models (`qwen2.5:7b`), with built-in rule engines as fallback.
+- **Folder Filtering**: Export targeted sub-folders (e.g. `Temp` or `临时`).
+- **Unicode & Emoji Preservation**: Full support for international characters and emoji tags.
 
-### Safety Features
-- **Non-destructive by default** - Export only, no modifications
-- **Backup command** - Full browser data backup
-- **Dry-run mode** - Preview changes before applying
-- **Database safety** - Copies databases before reading
+### 🔍 Dual-Network Dead Link Verification
+- **Dual Verification**: Validates links using both Proxy and Direct connections to eliminate geo-blocking false positives.
+- **Categorized Results**: Separates check outputs into `valid.html`, `invalid.html`, `uncertain.html`, and `skipped.html`.
+- **Lossless Result Merging**: Merge categorized verification HTML files into a single structured report.
+
+### 🛡️ Safety & Pure Rust Architecture
+- **Non-Destructive by Default**: Never modifies original browser databases without explicit confirmation.
+- **Zero Shell Dependency**: Replaced shell scripts with pure, multi-threaded Rust binaries.
+
+---
 
 ## Quick Start
 
+### 1. Web GUI Mode (Recommended)
+
+Launch the visual dashboard in your browser:
+
 ```bash
-# Build
+cargo run -- gui
+# or with release binary
+bsync gui --port 7890
+```
+
+### 2. Command Line Interface (CLI)
+
+```bash
+# Build release binary
 cargo build --release
 cp target/release/browser-bookmark-sync /usr/local/bin/bsync
 
-# List detected browsers
+# List all detected browsers and profile counts
 bsync list
 
-# Export all bookmarks (deduplicated, merged)
-bsync export -d --merge
+# Export all bookmarks from ALL profiles to Downloads (Deduplicated & Merged)
+bsync export -o ~/Downloads/all_bookmarks.html --all-profiles --flat -d --clean --merge
 
-# Export Safari with reading list
-bsync export -b safari --reading-list
+# Run complete pipeline: Export -> Organize -> Check -> Merge
+bsync pipeline -o ~/Downloads/pipeline_output
 
-# Export specific folder only
-bsync export -f "临时" -d
+# Check bookmark validity via local proxy
+bsync check --file ~/Downloads/all_bookmarks.html --proxy http://127.0.0.1:7890 --limit 200 --export-dir ~/Downloads/check_results
 
-# Export with history (last 30 days)
-bsync export --history --history-days 30
-
-# Analyze bookmarks for issues
-bsync analyze
-
-# Smart organize (preview)
-bsync organize --dry-run
-
-# Force local Ollama classification
-bsync organize --classifier ollama --ollama-model qwen2.5:7b --dry-run
+# Merge check results into single HTML
+bsync merge-results --dir ~/Downloads/check_results --output ~/Downloads/merged_bookmarks.html
 ```
 
-## Commands
+---
 
-| Command | Description |
-|---------|-------------|
-| `list` | List detected browsers and bookmark counts |
-| `export` | Export bookmarks/history/cookies to file |
-| `check` | Check bookmark URL validity (dual-network) |
-| `analyze` | Check for duplicates, empty folders, issues |
-| `organize` | Smart organize with local Ollama classification, with rules fallback |
-| `pipeline` | Run complete pipeline: Export -> Organize -> Check -> Merge |
-| `merge-results` | Merge check result HTML files into unified HTML |
-| `waterfox-cleanup` | Full Waterfox cleanup & export pipeline |
-| `validate` | Validate bookmark integrity |
-| `history` | Sync history between browsers |
-| `backup` | Create full backup of all browser data |
-| `rules` | Show available classification rules |
-| `export-data` | Export sensitive data (passwords, cookies) |
+## Command Reference
 
-### Native Cargo Executables
+| Command | Subcommand / Alias | Description |
+|---------|--------------------|-------------|
+| `gui` | `ui`, `dashboard` | Start local Web GUI dashboard in browser |
+| `list` | `l`, `ls` | List all detected browsers, profiles, and bookmark counts |
+| `export` | `e`, `exp` | Export bookmarks across browsers and profiles to HTML/JSON |
+| `check` | `c` | Check bookmark URL validity using dual-network validation |
+| `merge-results` | `mrg` | Combine check result files (`valid.html` etc.) into single file |
+| `pipeline` | `pipe` | Run end-to-end processing pipeline |
+| `organize` | `org` | Smart organize bookmarks using AI or built-in rules |
+| `analyze` | `ana` | Analyze bookmarks for issues, duplicates, and broken paths |
+| `waterfox-cleanup` | `wfc` | Dedicated Waterfox cleanup and export pipeline |
+| `backup` | `bak` | Create full database backup of all installed browsers |
 
-The repository provides pure Rust binary targets replacing shell scripts:
+---
+
+## Pure Rust Executables
+
+Native binaries located under `src/bin/`:
 
 ```bash
-# Full Processing Pipeline
-cargo run --bin full_process -- -o ~/Downloads/pipeline_results
-
-# Merge Check Results HTML
-cargo run --bin merge_results -- -d ~/Downloads/pipeline_results/03_check_results -o ~/Downloads/merged.html
-
-# Waterfox Cleanup Pipeline
-cargo run --bin waterfox_cleanup -- -o ~/Downloads/waterfox_cleaned.html
-
-# One-Click Sync & Export to Downloads
+# Run one-click full bookmark sync to ~/Downloads/all_bookmarks.html
 cargo run --bin sync_now
-```
 
-## URL Validity Check (NEW)
+# Run full processing pipeline
+cargo run --bin full_process -- -o ~/Downloads/pipeline_out
 
-Check if bookmark URLs are still valid using dual-network validation (proxy + direct).
+# Merge verification results HTML
+cargo run --bin merge_results -- -d ~/Downloads/check_results -o ~/Downloads/final_merged.html
 
-```bash
-# Check all bookmarks (direct connection only)
-bsync check
-
-# Check with proxy for geo-restricted URLs
-bsync check --proxy http://127.0.0.1:7890
-
-# Preview invalid bookmarks without deleting
-bsync check --dry-run --verbose
-
-# Delete confirmed invalid bookmarks
-bsync check --proxy http://127.0.0.1:7890 --delete
-
-# Check specific browser
-bsync check -b safari --verbose
-```
-
-### Check Options
-
-```bash
-bsync check [OPTIONS]
-
--p, --proxy <URL>        Proxy server URL (e.g., http://127.0.0.1:7890)
--t, --timeout <SECS>     Request timeout (default: 10)
--c, --concurrency <N>    Concurrent requests (default: 10)
--b, --browsers <LIST>    Target browsers (default: all)
---delete                 Delete confirmed invalid bookmarks
---dry-run                Preview mode, no actual changes
--v, --verbose            Show HTTP status codes
-```
-
-### Validation Logic
-
-- **Valid**: Either proxy OR direct connection succeeds (HTTP 2xx/3xx)
-- **Invalid**: Both proxy AND direct connections fail (HTTP 4xx/5xx or error)
-- **Uncertain**: Single network mode failure, timeout, or conflicting results
-
-## Export Options
-
-```bash
-bsync export [OPTIONS]
-
--o, --output <FILE>      Output path (default: ~/Desktop/bookmarks.html)
--b, --browsers <LIST>    Source browsers (comma-separated, or 'all')
--d, --deduplicate        Remove duplicate bookmarks
--m, --merge              Flatten into single structure
---flat                   Remove browser root folders (Waterfox, Brave, etc.)
--r, --reading-list       Include Safari reading list
--f, --folder <NAME>      Only export specific folder
---history                Include browsing history
---history-days <N>       Days of history (default: 30, 0 = all)
---cookies                Include cookies
---clean                  Remove empty folders
---include <FILE>         Import from existing HTML file
--u, --update <FILE>      Incremental update: merge into existing file
--v, --verbose            Verbose output
-```
-
-### Flat Export (NEW)
-
-Prevents nested folder structure when importing to browsers:
-
-```bash
-# Without --flat: Imported > Waterfox > Brave Nightly > ...
-# With --flat: Your folders appear directly at top level
-
-bsync export --flat -d --clean -o bookmarks.html
-```
-
-### Organize Options (NEW)
-
-The `organize` command now supports merging and organizing multiple local files without needing browser access:
-
-```bash
-# Organize from multiple local files, deduplicate, and merge into one
-bsync organize -f safari.html brave.html -o merged_organized.html -d --clean
-
-# File mode usage (no browser engine needed)
-bsync organize [OPTIONS]
-
--f, --file <FILE>...       Input bookmark files (HTML/JSON). Multiple files are merged.
--o, --output <OUTPUT>      Output file path (auto-generated if not specified)
--d, --deduplicate          Remove duplicate bookmarks by URL (default: true)
-    --clean                Remove empty folders after organizing (default: true)
-    --classifier <MODE>    Classification backend: `auto`, `ollama`, `rules`
-    --ollama-model <MODEL> Ollama model name (default: `qwen2.5:7b`)
-    --ollama-url <URL>     Ollama API base URL (default: `http://127.0.0.1:11434`)
-    --ollama-batch-size <N>Bookmarks per Ollama request (default: `20`)
-```
-
-`--classifier auto` first tries local Ollama semantic classification and falls back to the legacy rule engine if Ollama is unavailable.
-
-### Incremental Update (NEW)
-
-Add new bookmarks to existing export without duplicates:
-
-```bash
-# First export
-bsync export -o bookmarks.html
-
-# Later: add only new bookmarks
-bsync export -u bookmarks.html -o bookmarks.html
-```
-
-## Dependencies
-
-```bash
-# macOS only (uses native browser database formats)
-cargo build --release
+# Run dedicated Waterfox cleanup pipeline
+cargo run --bin waterfox_cleanup -- -o ~/Downloads/waterfox_clean.html
 ```
 
 ---
 
-## 功能特性
+## 简体中文说明
 
-### 多浏览器支持
-- Safari、Chrome、Brave、Edge、Arc、Waterfox、Firefox
-- 自动检测已安装的浏览器
-- Safari 阅读列表导出
+> 基于 Rust 构建的高性能 macOS 跨浏览器收藏夹同步、去重、死链检测与全量导出工具 —— 现已支持全新的 Web 可视化控制面板！
 
-### 导出功能
-- **书签** - 标准 Netscape HTML 格式
-- **历史记录** - 可配置日期范围
-- **Cookies** - 导出为 CSV、JSON 或 Netscape 格式
-- **密码** - Chromium 系浏览器（需要钥匙串访问权限）
-- **下载记录** - 下载历史
+### 主要特性
 
-### 智能处理
-- **去重** - 按 URL 去除重复书签
-- **合并** - 将多个浏览器的文件夹结构扁平化
-- **扁平导出** - 移除浏览器根文件夹（避免 "Imported > Waterfox > Brave" 嵌套）
-- **文件夹过滤** - 仅导出特定文件夹（如"临时"）
-- **智能整理** - 优先使用本地 Ollama 语义分类，失败时回退到内置 JSON 规则
-- **清理空文件夹** - 导出时移除空文件夹
-- **增量更新** - 将新书签合并到现有导出文件
-- **Unicode/Emoji 支持** - 保留带 emoji 和特殊字符的文件夹名称
+#### 🌐 现代 Web GUI 控制面板 (`bsync gui`)
+- **可视化控制台**：运行 `bsync gui` 启动本地暗黑 glassmorphism 风格 Web 控制台。
+- **浏览器自动识别**：实时检测已安装浏览器（Safari, Chrome, Brave, Waterfox, LibreWolf, Firefox Nightly）及收藏夹数量。
+- **一键导出与合并**：可视化配置导出规则、URL 去重、多配置合并。
+- **实时日志流**：内置 SSE（Server-Sent Events）日志终端，实时追踪引擎处理细节。
 
-### 安全特性
-- **默认非破坏性** - 仅导出，不修改
-- **备份命令** - 完整浏览器数据备份
-- **预览模式** - 应用更改前预览
-- **数据库安全** - 读取前复制数据库
+#### 📚 多浏览器与全 Profile 集中收集
+- **支持浏览器**：Safari, Chrome, Brave, Edge, Arc, Waterfox, Firefox, LibreWolf。
+- **全 Profile 扫描**：自动扫描 Chromium 与 Gecko 浏览器下所有用户 Profile 目录，将多账号/多配置收藏夹合并归类。
+- **Safari 额外支持**：支持导出 Safari 阅读列表（Reading List）为标准书签。
 
-## 快速开始
+#### ⚡ 智能处理与导出
+- **URL 智能去重**：按规范化 URL 自动剔除重复书签。
+- **扁平导出**：剥离多余的浏览器根文件夹（如 `Imported > Waterfox > Brave`），保持顶级目录整洁。
+- **AI 智能整理**：优先使用本地 Ollama AI 模型（`qwen2.5:7b`）自动分类，无 AI 环境自动退回内置规则引擎。
+- ** Unicode/Emoji 保留**：完全保留特殊字符及 Emoji 文件夹名称。
+
+#### 🔍 双网络死链检测
+- **双网验证**：同时使用代理与直连双重测试，杜绝因网络屏蔽导致的误判。
+- **分类输出**：将结果拆分为 `valid.html`（有效）、`invalid.html`（无效）、`uncertain.html`（不确定）、`skipped.html`（跳过）。
+- **无损合并**：提供 `merge-results` 命令将分类文件无损合并为一个标准 HTML 报告。
+
+### CLI 快速使用
 
 ```bash
-# 编译
-cargo build --release
-cp target/release/browser-bookmark-sync /usr/local/bin/bsync
+# 启动 GUI 界面
+bsync gui
 
-# 列出检测到的浏览器
-bsync list
-
-# 导出所有书签（去重、合并）
-bsync export -d --merge
-
-# 导出 Safari 及阅读列表
-bsync export -b safari --reading-list
-
-# 仅导出特定文件夹
-bsync export -f "临时" -d
-
-# 导出含历史记录（最近30天）
-bsync export --history --history-days 30
-
-# 分析书签问题
-bsync analyze
-
-# 智能整理（预览）
-bsync organize --dry-run
-
-# 强制使用本地 Ollama 分类
-bsync organize --classifier ollama --ollama-model qwen2.5:7b --dry-run
+# 命令行全量导出所有 Profile 收藏夹至下载文件夹
+bsync export -o ~/Downloads/all_bookmarks.html --all-profiles --flat -d --clean --merge
 ```
-
-## 命令说明
-
-| 命令 | 说明 |
-|------|------|
-| `list` | 列出检测到的浏览器和书签数量 |
-| `export` | 导出书签/历史/cookies 到文件 |
-| `check` | 检查收藏夹URL有效性（双网络验证） |
-| `analyze` | 检查重复、空文件夹等问题 |
-| `organize` | 使用本地 Ollama 智能整理，规则引擎作为兜底 |
-| `validate` | 验证书签完整性 |
-| `history` | 在浏览器间同步历史记录 |
-| `backup` | 创建所有浏览器数据的完整备份 |
-| `rules` | 显示可用的分类规则 |
-| `export-data` | 导出敏感数据（密码、cookies） |
-
-## 智能整理选项 (NEW)
-
-`organize` 命令现在支持合并整理多个本地收藏夹文件，无需浏览器引擎依赖：
-
-```bash
-# 从多个本地文件合并、去重并智能整理为一个文件
-bsync organize -f safari.html brave.html -o merged_organized.html -d --clean
-
-# 文件模式参数说明
-bsync organize [OPTIONS]
-
--f, --file <FILE>...       输入书签文件 (HTML/JSON)。支持多个文件合并
--o, --output <OUTPUT>      输出文件路径（未指定时自动生成）
--d, --deduplicate          按 URL 移除重复书签（默认：true）
-    --clean                整理后移除空文件夹（默认：true）
-    --classifier <MODE>    分类后端：`auto`、`ollama`、`rules`
-    --ollama-model <MODEL> Ollama 模型名（默认：`qwen2.5:7b`）
-    --ollama-url <URL>     Ollama API 地址（默认：`http://127.0.0.1:11434`）
-    --ollama-batch-size <N>每次请求发送的书签数（默认：`20`）
-```
-
-`--classifier auto` 会先尝试本地 Ollama 语义分类，若 Ollama 不可用则自动回退到旧规则引擎。
-
-## URL有效性检查（新功能）
-
-使用代理+直连双网络验证检查收藏夹URL是否有效。
-
-```bash
-# 检查所有收藏夹（仅直连）
-bsync check
-
-# 使用代理检查（适用于地域限制的URL）
-bsync check --proxy http://127.0.0.1:7890
-
-# 预览无效收藏夹（不删除）
-bsync check --dry-run --verbose
-
-# 删除确认无效的收藏夹
-bsync check --proxy http://127.0.0.1:7890 --delete
-```
-
-### 验证逻辑
-
-- **有效**: 代理或直连任一成功（HTTP 2xx/3xx）
-- **无效**: 代理和直连都失败（HTTP 4xx/5xx或连接错误）
-- **不确定**: 单网络模式失败、超时或结果冲突
 
 ---
 
-MIT License
+## License
+
+MIT License © 2026 Browser Sync Team
