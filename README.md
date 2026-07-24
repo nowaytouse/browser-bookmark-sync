@@ -77,11 +77,32 @@ bsync organize --classifier ollama --ollama-model qwen2.5:7b --dry-run
 | `check` | Check bookmark URL validity (dual-network) |
 | `analyze` | Check for duplicates, empty folders, issues |
 | `organize` | Smart organize with local Ollama classification, with rules fallback |
+| `pipeline` | Run complete pipeline: Export -> Organize -> Check -> Merge |
+| `merge-results` | Merge check result HTML files into unified HTML |
+| `waterfox-cleanup` | Full Waterfox cleanup & export pipeline |
 | `validate` | Validate bookmark integrity |
 | `history` | Sync history between browsers |
 | `backup` | Create full backup of all browser data |
 | `rules` | Show available classification rules |
 | `export-data` | Export sensitive data (passwords, cookies) |
+
+### Native Cargo Executables
+
+The repository provides pure Rust binary targets replacing shell scripts:
+
+```bash
+# Full Processing Pipeline
+cargo run --bin full_process -- -o ~/Downloads/pipeline_results
+
+# Merge Check Results HTML
+cargo run --bin merge_results -- -d ~/Downloads/pipeline_results/03_check_results -o ~/Downloads/merged.html
+
+# Waterfox Cleanup Pipeline
+cargo run --bin waterfox_cleanup -- -o ~/Downloads/waterfox_cleaned.html
+
+# One-Click Sync & Export to Downloads
+cargo run --bin sync_now
+```
 
 ## URL Validity Check (NEW)
 

@@ -329,6 +329,58 @@ enum Commands {
         #[arg(short, long, default_value = "csv")]
         format: String,
     },
+
+    /// Run full bookmark processing pipeline (Export -> Organize -> Check -> Merge)
+    #[command(alias = "full-process", alias = "process", alias = "pipe")]
+    Pipeline {
+        /// Output directory path
+        #[arg(short, long, default_value = "~/Downloads/pipeline_results")]
+        output_dir: String,
+
+        /// Source browsers (comma-separated, or 'all')
+        #[arg(short, long, default_value = "all")]
+        browsers: String,
+
+        /// Include extra HTML file to merge
+        #[arg(short, long)]
+        include: Option<String>,
+
+        /// Proxy URL for dead link checking
+        #[arg(short, long)]
+        proxy: Option<String>,
+
+        /// Check limit (0 = check all)
+        #[arg(short, long, default_value = "0")]
+        limit: usize,
+
+        /// Concurrent check tasks
+        #[arg(short = 'c', long, default_value = "10")]
+        concurrency: usize,
+
+        /// HTTP timeout in seconds
+        #[arg(short, long, default_value = "15")]
+        timeout: u64,
+    },
+
+    /// Merge check result HTML files into a single unified HTML file
+    #[command(alias = "mr")]
+    MergeResults {
+        /// Result directory containing valid.html, invalid.html, etc.
+        #[arg(short, long)]
+        dir: String,
+
+        /// Output file path
+        #[arg(short, long, default_value = "~/Downloads/merged_results.html")]
+        output: String,
+    },
+
+    /// Run full Waterfox bookmark cleanup process
+    #[command(alias = "wc")]
+    WaterfoxCleanup {
+        /// Output file path
+        #[arg(short, long, default_value = "~/Downloads/waterfox_cleaned.html")]
+        output: String,
+    },
 }
 
 fn print_sync_warning() {
@@ -1390,6 +1442,139 @@ async fn main() -> Result<()> {
 
             info!("");
             info!("✅ Export complete: {}", output_dir);
+        }
+
+        Commands::Pipeline {
+            output_dir,
+            browsers,
+            include,
+            proxy,
+            limit,
+            concurrency,
+            timeout,
+        } => {
+            let expanded_out_dir = expand_path(&output_dir);
+            std::fs::create_dir_all(&expanded_out_dir)?;
+
+            info!("🚀 Running Bookmark Processing Pipeline");
+            info!("   Output Directory: {}", expanded_out_dir);
+
+            // Step 1: Export
+            let export_file = format!("{}/01_exported.html", expanded_out_dir);
+            let mut extra_bookmarks = Vec::new();
+            if let Some(ref inc_path) = include {
+                let expanded_inc = expand_path(inc_path);
+                if let Ok(imported) = sync::import_bookmarks_from_html(&expanded_inc) {
+                    info!("   📥 Included {} bookmarks from {}", imported.len(), expanded_inc);
+                    extra_bookmarks = imported;
+                }
+            }
+
+            let export_cfg = sync::ExportConfig {
+                merge: true,
+                deduplicate: true,
+                clean_empty: true,
+                verbose: true,
+                folder_filter: None,
+                flat: true,
+                wrap_folder: Some("📁镜像文件夹".to_string()),
+                no_wrap: false,
+                all_profiles: true,
+            };
+
+            let engine = SyncEngine::new()?;
+            let exported_count = engine
+                .export_to_html_with_extra(
+                    Some(&browsers),
+                    &export_file,
+                    &export_cfg,
+                    extra_bookmarks,
+                )
+                .await?;
+            info!("   ✅ Step 1: Exported {} bookmarks", exported_count);
+
+            // Step 2: Organize
+            let organized_file = format!("{}/02_organized.html", expanded_out_dir);
+            let _ = sync::smart_organize_files(
+                &[&export_file],
+                &organized_file,
+                None,
+                "auto",
+                "qwen2.5:7b",
+                "http://127.0.0.1:11434",
+                20,
+                true,
+                true,
+                true,
+                false,
+                true,
+            );
+            info!("   ✅ Step 2: Organized bookmarks");
+
+            // Step 3: Check
+            let results_dir = format!("{}/03_check_results", expanded_out_dir);
+            std::fs::create_dir_all(&results_dir)?;
+
+            let checker = crate::url_checker::UrlChecker::new(crate::url_checker::CheckerConfig {
+                proxy_url: proxy,
+                timeout_secs: timeout,
+                concurrency,
+                retry_count: 1,
+            })?;
+
+            if let Ok(imported_org) = sync::import_bookmarks_from_html(&organized_file) {
+                let urls = url_checker::collect_urls_from_bookmarks(&imported_org);
+                let mut unique_urls: Vec<String> = urls.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+                if limit > 0 && unique_urls.len() > limit {
+                    unique_urls.truncate(limit);
+                }
+
+                let results = checker.check_batch(unique_urls, |_, _, _| {}).await;
+
+                let valid_urls: std::collections::HashSet<String> = results.iter().filter(|r| r.status == url_checker::ValidationStatus::Valid).map(|r| r.url.clone()).collect();
+                let invalid_urls: std::collections::HashSet<String> = results.iter().filter(|r| r.status == url_checker::ValidationStatus::Invalid).map(|r| r.url.clone()).collect();
+                let uncertain_urls: std::collections::HashSet<String> = results.iter().filter(|r| r.status == url_checker::ValidationStatus::Uncertain).map(|r| r.url.clone()).collect();
+                let skipped_urls: std::collections::HashSet<String> = results.iter().filter(|r| r.status == url_checker::ValidationStatus::Skipped).map(|r| r.url.clone()).collect();
+
+                let valid_bms = url_checker::extract_by_status_preserve_structure(&imported_org, &valid_urls);
+                let invalid_bms = url_checker::extract_by_status_preserve_structure(&imported_org, &invalid_urls);
+                let uncertain_bms = url_checker::extract_by_status_preserve_structure(&imported_org, &uncertain_urls);
+                let skipped_bms = url_checker::extract_by_status_preserve_structure(&imported_org, &skipped_urls);
+
+                let _ = sync::export_bookmarks_to_html(&valid_bms, &format!("{}/valid.html", results_dir));
+                let _ = sync::export_bookmarks_to_html(&invalid_bms, &format!("{}/invalid.html", results_dir));
+                let _ = sync::export_bookmarks_to_html(&uncertain_bms, &format!("{}/uncertain.html", results_dir));
+                let _ = sync::export_bookmarks_to_html(&skipped_bms, &format!("{}/skipped.html", results_dir));
+            }
+
+            // Step 4: Merge check results
+            let final_file = format!("{}/FINAL_VALID.html", expanded_out_dir);
+            sync::merge_check_result_files(&results_dir, &final_file)?;
+            info!("   ✅ Step 4: Final results saved to {}", final_file);
+        }
+
+        Commands::MergeResults { dir, output } => {
+            let expanded_dir = expand_path(&dir);
+            let expanded_output = expand_path(&output);
+            sync::merge_check_result_files(&expanded_dir, &expanded_output)?;
+        }
+
+        Commands::WaterfoxCleanup { output } => {
+            let expanded_output = expand_path(&output);
+            let engine = SyncEngine::new()?;
+            let config = sync::ExportConfig {
+                merge: true,
+                deduplicate: true,
+                clean_empty: true,
+                verbose: true,
+                folder_filter: None,
+                flat: true,
+                wrap_folder: Some("📁镜像文件夹".to_string()),
+                no_wrap: false,
+                all_profiles: true,
+            };
+            engine.export_to_html_with_extra(Some("waterfox"), &expanded_output, &config, vec![]).await?;
+            info!("✅ Waterfox cleanup export complete: {}", expanded_output);
         }
     }
 

@@ -6318,6 +6318,101 @@ pub fn export_bookmarks_to_html_flat(
     Ok((final_count, flatten_stats, dedupe_stats, clean_stats))
 }
 
+/// Merge check result files (valid.html, invalid.html, uncertain.html, skipped.html) from result_dir into output_path
+pub fn merge_check_result_files(result_dir: &str, output_path: &str) -> Result<usize> {
+    use std::path::Path;
+
+    let dir_path = Path::new(result_dir);
+    if !dir_path.exists() {
+        anyhow::bail!("Result directory does not exist: {}", result_dir);
+    }
+
+    info!("📦 Merging check results from: {}", result_dir);
+
+    let mut result_folders = Vec::new();
+
+    let sections = [
+        ("valid.html", "✅ 有效"),
+        ("invalid.html", "❌ 无效"),
+        ("uncertain.html", "❓ 不确定"),
+        ("skipped.html", "⏭️ 跳过"),
+    ];
+
+    for (file_name, section_title) in &sections {
+        let file_path = dir_path.join(file_name);
+        if file_path.exists() {
+            match import_bookmarks_from_html(&file_path.to_string_lossy()) {
+                Ok(bookmarks) => {
+                    let count = count_tree_bookmarks(&bookmarks);
+                    info!("   {}: {} bookmarks", section_title, count);
+                    let folder = Bookmark {
+                        id: format!("section-{}", file_name.replace(".html", "")),
+                        title: section_title.to_string(),
+                        url: None,
+                        folder: true,
+                        children: bookmarks,
+                        date_added: Some(chrono::Utc::now().timestamp_millis()),
+                        date_modified: None,
+                    };
+                    result_folders.push(folder);
+                }
+                Err(e) => {
+                    warn!("   Failed to read {}: {}", file_name, e);
+                }
+            }
+        }
+    }
+
+    // Add temp placeholder folder
+    let temp_folder = Bookmark {
+        id: "section-temp".to_string(),
+        title: "👀 临时".to_string(),
+        url: None,
+        folder: true,
+        children: vec![Bookmark {
+            id: "placeholder-1".to_string(),
+            title: "📌 临时书签放这里".to_string(),
+            url: Some("about:blank".to_string()),
+            folder: false,
+            children: vec![],
+            date_added: Some(chrono::Utc::now().timestamp_millis()),
+            date_modified: None,
+        }],
+        date_added: Some(chrono::Utc::now().timestamp_millis()),
+        date_modified: None,
+    };
+    result_folders.push(temp_folder);
+
+    // Wrap in top-level 📁镜像文件夹
+    let mirror_wrap = Bookmark {
+        id: "mirror-wrap-root".to_string(),
+        title: "📁镜像文件夹".to_string(),
+        url: None,
+        folder: true,
+        children: result_folders,
+        date_added: Some(chrono::Utc::now().timestamp_millis()),
+        date_modified: None,
+    };
+
+    let final_bookmarks = vec![mirror_wrap];
+    let count = count_tree_bookmarks(&final_bookmarks);
+
+    export_bookmarks_to_html(&final_bookmarks, output_path)?;
+    info!("✅ Merged {} bookmarks to {}", count, output_path);
+    Ok(count)
+}
+
+fn count_tree_bookmarks(bookmarks: &[Bookmark]) -> usize {
+    let mut count = 0;
+    for b in bookmarks {
+        if b.url.is_some() {
+            count += 1;
+        }
+        count += count_tree_bookmarks(&b.children);
+    }
+    count
+}
+
 // ============================================================================
 // Property-Based Tests for Export Quality
 // ============================================================================
