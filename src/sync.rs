@@ -2698,7 +2698,7 @@ impl ClassificationRule {
 
 /// Built-in classification rules
 pub fn get_builtin_rules() -> Vec<ClassificationRule> {
-    const JSON: &str = include_str!("../assets/builtin_rules.json");
+    const JSON: &str = include_str!("assets/builtin_rules.json");
     serde_json::from_str(JSON).expect("Failed to parse built-in rules from JSON")
 }
 
@@ -6670,7 +6670,7 @@ mod dump_rules_test {
             "Legal information, courts, and copyright resources",
         ));
         let json = serde_json::to_string_pretty(&rules).unwrap();
-        fs::create_dir_all("assets").unwrap();
-        fs::write("assets/builtin_rules.json", json).unwrap();
+        fs::create_dir_all("src/assets").unwrap();
+        fs::write("src/assets/builtin_rules.json", json).unwrap();
     }
 }

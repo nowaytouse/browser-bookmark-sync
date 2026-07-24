@@ -72,3 +72,7 @@ plist = "1.7"
 [dev-dependencies]
 tempfile = "3.25"
 proptest = "1.4"
+
+[[test]]
+name = "integration_test"
+path = "src/tests/integration_test.rs"
