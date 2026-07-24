@@ -25,7 +25,7 @@ Cross-browser bookmark management tool for macOS. Export, merge, deduplicate, an
 - **Merge** - Flatten folder structure from multiple browsers
 - **Flat Export** - Remove browser root folders (prevents nested "Imported > Waterfox > Brave")
 - **Folder Filter** - Export only specific folders (e.g., "Temp" or "临时")
-- **Smart Organize** - Auto-classify bookmarks using 100 built-in JSON-powered rules (`assets/builtin_rules.json`)
+- **Smart Organize** - Auto-classify bookmarks with local Ollama models, with built-in JSON rules as fallback
 - **Empty Folder Cleanup** - Remove empty folders during export
 - **Incremental Update** - Merge new bookmarks into existing export file
 - **Unicode/Emoji Support** - Preserve folder names with emoji and special characters
@@ -63,6 +63,9 @@ bsync analyze
 
 # Smart organize (preview)
 bsync organize --dry-run
+
+# Force local Ollama classification
+bsync organize --classifier ollama --ollama-model qwen2.5:7b --dry-run
 ```
 
 ## Commands
@@ -73,7 +76,7 @@ bsync organize --dry-run
 | `export` | Export bookmarks/history/cookies to file |
 | `check` | Check bookmark URL validity (dual-network) |
 | `analyze` | Check for duplicates, empty folders, issues |
-| `organize` | Smart organize by URL patterns (100 rules, JSON-driven) |
+| `organize` | Smart organize with local Ollama classification, with rules fallback |
 | `validate` | Validate bookmark integrity |
 | `history` | Sync history between browsers |
 | `backup` | Create full backup of all browser data |
@@ -168,7 +171,13 @@ bsync organize [OPTIONS]
 -o, --output <OUTPUT>      Output file path (auto-generated if not specified)
 -d, --deduplicate          Remove duplicate bookmarks by URL (default: true)
     --clean                Remove empty folders after organizing (default: true)
+    --classifier <MODE>    Classification backend: `auto`, `ollama`, `rules`
+    --ollama-model <MODEL> Ollama model name (default: `qwen2.5:7b`)
+    --ollama-url <URL>     Ollama API base URL (default: `http://127.0.0.1:11434`)
+    --ollama-batch-size <N>Bookmarks per Ollama request (default: `20`)
 ```
+
+`--classifier auto` first tries local Ollama semantic classification and falls back to the legacy rule engine if Ollama is unavailable.
 
 ### Incremental Update (NEW)
 
@@ -210,7 +219,7 @@ cargo build --release
 - **合并** - 将多个浏览器的文件夹结构扁平化
 - **扁平导出** - 移除浏览器根文件夹（避免 "Imported > Waterfox > Brave" 嵌套）
 - **文件夹过滤** - 仅导出特定文件夹（如"临时"）
-- **智能整理** - 使用 100 条内置 JSON 规则（`assets/builtin_rules.json`）自动分类书签
+- **智能整理** - 优先使用本地 Ollama 语义分类，失败时回退到内置 JSON 规则
 - **清理空文件夹** - 导出时移除空文件夹
 - **增量更新** - 将新书签合并到现有导出文件
 - **Unicode/Emoji 支持** - 保留带 emoji 和特殊字符的文件夹名称
@@ -248,6 +257,9 @@ bsync analyze
 
 # 智能整理（预览）
 bsync organize --dry-run
+
+# 强制使用本地 Ollama 分类
+bsync organize --classifier ollama --ollama-model qwen2.5:7b --dry-run
 ```
 
 ## 命令说明
@@ -258,7 +270,7 @@ bsync organize --dry-run
 | `export` | 导出书签/历史/cookies 到文件 |
 | `check` | 检查收藏夹URL有效性（双网络验证） |
 | `analyze` | 检查重复、空文件夹等问题 |
-| `organize` | 按 URL 模式智能整理（100 条 JSON 规则） |
+| `organize` | 使用本地 Ollama 智能整理，规则引擎作为兜底 |
 | `validate` | 验证书签完整性 |
 | `history` | 在浏览器间同步历史记录 |
 | `backup` | 创建所有浏览器数据的完整备份 |
@@ -280,7 +292,13 @@ bsync organize [OPTIONS]
 -o, --output <OUTPUT>      输出文件路径（未指定时自动生成）
 -d, --deduplicate          按 URL 移除重复书签（默认：true）
     --clean                整理后移除空文件夹（默认：true）
+    --classifier <MODE>    分类后端：`auto`、`ollama`、`rules`
+    --ollama-model <MODEL> Ollama 模型名（默认：`qwen2.5:7b`）
+    --ollama-url <URL>     Ollama API 地址（默认：`http://127.0.0.1:11434`）
+    --ollama-batch-size <N>每次请求发送的书签数（默认：`20`）
 ```
+
+`--classifier auto` 会先尝试本地 Ollama 语义分类，若 Ollama 不可用则自动回退到旧规则引擎。
 
 ## URL有效性检查（新功能）
 

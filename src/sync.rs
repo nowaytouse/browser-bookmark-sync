@@ -26,7 +26,7 @@ pub struct HubConfig {
 }
 
 /// Configuration for HTML export operations
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExportConfig {
     pub merge: bool,
     pub deduplicate: bool,
@@ -40,6 +40,24 @@ pub struct ExportConfig {
     pub wrap_folder: Option<String>,
     /// Disable wrapping (default: false, wrapping is enabled by default)
     pub no_wrap: bool,
+    /// Export from all user profiles of each browser
+    pub all_profiles: bool,
+}
+
+impl Default for ExportConfig {
+    fn default() -> Self {
+        Self {
+            merge: false,
+            deduplicate: false,
+            clean_empty: false,
+            verbose: false,
+            folder_filter: None,
+            flat: false,
+            wrap_folder: None,
+            no_wrap: false,
+            all_profiles: true,
+        }
+    }
 }
 
 /// Location information for a bookmark in the tree
@@ -2591,7 +2609,7 @@ impl ClassificationRule {
 
         false
     }
-    
+
     /// Check if a bookmark matches this rule and return the match reason
     fn matches_with_reason(&self, url: &str, title: &str) -> Option<String> {
         let url_lower = url.to_lowercase();
@@ -2693,6 +2711,81 @@ struct ClassificationStats {
     unclassified: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClassifierBackend {
+    Auto,
+    Ollama,
+    Rules,
+}
+
+impl ClassifierBackend {
+    fn parse(value: &str) -> Result<Self> {
+        match value.to_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "ollama" => Ok(Self::Ollama),
+            "rules" => Ok(Self::Rules),
+            other => anyhow::bail!(
+                "Unsupported classifier '{}'. Use auto, ollama, or rules.",
+                other
+            ),
+        }
+    }
+}
+
+struct ClassificationConfig<'a> {
+    rules_file: Option<&'a str>,
+    classifier: &'a str,
+    ollama_model: &'a str,
+    ollama_url: &'a str,
+    ollama_batch_size: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FolderAssignment {
+    folder_name: String,
+    folder_name_en: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OllamaBookmarkInput {
+    id: String,
+    title: String,
+    url: String,
+    domain: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct OllamaBatchResponse {
+    items: Vec<OllamaBookmarkOutput>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct OllamaBookmarkOutput {
+    id: String,
+    folder_name: String,
+    #[serde(default)]
+    folder_name_en: Option<String>,
+    #[serde(default)]
+    confidence: Option<f32>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OllamaGenerateResponse {
+    response: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct OllamaGenerateRequest<'a> {
+    model: &'a str,
+    prompt: String,
+    stream: bool,
+    format: &'a str,
+}
+
 impl SyncEngine {
     /// Print built-in classification rules
     pub fn print_builtin_rules() {
@@ -2764,22 +2857,8 @@ impl SyncEngine {
         println!("   }}\n");
     }
 
-    /// Smart organize bookmarks using rule engine
-    pub async fn smart_organize(
-        &mut self,
-        browser_names: Option<&str>,
-        rules_file: Option<&str>,
-        uncategorized_only: bool,
-        show_stats: bool,
-        dry_run: bool,
-        verbose: bool,
-    ) -> Result<()> {
-        info!("🧠 Starting smart bookmark organization");
-
-        // Load rules
+    fn load_classification_rules(rules_file: Option<&str>) -> Result<Vec<ClassificationRule>> {
         let mut rules = get_builtin_rules();
-
-        // Load custom rules if provided
         if let Some(file_path) = rules_file {
             info!("📂 Loading custom rules from: {}", file_path);
             let content =
@@ -2790,20 +2869,390 @@ impl SyncEngine {
             rules.extend(custom_rules);
         }
 
-        // Sort rules by priority (higher first), then by specificity (higher first)
-        rules.sort_by(|a, b| {
-            match b.priority.cmp(&a.priority) {
-                std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
-                other => other,
-            }
+        rules.sort_by(|a, b| match b.priority.cmp(&a.priority) {
+            std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
+            other => other,
         });
+        Ok(rules)
+    }
 
-        info!("📋 Loaded {} classification rules", rules.len());
+    fn parse_url_for_llm(url: &str) -> (String, String) {
+        let without_protocol = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+
+        if let Some(slash_pos) = without_protocol.find('/') {
+            (
+                without_protocol[..slash_pos].to_string(),
+                without_protocol[slash_pos..].to_string(),
+            )
+        } else {
+            (without_protocol.to_string(), "/".to_string())
+        }
+    }
+
+    fn sanitize_folder_name(name: &str, fallback: &str) -> String {
+        let sanitized = name
+            .trim()
+            .replace('/', " ")
+            .replace('\\', " ")
+            .replace(':', " ")
+            .replace('\n', " ")
+            .replace('\r', " ");
+        let compact = sanitized.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.is_empty() {
+            fallback.to_string()
+        } else {
+            compact.chars().take(24).collect()
+        }
+    }
+
+    fn extract_json_payload(raw: &str) -> &str {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return trimmed;
+        }
+        if let Some(start) = trimmed.find('{') {
+            if let Some(end) = trimmed.rfind('}') {
+                return &trimmed[start..=end];
+            }
+        }
+        trimmed
+    }
+
+    async fn classify_with_rules(
+        to_classify: &[Bookmark],
+        rules: &[ClassificationRule],
+        verbose: bool,
+    ) -> (
+        HashMap<String, Vec<Bookmark>>,
+        Vec<Bookmark>,
+        ClassificationStats,
+    ) {
+        let mut classified: HashMap<String, Vec<Bookmark>> = HashMap::new();
+        let mut unclassified: Vec<Bookmark> = Vec::new();
+        let mut stats = ClassificationStats {
+            total_processed: to_classify.len(),
+            ..Default::default()
+        };
+
+        for bookmark in to_classify {
+            let url = bookmark.url.as_deref().unwrap_or("");
+            let title = &bookmark.title;
+
+            let mut matched = false;
+            for rule in rules {
+                if let Some(reason) = rule.matches_with_reason(url, title) {
+                    if verbose {
+                        info!(
+                            "  ✓ '{}' -> {} (rule: {}, reason: {})",
+                            title, rule.folder_name, rule.name, reason
+                        );
+                    }
+                    classified
+                        .entry(rule.folder_name.clone())
+                        .or_default()
+                        .push(bookmark.clone());
+                    *stats
+                        .by_category
+                        .entry(rule.folder_name.clone())
+                        .or_insert(0) += 1;
+                    matched = true;
+                    break;
+                }
+            }
+
+            if !matched {
+                unclassified.push(bookmark.clone());
+                stats.unclassified += 1;
+            }
+        }
+
+        stats.total_classified = stats.total_processed - stats.unclassified;
+        (classified, unclassified, stats)
+    }
+
+    async fn classify_with_ollama(
+        to_classify: &[Bookmark],
+        model: &str,
+        base_url: &str,
+        batch_size: usize,
+        verbose: bool,
+    ) -> Result<(
+        HashMap<String, Vec<Bookmark>>,
+        Vec<Bookmark>,
+        ClassificationStats,
+    )> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(90))
+            .build()
+            .context("Failed to build Ollama HTTP client")?;
+
+        let batch_size = batch_size.max(1);
+        let mut classified: HashMap<String, Vec<Bookmark>> = HashMap::new();
+        let mut unclassified = Vec::new();
+        let mut stats = ClassificationStats {
+            total_processed: to_classify.len(),
+            ..Default::default()
+        };
+        let mut known_folders: HashMap<String, String> = HashMap::new();
+
+        for batch in to_classify.chunks(batch_size) {
+            let inputs: Vec<OllamaBookmarkInput> = batch
+                .iter()
+                .map(|bookmark| {
+                    let url = bookmark.url.clone().unwrap_or_default();
+                    let (domain, path) = Self::parse_url_for_llm(&url);
+                    OllamaBookmarkInput {
+                        id: bookmark.id.clone(),
+                        title: bookmark.title.clone(),
+                        url,
+                        domain,
+                        path,
+                    }
+                })
+                .collect();
+
+            let known_folder_list = if known_folders.is_empty() {
+                "[]".to_string()
+            } else {
+                serde_json::to_string_pretty(&known_folders)?
+            };
+            let items_json = serde_json::to_string_pretty(&inputs)?;
+            let prompt = format!(
+                "你是浏览器书签分类器。请按语义给书签分配文件夹，而不是按硬编码规则。\n\
+已知文件夹映射（优先复用，避免同义重复）：\n{known_folder_list}\n\n\
+要求：\n\
+1. 返回严格 JSON，对象格式必须是 {{\"items\":[...]}}。\n\
+2. 每个 item 必须包含 id, folder_name, folder_name_en, confidence, reason。\n\
+3. folder_name 使用简洁中文，2-8个字，适合作为文件夹名。\n\
+4. folder_name_en 使用简洁英文，1-4个词。\n\
+5. 若现有文件夹可复用，优先复用现有 folder_name。\n\
+6. 若信息不足，归到“待复查” / \"Review\"。\n\
+7. 仅依据 title、url、domain、path 推断，不要输出额外解释。\n\n\
+待分类书签：\n{items_json}"
+            );
+
+            let req = OllamaGenerateRequest {
+                model,
+                prompt,
+                stream: false,
+                format: "json",
+            };
+            let endpoint = format!("{}/api/generate", base_url.trim_end_matches('/'));
+            let response = client
+                .post(endpoint)
+                .json(&req)
+                .send()
+                .await
+                .context("Failed to call Ollama API")?
+                .error_for_status()
+                .context("Ollama API returned error status")?;
+            let payload: OllamaGenerateResponse = response
+                .json()
+                .await
+                .context("Failed to parse Ollama response")?;
+            let json_payload = Self::extract_json_payload(&payload.response);
+            let parsed: OllamaBatchResponse =
+                serde_json::from_str(json_payload).with_context(|| {
+                    format!("Failed to parse Ollama JSON payload: {}", payload.response)
+                })?;
+            let assignment_map: HashMap<_, _> = parsed
+                .items
+                .into_iter()
+                .map(|item| (item.id.clone(), item))
+                .collect();
+
+            for bookmark in batch {
+                let Some(output) = assignment_map.get(&bookmark.id) else {
+                    unclassified.push(bookmark.clone());
+                    stats.unclassified += 1;
+                    continue;
+                };
+
+                let folder_name = Self::sanitize_folder_name(&output.folder_name, "待复查");
+                let folder_name_en = Self::sanitize_folder_name(
+                    output.folder_name_en.as_deref().unwrap_or("Review"),
+                    "Review",
+                );
+                let reason = output
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "ollama".to_string());
+                let confidence = output.confidence.unwrap_or(0.0);
+
+                known_folders
+                    .entry(folder_name.clone())
+                    .or_insert(folder_name_en.clone());
+
+                if folder_name == "待复查" || confidence < 0.35 {
+                    if verbose {
+                        info!(
+                            "  ? '{}' -> 待复查 (confidence: {:.2}, reason: {})",
+                            bookmark.title, confidence, reason
+                        );
+                    }
+                    unclassified.push(bookmark.clone());
+                    stats.unclassified += 1;
+                    continue;
+                }
+
+                if verbose {
+                    info!(
+                        "  ✓ '{}' -> {} (ollama, confidence: {:.2}, reason: {})",
+                        bookmark.title, folder_name, confidence, reason
+                    );
+                }
+                classified
+                    .entry(folder_name.clone())
+                    .or_default()
+                    .push(bookmark.clone());
+                *stats.by_category.entry(folder_name).or_insert(0) += 1;
+            }
+        }
+
+        stats.total_classified = stats.total_processed - stats.unclassified;
+        Ok((classified, unclassified, stats))
+    }
+
+    async fn classify_bookmarks(
+        to_classify: &[Bookmark],
+        config: &ClassificationConfig<'_>,
+        verbose: bool,
+    ) -> Result<(
+        HashMap<String, Vec<Bookmark>>,
+        Vec<Bookmark>,
+        ClassificationStats,
+        String,
+    )> {
+        let backend = ClassifierBackend::parse(config.classifier)?;
+        let rules = Self::load_classification_rules(config.rules_file)?;
+
+        match backend {
+            ClassifierBackend::Rules => {
+                let (classified, unclassified, stats) =
+                    Self::classify_with_rules(to_classify, &rules, verbose).await;
+                Ok((classified, unclassified, stats, "rules".to_string()))
+            }
+            ClassifierBackend::Ollama => {
+                let (classified, unclassified, stats) = Self::classify_with_ollama(
+                    to_classify,
+                    config.ollama_model,
+                    config.ollama_url,
+                    config.ollama_batch_size,
+                    verbose,
+                )
+                .await?;
+                Ok((classified, unclassified, stats, "ollama".to_string()))
+            }
+            ClassifierBackend::Auto => {
+                match Self::classify_with_ollama(
+                    to_classify,
+                    config.ollama_model,
+                    config.ollama_url,
+                    config.ollama_batch_size,
+                    verbose,
+                )
+                .await
+                {
+                    Ok((classified, unclassified, stats)) => {
+                        info!("🧠 Classifier backend: Ollama ({})", config.ollama_model);
+                        Ok((classified, unclassified, stats, "ollama".to_string()))
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Ollama classification unavailable, falling back to rules: {}",
+                            e
+                        );
+                        let (classified, unclassified, stats) =
+                            Self::classify_with_rules(to_classify, &rules, verbose).await;
+                        Ok((classified, unclassified, stats, "rules".to_string()))
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_classification_results(
+        bookmarks: &mut Vec<Bookmark>,
+        classified: &HashMap<String, Vec<Bookmark>>,
+        unclassified: &[Bookmark],
+    ) {
+        for (folder_name, items) in classified {
+            let existing_folder = bookmarks
+                .iter_mut()
+                .find(|b| b.folder && b.title == *folder_name);
+
+            if let Some(folder) = existing_folder {
+                folder.children.extend(items.clone());
+            } else {
+                let new_folder = Bookmark {
+                    id: format!("smart-folder-{}", chrono::Utc::now().timestamp_millis()),
+                    title: folder_name.clone(),
+                    url: None,
+                    folder: true,
+                    children: items.clone(),
+                    date_added: Some(chrono::Utc::now().timestamp_millis()),
+                    date_modified: Some(chrono::Utc::now().timestamp_millis()),
+                };
+                bookmarks.push(new_folder);
+            }
+        }
+
+        if !unclassified.is_empty() {
+            let unclassified_folder = bookmarks
+                .iter_mut()
+                .find(|b| b.folder && b.title == "未分类");
+
+            if let Some(folder) = unclassified_folder {
+                folder.children.extend(unclassified.to_vec());
+            } else {
+                let new_folder = Bookmark {
+                    id: format!(
+                        "unclassified-folder-{}",
+                        chrono::Utc::now().timestamp_millis()
+                    ),
+                    title: "未分类".to_string(),
+                    url: None,
+                    folder: true,
+                    children: unclassified.to_vec(),
+                    date_added: Some(chrono::Utc::now().timestamp_millis()),
+                    date_modified: Some(chrono::Utc::now().timestamp_millis()),
+                };
+                bookmarks.push(new_folder);
+            }
+        }
+    }
+
+    /// Smart organize bookmarks using rule engine
+    pub async fn smart_organize(
+        &mut self,
+        browser_names: Option<&str>,
+        rules_file: Option<&str>,
+        classifier: &str,
+        ollama_model: &str,
+        ollama_url: &str,
+        ollama_batch_size: usize,
+        uncategorized_only: bool,
+        show_stats: bool,
+        dry_run: bool,
+        verbose: bool,
+    ) -> Result<()> {
+        info!("🧠 Starting smart bookmark organization");
+        let classify_config = ClassificationConfig {
+            rules_file,
+            classifier,
+            ollama_model,
+            ollama_url,
+            ollama_batch_size,
+        };
 
         // Determine target browsers
         let target_adapters: Vec<_> = if let Some(names) = browser_names {
-            let browser_list: Vec<String> =
-                names.split(',').map(|s| s.trim().to_lowercase().replace('-', " ")).collect();
+            let browser_list: Vec<String> = names
+                .split(',')
+                .map(|s| s.trim().to_lowercase().replace('-', " "))
+                .collect();
 
             self.adapters
                 .iter()
@@ -2845,8 +3294,6 @@ impl SyncEngine {
                 Ok(mut bookmarks) => {
                     info!("\n📊 {} : Processing...", browser_name);
 
-                    let mut stats = ClassificationStats::default();
-
                     // Collect bookmarks to classify
                     let mut to_classify: Vec<Bookmark> = Vec::new();
                     if uncategorized_only {
@@ -2860,113 +3307,17 @@ impl SyncEngine {
                         );
                     }
 
-                    stats.total_processed = to_classify.len();
                     info!("  📖 Found {} bookmarks to classify", to_classify.len());
+                    let (classified, unclassified, stats, backend_used) =
+                        Self::classify_bookmarks(&to_classify, &classify_config, verbose).await?;
+                    info!("  🧠 Backend: {}", backend_used);
+                    Self::apply_classification_results(&mut bookmarks, &classified, &unclassified);
 
-                    // Classify bookmarks
-                    let mut classified: HashMap<String, Vec<Bookmark>> = HashMap::new();
-                    let mut unclassified: Vec<Bookmark> = Vec::new();
-
-                    for bookmark in to_classify {
-                        let url = bookmark.url.as_deref().unwrap_or("");
-                        let title = &bookmark.title;
-
-                        let mut matched = false;
-                        let mut tried_rules: Vec<String> = Vec::new();
-                        
-                        for rule in &rules {
-                            if let Some(reason) = rule.matches_with_reason(url, title) {
-                                if verbose {
-                                    info!(
-                                        "  ✓ '{}' -> {} (rule: {}, reason: {})",
-                                        title, rule.folder_name, rule.name, reason
-                                    );
-                                }
-                                classified
-                                    .entry(rule.folder_name.clone())
-                                    .or_default()
-                                    .push(bookmark.clone());
-                                *stats
-                                    .by_category
-                                    .entry(rule.folder_name.clone())
-                                    .or_insert(0) += 1;
-                                matched = true;
-                                break;
-                            } else if verbose {
-                                tried_rules.push(rule.name.clone());
-                            }
-                        }
-
-                        if !matched {
-                            if verbose && !tried_rules.is_empty() {
-                                debug!(
-                                    "  ❓ '{}' unclassified (tried {} rules)",
-                                    title, tried_rules.len()
-                                );
-                            }
-                            unclassified.push(bookmark);
-                            stats.unclassified += 1;
-                        }
-                    }
-
-                    stats.total_classified = stats.total_processed - stats.unclassified;
-
-                    // Create/update folders for classified bookmarks
                     for (folder_name, items) in &classified {
-                        let existing_folder = bookmarks
-                            .iter_mut()
-                            .find(|b| b.folder && b.title == *folder_name);
-
-                        if let Some(folder) = existing_folder {
-                            folder.children.extend(items.clone());
-                        } else {
-                            let new_folder = Bookmark {
-                                id: format!(
-                                    "smart-folder-{}",
-                                    chrono::Utc::now().timestamp_millis()
-                                ),
-                                title: folder_name.clone(),
-                                url: None,
-                                folder: true,
-                                children: items.clone(),
-                                date_added: Some(chrono::Utc::now().timestamp_millis()),
-                                date_modified: Some(chrono::Utc::now().timestamp_millis()),
-                            };
-                            bookmarks.push(new_folder);
-                        }
-
                         info!("  📁 {} : {} bookmarks", folder_name, items.len());
                     }
-
                     if !unclassified.is_empty() {
-                        info!("  ❓ Unclassified: {} bookmarks", unclassified.len());
-
-                        // 🔧 BUG FIX: 将未分类的书签放入"未分类"文件夹，而不是丢弃！
-                        let unclassified_folder = bookmarks
-                            .iter_mut()
-                            .find(|b| b.folder && b.title == "未分类");
-
-                        if let Some(folder) = unclassified_folder {
-                            folder.children.extend(unclassified.clone());
-                        } else {
-                            let new_folder = Bookmark {
-                                id: format!(
-                                    "unclassified-folder-{}",
-                                    chrono::Utc::now().timestamp_millis()
-                                ),
-                                title: "未分类".to_string(),
-                                url: None,
-                                folder: true,
-                                children: unclassified.clone(),
-                                date_added: Some(chrono::Utc::now().timestamp_millis()),
-                                date_modified: Some(chrono::Utc::now().timestamp_millis()),
-                            };
-                            bookmarks.push(new_folder);
-                        }
-                        info!(
-                            "  📁 Uncategorized : {} bookmarks (preserved)",
-                            unclassified.len()
-                        );
+                        info!("  📁 未分类 : {} bookmarks", unclassified.len());
                     }
 
                     // Show statistics if requested
@@ -3117,7 +3468,7 @@ impl SyncEngine {
                 let is_temp_folder = temp_folders.iter().any(|tf| {
                     title_lower == tf.to_lowercase() || title_lower.contains(&tf.to_lowercase())
                 });
-                
+
                 if is_temp_folder {
                     // 特殊处理：收集临时文件夹中的所有书签进行分类整理
                     info!("  📦 从临时文件夹 '{}' 抽取书签进行整理", bookmark.title);
@@ -3214,32 +3565,22 @@ impl SyncEngine {
         input_file: &str,
         output_file: &str,
         rules_file: Option<&str>,
+        classifier: &str,
+        ollama_model: &str,
+        ollama_url: &str,
+        ollama_batch_size: usize,
         show_stats: bool,
         dry_run: bool,
         verbose: bool,
     ) -> Result<()> {
         info!("🧠 Organizing bookmarks from file: {}", input_file);
-
-        // Load rules
-        let mut rules = get_builtin_rules();
-        if let Some(file_path) = rules_file {
-            info!("📂 Loading custom rules from: {}", file_path);
-            let content = std::fs::read_to_string(file_path).context("Failed to read rules file")?;
-            let custom_rules: Vec<ClassificationRule> =
-                serde_json::from_str(&content).context("Failed to parse rules file")?;
-            info!("✅ Loaded {} custom rules", custom_rules.len());
-            rules.extend(custom_rules);
-        }
-
-        // Sort rules by priority then specificity
-        rules.sort_by(|a, b| {
-            match b.priority.cmp(&a.priority) {
-                std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
-                other => other,
-            }
-        });
-
-        info!("📋 Loaded {} classification rules", rules.len());
+        let classify_config = ClassificationConfig {
+            rules_file,
+            classifier,
+            ollama_model,
+            ollama_url,
+            ollama_batch_size,
+        };
 
         // Read input file
         let content = std::fs::read_to_string(input_file)
@@ -3258,7 +3599,10 @@ impl SyncEngine {
                 .context("Failed to parse bookmark file (tried JSON and HTML)")?
         };
 
-        info!("📖 Loaded {} bookmarks from file", Self::count_all_bookmarks(&bookmarks));
+        info!(
+            "📖 Loaded {} bookmarks from file",
+            Self::count_all_bookmarks(&bookmarks)
+        );
 
         // Flatten: remove browser root folders (Brave, Brave Nightly, Waterfox, etc.)
         info!("📦 Flattening: removing browser root folders...");
@@ -3275,92 +3619,21 @@ impl SyncEngine {
             );
         }
 
-        let mut stats = ClassificationStats::default();
-
         // Collect all bookmarks for classification
         let mut to_classify: Vec<Bookmark> = Vec::new();
         Self::collect_all_bookmarks_for_classification(&mut bookmarks, &mut to_classify);
-        stats.total_processed = to_classify.len();
 
         info!("  📖 Found {} bookmarks to classify", to_classify.len());
+        let (classified, unclassified, stats, backend_used) =
+            Self::classify_bookmarks(&to_classify, &classify_config, verbose).await?;
+        info!("  🧠 Backend: {}", backend_used);
+        Self::apply_classification_results(&mut bookmarks, &classified, &unclassified);
 
-        // Classify bookmarks
-        let mut classified: std::collections::HashMap<String, Vec<Bookmark>> = std::collections::HashMap::new();
-        let mut unclassified: Vec<Bookmark> = Vec::new();
-
-        for bookmark in to_classify {
-            let url = bookmark.url.as_deref().unwrap_or("");
-            let title = &bookmark.title;
-
-            let mut matched = false;
-            let mut tried_rules: Vec<String> = Vec::new();
-            
-            for rule in &rules {
-                if let Some(reason) = rule.matches_with_reason(url, title) {
-                    if verbose {
-                        info!("  ✓ '{}' -> {} (rule: {}, reason: {})", title, rule.folder_name, rule.name, reason);
-                    }
-                    classified.entry(rule.folder_name.clone()).or_default().push(bookmark.clone());
-                    *stats.by_category.entry(rule.folder_name.clone()).or_insert(0) += 1;
-                    matched = true;
-                    break;
-                } else if verbose {
-                    tried_rules.push(rule.name.clone());
-                }
-            }
-
-            if !matched {
-                if verbose && !tried_rules.is_empty() {
-                    debug!("  ❓ '{}' unclassified (tried {} rules)", title, tried_rules.len());
-                }
-                unclassified.push(bookmark);
-                stats.unclassified += 1;
-            }
-        }
-
-        stats.total_classified = stats.total_processed - stats.unclassified;
-
-        // Create folders for classified bookmarks
         for (folder_name, items) in &classified {
-            let existing_folder = bookmarks.iter_mut().find(|b| b.folder && b.title == *folder_name);
-
-            if let Some(folder) = existing_folder {
-                folder.children.extend(items.clone());
-            } else {
-                let new_folder = Bookmark {
-                    id: format!("smart-folder-{}", chrono::Utc::now().timestamp_millis()),
-                    title: folder_name.clone(),
-                    url: None,
-                    folder: true,
-                    children: items.clone(),
-                    date_added: Some(chrono::Utc::now().timestamp_millis()),
-                    date_modified: Some(chrono::Utc::now().timestamp_millis()),
-                };
-                bookmarks.push(new_folder);
-            }
-
             info!("  📁 {} : {} bookmarks", folder_name, items.len());
         }
-
-        // Handle unclassified bookmarks
         if !unclassified.is_empty() {
-            info!("  ❓ Unclassified: {} bookmarks", unclassified.len());
-            let unclassified_folder = bookmarks.iter_mut().find(|b| b.folder && b.title == "未分类");
-
-            if let Some(folder) = unclassified_folder {
-                folder.children.extend(unclassified.clone());
-            } else {
-                let new_folder = Bookmark {
-                    id: format!("unclassified-folder-{}", chrono::Utc::now().timestamp_millis()),
-                    title: "未分类".to_string(),
-                    url: None,
-                    folder: true,
-                    children: unclassified.clone(),
-                    date_added: Some(chrono::Utc::now().timestamp_millis()),
-                    date_modified: Some(chrono::Utc::now().timestamp_millis()),
-                };
-                bookmarks.push(new_folder);
-            }
+            info!("  📁 未分类 : {} bookmarks", unclassified.len());
         }
 
         // Show statistics
@@ -3397,18 +3670,22 @@ impl SyncEngine {
         } else {
             // Wrap all bookmarks in 📁镜像文件夹 + merge temp folders
             info!("📦 Wrapping all bookmarks in root folder: \"📁镜像文件夹\"");
-            
+
             // Extract and MERGE all protected folders (👀临时) into one
             let mut merged_temp_children: Vec<Bookmark> = Vec::new();
             bookmarks.retain(|b| {
-                if b.folder && PROTECTED_FOLDERS.iter().any(|p| b.title.to_lowercase().contains(&p.to_lowercase())) {
+                if b.folder
+                    && PROTECTED_FOLDERS
+                        .iter()
+                        .any(|p| b.title.to_lowercase().contains(&p.to_lowercase()))
+                {
                     merged_temp_children.extend(b.children.clone());
                     false
                 } else {
                     true
                 }
             });
-            
+
             let wrapped = Bookmark {
                 id: "wrap-mirror-folder".to_string(),
                 title: "📁镜像文件夹".to_string(),
@@ -3418,7 +3695,7 @@ impl SyncEngine {
                 date_added: Some(chrono::Utc::now().timestamp_millis()),
                 date_modified: None,
             };
-            
+
             let temp_folder = Bookmark {
                 id: "temp-folder".to_string(),
                 title: "👀临时".to_string(),
@@ -3428,7 +3705,7 @@ impl SyncEngine {
                 date_added: Some(chrono::Utc::now().timestamp_millis()),
                 date_modified: None,
             };
-            
+
             bookmarks = vec![wrapped, temp_folder];
             info!("  ✅ Merged all temp folders into single 👀临时");
 
@@ -3462,7 +3739,11 @@ impl SyncEngine {
         fn write_bookmark(html: &mut String, bookmark: &Bookmark, indent: usize) {
             let indent_str = "    ".repeat(indent);
             if bookmark.folder {
-                html.push_str(&format!("{}<DT><H3>{}</H3>\n", indent_str, html_escape(&bookmark.title)));
+                html.push_str(&format!(
+                    "{}<DT><H3>{}</H3>\n",
+                    indent_str,
+                    html_escape(&bookmark.title)
+                ));
                 html.push_str(&format!("{}<DL><p>\n", indent_str));
                 for child in &bookmark.children {
                     write_bookmark(html, child, indent + 1);
@@ -3864,19 +4145,40 @@ mod tests {
     #[test]
     fn test_domain_exact_match_no_substring() {
         // 精确匹配: github.com 不应该匹配 mygithub.com
-        assert!(!ClassificationRule::match_domain_exact("mygithub.com", "github.com"));
-        assert!(!ClassificationRule::match_domain_exact("notgithub.com", "github.com"));
-        assert!(ClassificationRule::match_domain_exact("github.com", "github.com"));
+        assert!(!ClassificationRule::match_domain_exact(
+            "mygithub.com",
+            "github.com"
+        ));
+        assert!(!ClassificationRule::match_domain_exact(
+            "notgithub.com",
+            "github.com"
+        ));
+        assert!(ClassificationRule::match_domain_exact(
+            "github.com",
+            "github.com"
+        ));
     }
 
     #[test]
     fn test_domain_wildcard_match() {
         // 通配符匹配: *.github.com
-        assert!(ClassificationRule::match_domain_exact("gist.github.com", "*.github.com"));
-        assert!(ClassificationRule::match_domain_exact("api.github.com", "*.github.com"));
-        assert!(ClassificationRule::match_domain_exact("github.com", "*.github.com"));
+        assert!(ClassificationRule::match_domain_exact(
+            "gist.github.com",
+            "*.github.com"
+        ));
+        assert!(ClassificationRule::match_domain_exact(
+            "api.github.com",
+            "*.github.com"
+        ));
+        assert!(ClassificationRule::match_domain_exact(
+            "github.com",
+            "*.github.com"
+        ));
         // 不应该匹配不相关的域名
-        assert!(!ClassificationRule::match_domain_exact("fakegithub.com", "*.github.com"));
+        assert!(!ClassificationRule::match_domain_exact(
+            "fakegithub.com",
+            "*.github.com"
+        ));
     }
 }
 
@@ -3898,7 +4200,7 @@ mod property_tests {
         ) {
             let domain = format!("{}.{}", base, tld);
             let prefixed_domain = format!("{}{}.{}", prefix, base, tld);
-            
+
             // 精确匹配模式不应该匹配带前缀的域名
             prop_assert!(!ClassificationRule::match_domain_exact(&prefixed_domain, &domain));
             // 但应该匹配自身
@@ -3912,7 +4214,7 @@ mod property_tests {
         ) {
             let domain = format!("{}.{}", base, tld);
             let domain_lower = domain.to_lowercase();
-            
+
             // 大小写不敏感匹配 (调用者负责转换为小写，这里验证小写匹配)
             prop_assert!(ClassificationRule::match_domain_exact(&domain_lower, &domain_lower));
         }
@@ -3931,7 +4233,7 @@ mod property_tests {
             let suffix = format!("{}.{}", base, tld);
             let pattern = format!("*.{}", suffix);
             let full_domain = format!("{}.{}", subdomain, suffix);
-            
+
             // 子域名应该匹配通配符模式
             prop_assert!(ClassificationRule::match_domain_exact(&full_domain, &pattern));
             // 基础域名也应该匹配
@@ -3945,10 +4247,10 @@ mod property_tests {
             tld in prop_oneof!["com", "org", "net"],
         ) {
             prop_assume!(unrelated != base);
-            
+
             let pattern = format!("*.{}.{}", base, tld);
             let unrelated_domain = format!("{}.{}", unrelated, tld);
-            
+
             // 不相关的域名不应该匹配
             prop_assert!(!ClassificationRule::match_domain_exact(&unrelated_domain, &pattern));
         }
@@ -3965,7 +4267,7 @@ mod property_tests {
         ) {
             let full_path = format!("{}{}", prefix, suffix);
             let url = format!("https://example.com{}", full_path);
-            
+
             let rule = ClassificationRule::new(
                 "test", "测试", "Test",
                 vec![],
@@ -3975,7 +4277,7 @@ mod property_tests {
                 50,
                 "Test rule",
             );
-            
+
             // 路径以前缀开头应该匹配
             prop_assert!(rule.matches(&url, "Test"));
         }
@@ -3988,7 +4290,7 @@ mod property_tests {
             // 前缀出现在路径中间，不应该匹配
             let path = format!("{}{}", before, prefix);
             let url = format!("https://example.com{}", path);
-            
+
             let rule = ClassificationRule::new(
                 "test", "测试", "Test",
                 vec![],
@@ -3998,7 +4300,7 @@ mod property_tests {
                 50,
                 "Test rule",
             );
-            
+
             // 前缀不在开头，不应该匹配（除非域名匹配）
             // 注意：由于域名匹配，这里会返回 true，所以我们测试不同的域名
             let url_other = format!("https://other.com{}", path);
@@ -4011,7 +4313,7 @@ mod property_tests {
                 50,
                 "Test rule",
             );
-            
+
             prop_assert!(!rule_no_domain.matches(&url_other, "Test"));
         }
     }
@@ -4053,7 +4355,7 @@ mod property_tests {
                     specificity: s2,
                 },
             ];
-            
+
             // 排序
             rules.sort_by(|a, b| {
                 match b.priority.cmp(&a.priority) {
@@ -4061,7 +4363,7 @@ mod property_tests {
                     other => other,
                 }
             });
-            
+
             // 验证排序正确性
             if rules[0].priority == rules[1].priority {
                 // 相同 priority，按 specificity 降序
@@ -4091,7 +4393,7 @@ mod property_tests {
                 50,
                 "Path only",
             );
-            
+
             // 只有域名
             let domain_only = ClassificationRule::new(
                 "domain", "域名", "Domain",
@@ -4102,7 +4404,7 @@ mod property_tests {
                 50,
                 "Domain only",
             );
-            
+
             // 只有标题
             let title_only = ClassificationRule::new(
                 "title", "标题", "Title",
@@ -4113,11 +4415,11 @@ mod property_tests {
                 50,
                 "Title only",
             );
-            
+
             // 验证: 路径 > 域名 > 标题
             prop_assert!(path_only.specificity > domain_only.specificity);
             prop_assert!(domain_only.specificity > title_only.specificity);
-            
+
             // 验证具体值
             prop_assert_eq!(path_only.specificity, 100);
             prop_assert_eq!(domain_only.specificity, 50);
@@ -4143,7 +4445,7 @@ mod property_tests {
                 priority,
                 "Domain only rule",
             );
-            
+
             let path_rule = ClassificationRule::new(
                 "domain_path", "路径规则", "Path Rule",
                 vec![],
@@ -4153,10 +4455,10 @@ mod property_tests {
                 priority,  // 相同优先级
                 "Domain + path rule",
             );
-            
+
             // 路径规则应该有更高的 specificity
             prop_assert!(path_rule.specificity > domain_rule.specificity);
-            
+
             // 排序后，路径规则应该排在前面（相同 priority 时按 specificity 降序）
             let mut rules = vec![domain_rule.clone(), path_rule.clone()];
             rules.sort_by(|a, b| {
@@ -4165,7 +4467,7 @@ mod property_tests {
                     other => other,
                 }
             });
-            
+
             prop_assert_eq!(&rules[0].name, "domain_path");
             prop_assert_eq!(&rules[1].name, "domain_only");
         }
@@ -4580,7 +4882,7 @@ impl SyncEngine {
         extra_bookmarks: Vec<Bookmark>,
     ) -> Result<Vec<Bookmark>> {
         let merge = config.merge;
-        
+
         // Determine target browsers
         let target_adapters: Vec<_> = if let Some(names) = browser_names {
             let browser_list: Vec<String> =
@@ -4592,10 +4894,11 @@ impl SyncEngine {
                     let name_normalized = name.replace([' ', '_'], "-");
                     browser_list.iter().any(|b| {
                         let b_normalized = b.replace([' ', '_'], "-");
-                        name_normalized == b_normalized ||
-                        name.contains(b) || b.contains(&name) ||
-                        (b.contains("nightly") && name.contains("nightly")) ||
-                        (b == "all")
+                        name_normalized == b_normalized
+                            || name.contains(b)
+                            || b.contains(&name)
+                            || (b.contains("nightly") && name.contains("nightly"))
+                            || (b == "all")
                     })
                 })
                 .collect()
@@ -4604,7 +4907,7 @@ impl SyncEngine {
         };
 
         let mut all_bookmarks: Vec<Bookmark> = Vec::new();
-        
+
         // Add extra bookmarks first
         if !extra_bookmarks.is_empty() {
             all_bookmarks.extend(extra_bookmarks);
@@ -4612,13 +4915,21 @@ impl SyncEngine {
 
         for adapter in &target_adapters {
             let browser_name = adapter.browser_type().name();
-            match adapter.read_bookmarks() {
+            let res = if config.all_profiles {
+                adapter.read_all_bookmarks()
+            } else {
+                adapter.read_bookmarks()
+            };
+            match res {
                 Ok(bookmarks) => {
                     if merge {
                         all_bookmarks.extend(bookmarks);
                     } else {
                         let browser_folder = Bookmark {
-                            id: format!("browser-{}", browser_name.to_lowercase().replace(' ', "-")),
+                            id: format!(
+                                "browser-{}",
+                                browser_name.to_lowercase().replace(' ', "-")
+                            ),
                             title: browser_name.to_string(),
                             url: None,
                             folder: true,
@@ -4786,22 +5097,34 @@ impl SyncEngine {
             let (flattened, stats) = flatten_bookmarks(&all_bookmarks, &flat_config);
             all_bookmarks = flattened;
             if stats.root_folders_removed > 0 {
-                info!("  ✅ Removed {} browser root folders, promoted {} items", 
-                    stats.root_folders_removed, stats.bookmarks_promoted);
+                info!(
+                    "  ✅ Removed {} browser root folders, promoted {} items",
+                    stats.root_folders_removed, stats.bookmarks_promoted
+                );
             }
         }
 
         // Wrap all bookmarks in a single root folder (default behavior)
         // Use wrap_folder name or default "📁镜像文件夹"
-        let wrap_name = config.wrap_folder.clone().unwrap_or_else(|| "📁镜像文件夹".to_string());
-        
+        let wrap_name = config
+            .wrap_folder
+            .clone()
+            .unwrap_or_else(|| "📁镜像文件夹".to_string());
+
         if !config.no_wrap {
-            info!("📦 Wrapping all bookmarks in root folder: \"{}\"", wrap_name);
-            
+            info!(
+                "📦 Wrapping all bookmarks in root folder: \"{}\"",
+                wrap_name
+            );
+
             // Extract and MERGE all protected folders (👀临时) into one
             let mut merged_temp_children: Vec<Bookmark> = Vec::new();
             all_bookmarks.retain(|b| {
-                if b.folder && PROTECTED_FOLDERS.iter().any(|p| b.title.to_lowercase().contains(&p.to_lowercase())) {
+                if b.folder
+                    && PROTECTED_FOLDERS
+                        .iter()
+                        .any(|p| b.title.to_lowercase().contains(&p.to_lowercase()))
+                {
                     // Merge children into single temp folder
                     merged_temp_children.extend(b.children.clone());
                     false // Remove from all_bookmarks
@@ -4809,7 +5132,7 @@ impl SyncEngine {
                     true // Keep in all_bookmarks
                 }
             });
-            
+
             let wrapped = Bookmark {
                 id: format!("wrap-{}", wrap_name.to_lowercase().replace(' ', "-")),
                 title: wrap_name,
@@ -4819,7 +5142,7 @@ impl SyncEngine {
                 date_added: Some(chrono::Utc::now().timestamp_millis()),
                 date_modified: None,
             };
-            
+
             // Create single merged temp folder at top level
             let temp_folder = Bookmark {
                 id: "temp-folder".to_string(),
@@ -4830,7 +5153,7 @@ impl SyncEngine {
                 date_added: Some(chrono::Utc::now().timestamp_millis()),
                 date_modified: None,
             };
-            
+
             // Top level: wrap folder + single merged temp folder
             all_bookmarks = vec![wrapped, temp_folder];
             info!("  ✅ Merged all temp folders into single 👀临时");
@@ -5129,32 +5452,23 @@ pub async fn smart_organize_files(
     input_files: &[&str],
     output_file: &str,
     rules_file: Option<&str>,
+    classifier: &str,
+    ollama_model: &str,
+    ollama_url: &str,
+    ollama_batch_size: usize,
     deduplicate: bool,
     clean_empty: bool,
     show_stats: bool,
     dry_run: bool,
     verbose: bool,
 ) -> Result<()> {
-    // Load rules
-    let mut rules = get_builtin_rules();
-    if let Some(file_path) = rules_file {
-        info!("📂 Loading custom rules from: {}", file_path);
-        let content = std::fs::read_to_string(file_path).context("Failed to read rules file")?;
-        let custom_rules: Vec<ClassificationRule> =
-            serde_json::from_str(&content).context("Failed to parse rules file")?;
-        info!("✅ Loaded {} custom rules", custom_rules.len());
-        rules.extend(custom_rules);
-    }
-
-    // Sort rules by priority then specificity
-    rules.sort_by(|a, b| {
-        match b.priority.cmp(&a.priority) {
-            std::cmp::Ordering::Equal => b.specificity.cmp(&a.specificity),
-            other => other,
-        }
-    });
-
-    info!("📋 Loaded {} classification rules", rules.len());
+    let classify_config = ClassificationConfig {
+        rules_file,
+        classifier,
+        ollama_model,
+        ollama_url,
+        ollama_batch_size,
+    };
 
     // Read and merge all input files
     let mut bookmarks: Vec<Bookmark> = Vec::new();
@@ -5163,14 +5477,19 @@ pub async fn smart_organize_files(
             .context(format!("Failed to read input file: {}", input_file))?;
 
         let file_bookmarks = if input_file.ends_with(".json") {
-            serde_json::from_str::<Vec<Bookmark>>(&content)
-                .context(format!("Failed to parse JSON bookmark file: {}", input_file))?
+            serde_json::from_str::<Vec<Bookmark>>(&content).context(format!(
+                "Failed to parse JSON bookmark file: {}",
+                input_file
+            ))?
         } else if input_file.ends_with(".html") || input_file.ends_with(".htm") {
             parse_safari_html(&content)?
         } else {
             serde_json::from_str::<Vec<Bookmark>>(&content)
                 .or_else(|_| parse_safari_html(&content))
-                .context(format!("Failed to parse bookmark file (tried JSON and HTML): {}", input_file))?
+                .context(format!(
+                    "Failed to parse bookmark file (tried JSON and HTML): {}",
+                    input_file
+                ))?
         };
 
         let count = SyncEngine::count_all_bookmarks(&file_bookmarks);
@@ -5180,7 +5499,11 @@ pub async fn smart_organize_files(
 
     let total_loaded = SyncEngine::count_all_bookmarks(&bookmarks);
     if input_files.len() > 1 {
-        info!("📊 Total: {} bookmarks from {} files", total_loaded, input_files.len());
+        info!(
+            "📊 Total: {} bookmarks from {} files",
+            total_loaded,
+            input_files.len()
+        );
     }
 
     // Flatten: remove browser root folders (Brave, Brave Nightly, Waterfox, etc.)
@@ -5204,7 +5527,12 @@ pub async fn smart_organize_files(
         SyncEngine::deduplicate_bookmarks_global(&mut bookmarks);
         let after = SyncEngine::count_all_bookmarks(&bookmarks);
         if before > after {
-            info!("🔄 Deduplicated: removed {} duplicates ({} → {})", before - after, before, after);
+            info!(
+                "🔄 Deduplicated: removed {} duplicates ({} → {})",
+                before - after,
+                before,
+                after
+            );
         }
     }
 
@@ -5216,92 +5544,21 @@ pub async fn smart_organize_files(
         }
     }
 
-    let mut stats = ClassificationStats::default();
-
     // Collect all bookmarks for classification
     let mut to_classify: Vec<Bookmark> = Vec::new();
     SyncEngine::collect_all_bookmarks_for_classification(&mut bookmarks, &mut to_classify);
-    stats.total_processed = to_classify.len();
 
     info!("  📖 Found {} bookmarks to classify", to_classify.len());
+    let (classified, unclassified, stats, backend_used) =
+        SyncEngine::classify_bookmarks(&to_classify, &classify_config, verbose).await?;
+    info!("  🧠 Backend: {}", backend_used);
+    SyncEngine::apply_classification_results(&mut bookmarks, &classified, &unclassified);
 
-    // Classify bookmarks
-    let mut classified: HashMap<String, Vec<Bookmark>> = HashMap::new();
-    let mut unclassified: Vec<Bookmark> = Vec::new();
-
-    for bookmark in to_classify {
-        let url = bookmark.url.as_deref().unwrap_or("");
-        let title = &bookmark.title;
-
-        let mut matched = false;
-        let mut tried_rules: Vec<String> = Vec::new();
-        
-        for rule in &rules {
-            if let Some(reason) = rule.matches_with_reason(url, title) {
-                if verbose {
-                    info!("  ✓ '{}' -> {} (rule: {}, reason: {})", title, rule.folder_name, rule.name, reason);
-                }
-                classified.entry(rule.folder_name.clone()).or_default().push(bookmark.clone());
-                *stats.by_category.entry(rule.folder_name.clone()).or_insert(0) += 1;
-                matched = true;
-                break;
-            } else if verbose {
-                tried_rules.push(rule.name.clone());
-            }
-        }
-
-        if !matched {
-            if verbose && !tried_rules.is_empty() {
-                debug!("  ❓ '{}' unclassified (tried {} rules)", title, tried_rules.len());
-            }
-            unclassified.push(bookmark);
-            stats.unclassified += 1;
-        }
-    }
-
-    stats.total_classified = stats.total_processed - stats.unclassified;
-
-    // Create folders for classified bookmarks
     for (folder_name, items) in &classified {
-        let existing_folder = bookmarks.iter_mut().find(|b| b.folder && b.title == *folder_name);
-
-        if let Some(folder) = existing_folder {
-            folder.children.extend(items.clone());
-        } else {
-            let new_folder = Bookmark {
-                id: format!("smart-folder-{}", chrono::Utc::now().timestamp_millis()),
-                title: folder_name.clone(),
-                url: None,
-                folder: true,
-                children: items.clone(),
-                date_added: Some(chrono::Utc::now().timestamp_millis()),
-                date_modified: Some(chrono::Utc::now().timestamp_millis()),
-            };
-            bookmarks.push(new_folder);
-        }
-
         info!("  📁 {} : {} bookmarks", folder_name, items.len());
     }
-
-    // Handle unclassified bookmarks
     if !unclassified.is_empty() {
-        info!("  ❓ Unclassified: {} bookmarks", unclassified.len());
-        let unclassified_folder = bookmarks.iter_mut().find(|b| b.folder && b.title == "未分类");
-
-        if let Some(folder) = unclassified_folder {
-            folder.children.extend(unclassified.clone());
-        } else {
-            let new_folder = Bookmark {
-                id: format!("unclassified-folder-{}", chrono::Utc::now().timestamp_millis()),
-                title: "未分类".to_string(),
-                url: None,
-                folder: true,
-                children: unclassified.clone(),
-                date_added: Some(chrono::Utc::now().timestamp_millis()),
-                date_modified: Some(chrono::Utc::now().timestamp_millis()),
-            };
-            bookmarks.push(new_folder);
-        }
+        info!("  📁 未分类 : {} bookmarks", unclassified.len());
     }
 
     // Show statistics
@@ -5338,18 +5595,22 @@ pub async fn smart_organize_files(
     } else {
         // Wrap all bookmarks in 📁镜像文件夹 + merge temp folders
         info!("📦 Wrapping all bookmarks in root folder: \"📁镜像文件夹\"");
-        
+
         // Extract and MERGE all protected folders (👀临时) into one
         let mut merged_temp_children: Vec<Bookmark> = Vec::new();
         bookmarks.retain(|b| {
-            if b.folder && PROTECTED_FOLDERS.iter().any(|p| b.title.to_lowercase().contains(&p.to_lowercase())) {
+            if b.folder
+                && PROTECTED_FOLDERS
+                    .iter()
+                    .any(|p| b.title.to_lowercase().contains(&p.to_lowercase()))
+            {
                 merged_temp_children.extend(b.children.clone());
                 false
             } else {
                 true
             }
         });
-        
+
         let wrapped = Bookmark {
             id: "wrap-mirror-folder".to_string(),
             title: "📁镜像文件夹".to_string(),
@@ -5359,7 +5620,7 @@ pub async fn smart_organize_files(
             date_added: Some(chrono::Utc::now().timestamp_millis()),
             date_modified: None,
         };
-        
+
         let temp_folder = Bookmark {
             id: "temp-folder".to_string(),
             title: "👀临时".to_string(),
@@ -5369,7 +5630,7 @@ pub async fn smart_organize_files(
             date_added: Some(chrono::Utc::now().timestamp_millis()),
             date_modified: None,
         };
-        
+
         bookmarks = vec![wrapped, temp_folder];
         info!("  ✅ Merged all temp folders into single 👀临时");
 
@@ -5389,7 +5650,10 @@ pub async fn smart_organize_files(
             .context(format!("Failed to write output file: {}", output_file))?;
 
         let final_count = SyncEngine::count_all_bookmarks(&bookmarks);
-        info!("  ✅ Organized {} bookmarks saved to: {}", final_count, output_file);
+        info!(
+            "  ✅ Organized {} bookmarks saved to: {}",
+            final_count, output_file
+        );
     }
 
     Ok(())
@@ -5480,16 +5744,16 @@ fn parse_html_bookmarks(html: &str) -> Result<Vec<Bookmark>> {
     let mut id_counter = 0u64;
     let mut bookmark_count = 0usize;
     let mut folder_count = 0usize;
-    
+
     // 预处理：将多行合并，处理跨行的标签
     let lines: Vec<&str> = html.lines().collect();
     let mut i = 0;
-    
+
     while i < lines.len() {
         let trimmed = lines[i].trim();
-        
+
         // 检测文件夹开始: <DT><H3...>FolderName</H3>
-        if (trimmed.contains("<DT><H3") || trimmed.contains("<dt><h3")) {
+        if trimmed.contains("<DT><H3") || trimmed.contains("<dt><h3") {
             if let Some(folder_title) = extract_folder_title(trimmed) {
                 id_counter += 1;
                 folder_count += 1;
@@ -5542,10 +5806,10 @@ fn parse_html_bookmarks(html: &str) -> Result<Vec<Bookmark>> {
                 }
             }
         }
-        
+
         i += 1;
     }
-    
+
     // 处理未闭合的文件夹（容错）
     while let Some(unclosed_folder) = folder_stack.pop() {
         warn!("⚠️  未闭合的文件夹: {}", unclosed_folder.title);
@@ -5556,7 +5820,10 @@ fn parse_html_bookmarks(html: &str) -> Result<Vec<Bookmark>> {
         }
     }
 
-    info!("📖 HTML解析完成: {} 书签, {} 文件夹 (保留结构)", bookmark_count, folder_count);
+    info!(
+        "📖 HTML解析完成: {} 书签, {} 文件夹 (保留结构)",
+        bookmark_count, folder_count
+    );
     Ok(root_bookmarks)
 }
 
@@ -5567,7 +5834,7 @@ fn extract_folder_title(line: &str) -> Option<String> {
     let h3_start = line_lower.find("<h3")?;
     let content_start = line[h3_start..].find('>')? + h3_start + 1;
     let h3_end = line_lower.find("</h3>")?;
-    
+
     if content_start < h3_end {
         let title = html_unescape(&line[content_start..h3_end]);
         Some(title.trim().to_string())
@@ -5640,18 +5907,31 @@ fn html_unescape(s: &str) -> String {
 
 /// 浏览器根文件夹名称列表（用于扁平导出时移除）
 const BROWSER_ROOT_FOLDERS: &[&str] = &[
-    "waterfox", "brave", "brave nightly", "chrome", "safari", "edge", 
-    "firefox", "opera", "vivaldi", "arc", "chromium",
-    "书签栏", "bookmarks bar", "bookmark bar", "toolbar",
-    "其他书签", "other bookmarks", "other",
-    "移动设备书签", "mobile bookmarks",
+    "waterfox",
+    "brave",
+    "brave nightly",
+    "chrome",
+    "safari",
+    "edge",
+    "firefox",
+    "opera",
+    "vivaldi",
+    "arc",
+    "chromium",
+    "书签栏",
+    "bookmarks bar",
+    "bookmark bar",
+    "toolbar",
+    "其他书签",
+    "other bookmarks",
+    "other",
+    "移动设备书签",
+    "mobile bookmarks",
     "imported", // 浏览器导入时自动创建的文件夹
 ];
 
 /// 受保护的文件夹名称（即使为空也保留）
-const PROTECTED_FOLDERS: &[&str] = &[
-    "👀临时", "👀 临时", "临时", "temp", "temporary",
-];
+const PROTECTED_FOLDERS: &[&str] = &["👀临时", "👀 临时", "临时", "temp", "temporary"];
 
 /// 扁平导出配置
 #[derive(Debug, Clone, Default)]
@@ -5671,50 +5951,55 @@ pub struct FlattenStats {
 
 /// 扁平化书签结构，移除浏览器特定根文件夹（原地修改版本，避免内存爆炸）
 /// 将 Waterfox/Brave/Chrome 等根文件夹的内容提升到顶层
-pub fn flatten_bookmarks(bookmarks: &[Bookmark], config: &FlatExportConfig) -> (Vec<Bookmark>, FlattenStats) {
+pub fn flatten_bookmarks(
+    bookmarks: &[Bookmark],
+    config: &FlatExportConfig,
+) -> (Vec<Bookmark>, FlattenStats) {
     let mut stats = FlattenStats::default();
-    
+
     if !config.flatten_root {
         return (bookmarks.to_vec(), stats);
     }
-    
-    let root_folders: Vec<String> = config.root_folders_to_remove
+
+    let root_folders: Vec<String> = config
+        .root_folders_to_remove
         .clone()
         .unwrap_or_else(|| BROWSER_ROOT_FOLDERS.iter().map(|s| s.to_string()).collect());
-    
+
     // 原地修改：只在顶层移除浏览器根文件夹
     flatten_bookmarks_inplace_impl(bookmarks, &root_folders, &mut stats)
 }
 
 /// 递归扁平化实现 - 处理所有层级的浏览器根文件夹
 fn flatten_bookmarks_inplace_impl(
-    bookmarks: &[Bookmark], 
+    bookmarks: &[Bookmark],
     root_folders: &[String],
-    stats: &mut FlattenStats
+    stats: &mut FlattenStats,
 ) -> (Vec<Bookmark>, FlattenStats) {
     let mut result = Vec::with_capacity(bookmarks.len());
-    
+
     for bookmark in bookmarks {
         if bookmark.folder {
             let title_lower = bookmark.title.to_lowercase();
             // 检查是否是浏览器根文件夹
             let is_browser_root = root_folders.iter().any(|rf| {
                 let rf_lower = rf.to_lowercase();
-                title_lower == rf_lower || 
-                title_lower.contains(&rf_lower)
+                title_lower == rf_lower || title_lower.contains(&rf_lower)
             });
-            
+
             if is_browser_root {
                 // 移除根文件夹，将其子内容提升（递归处理子内容中的浏览器文件夹）
                 stats.root_folders_removed += 1;
                 stats.bookmarks_promoted += bookmark.children.len();
                 // 递归处理子内容，继续移除嵌套的浏览器根文件夹
-                let (flattened_children, _) = flatten_bookmarks_inplace_impl(&bookmark.children, root_folders, stats);
+                let (flattened_children, _) =
+                    flatten_bookmarks_inplace_impl(&bookmark.children, root_folders, stats);
                 result.extend(flattened_children);
             } else {
                 // 保留文件夹，但递归处理其子内容
                 let mut new_bookmark = bookmark.clone();
-                let (flattened_children, _) = flatten_bookmarks_inplace_impl(&bookmark.children, root_folders, stats);
+                let (flattened_children, _) =
+                    flatten_bookmarks_inplace_impl(&bookmark.children, root_folders, stats);
                 new_bookmark.children = flattened_children;
                 result.push(new_bookmark);
             }
@@ -5723,7 +6008,7 @@ fn flatten_bookmarks_inplace_impl(
             result.push(bookmark.clone());
         }
     }
-    
+
     (result, stats.clone())
 }
 
@@ -5739,25 +6024,32 @@ pub struct DedupeStats {
 pub fn deduplicate_bookmarks(bookmarks: &mut Vec<Bookmark>) -> DedupeStats {
     let mut stats = DedupeStats::default();
     let mut seen_urls: HashSet<String> = HashSet::new();
-    
+
     fn count_bookmarks(bookmarks: &[Bookmark]) -> usize {
-        bookmarks.iter().map(|b| {
-            if b.folder { count_bookmarks(&b.children) } else { 1 }
-        }).sum()
+        bookmarks
+            .iter()
+            .map(|b| {
+                if b.folder {
+                    count_bookmarks(&b.children)
+                } else {
+                    1
+                }
+            })
+            .sum()
     }
-    
+
     stats.total_before = count_bookmarks(bookmarks);
-    
+
     fn dedupe_recursive(bookmarks: &mut Vec<Bookmark>, seen: &mut HashSet<String>) -> usize {
         let mut removed = 0;
-        
+
         // 先递归处理子文件夹
         for bookmark in bookmarks.iter_mut() {
             if bookmark.folder {
                 removed += dedupe_recursive(&mut bookmark.children, seen);
             }
         }
-        
+
         // 然后处理当前层级
         bookmarks.retain(|b| {
             if b.folder {
@@ -5775,10 +6067,10 @@ pub fn deduplicate_bookmarks(bookmarks: &mut Vec<Bookmark>) -> DedupeStats {
                 true // 保留无 URL 的书签
             }
         });
-        
+
         removed
     }
-    
+
     stats.duplicates_removed = dedupe_recursive(bookmarks, &mut seen_urls);
     stats.total_after = count_bookmarks(bookmarks);
     stats
@@ -5818,17 +6110,17 @@ fn is_protected_folder(title: &str) -> bool {
 /// 递归移除空文件夹（保护特定文件夹）
 pub fn clean_empty_folders(bookmarks: &mut Vec<Bookmark>) -> CleanStats {
     let mut stats = CleanStats::default();
-    
+
     fn clean_recursive(bookmarks: &mut Vec<Bookmark>) -> usize {
         let mut removed = 0;
-        
+
         // 先递归处理子文件夹
         for bookmark in bookmarks.iter_mut() {
             if bookmark.folder {
                 removed += clean_recursive(&mut bookmark.children);
             }
         }
-        
+
         // 然后移除空文件夹（但保护特定文件夹）
         let before_len = bookmarks.len();
         bookmarks.retain(|b| {
@@ -5844,10 +6136,10 @@ pub fn clean_empty_folders(bookmarks: &mut Vec<Bookmark>) -> CleanStats {
             }
         });
         removed += before_len - bookmarks.len();
-        
+
         removed
     }
-    
+
     stats.empty_folders_removed = clean_recursive(bookmarks);
     stats
 }
@@ -5855,10 +6147,10 @@ pub fn clean_empty_folders(bookmarks: &mut Vec<Bookmark>) -> CleanStats {
 /// 确保受保护的文件夹存在（如 👀临时）
 pub fn ensure_protected_folders(bookmarks: &mut Vec<Bookmark>) {
     // 检查 👀临时 文件夹是否存在
-    let temp_folder_exists = bookmarks.iter().any(|b| {
-        b.folder && is_protected_folder(&b.title)
-    });
-    
+    let temp_folder_exists = bookmarks
+        .iter()
+        .any(|b| b.folder && is_protected_folder(&b.title));
+
     if !temp_folder_exists {
         // 添加 👀临时 文件夹到顶层
         let temp_folder = Bookmark {
@@ -5888,7 +6180,7 @@ pub fn merge_bookmarks_incremental(
     new_bookmarks: &[Bookmark],
 ) -> UpdateStats {
     let mut stats = UpdateStats::default();
-    
+
     // 收集现有的所有 URL
     fn collect_urls(bookmarks: &[Bookmark], urls: &mut HashSet<String>) {
         for b in bookmarks {
@@ -5899,10 +6191,10 @@ pub fn merge_bookmarks_incremental(
             }
         }
     }
-    
+
     let mut existing_urls = HashSet::new();
     collect_urls(existing, &mut existing_urls);
-    
+
     // 添加新书签（跳过已存在的）
     fn add_new_bookmarks(
         target: &mut Vec<Bookmark>,
@@ -5913,18 +6205,28 @@ pub fn merge_bookmarks_incremental(
         for bookmark in source {
             if bookmark.folder {
                 // 查找或创建同名文件夹
-                let existing_folder = target.iter_mut().find(|b| {
-                    b.folder && b.title.to_lowercase() == bookmark.title.to_lowercase()
-                });
-                
+                let existing_folder = target
+                    .iter_mut()
+                    .find(|b| b.folder && b.title.to_lowercase() == bookmark.title.to_lowercase());
+
                 if let Some(folder) = existing_folder {
                     // 递归合并到现有文件夹
-                    add_new_bookmarks(&mut folder.children, &bookmark.children, existing_urls, stats);
+                    add_new_bookmarks(
+                        &mut folder.children,
+                        &bookmark.children,
+                        existing_urls,
+                        stats,
+                    );
                 } else {
                     // 创建新文件夹并添加内容
                     let mut new_folder = bookmark.clone();
                     new_folder.children = Vec::new();
-                    add_new_bookmarks(&mut new_folder.children, &bookmark.children, existing_urls, stats);
+                    add_new_bookmarks(
+                        &mut new_folder.children,
+                        &bookmark.children,
+                        existing_urls,
+                        stats,
+                    );
                     if !new_folder.children.is_empty() || bookmark.children.is_empty() {
                         target.push(new_folder);
                     }
@@ -5940,7 +6242,7 @@ pub fn merge_bookmarks_incremental(
             }
         }
     }
-    
+
     add_new_bookmarks(existing, new_bookmarks, &existing_urls, &mut stats);
     stats
 }
@@ -5957,46 +6259,62 @@ pub fn export_bookmarks_to_html_flat(
     let mut flatten_stats = FlattenStats::default();
     let mut dedupe_stats = DedupeStats::default();
     let mut clean_stats = CleanStats::default();
-    
+
     // 1. 扁平化（如果配置了）
     if let Some(config) = flat_config {
         let (flattened, stats) = flatten_bookmarks(&working_bookmarks, config);
         working_bookmarks = flattened;
         flatten_stats = stats;
         if flatten_stats.root_folders_removed > 0 {
-            info!("📦 扁平化: 移除 {} 个浏览器根文件夹，提升 {} 个项目", 
-                flatten_stats.root_folders_removed, flatten_stats.bookmarks_promoted);
+            info!(
+                "📦 扁平化: 移除 {} 个浏览器根文件夹，提升 {} 个项目",
+                flatten_stats.root_folders_removed, flatten_stats.bookmarks_promoted
+            );
         }
     }
-    
+
     // 2. 去重（如果启用）
     if dedupe {
         dedupe_stats = deduplicate_bookmarks(&mut working_bookmarks);
         if dedupe_stats.duplicates_removed > 0 {
-            info!("🔄 去重: 移除 {} 个重复书签 ({} → {})", 
-                dedupe_stats.duplicates_removed, dedupe_stats.total_before, dedupe_stats.total_after);
+            info!(
+                "🔄 去重: 移除 {} 个重复书签 ({} → {})",
+                dedupe_stats.duplicates_removed,
+                dedupe_stats.total_before,
+                dedupe_stats.total_after
+            );
         }
     }
-    
+
     // 3. 清理空文件夹（如果启用）
     if clean_empty {
         clean_stats = clean_empty_folders(&mut working_bookmarks);
         if clean_stats.empty_folders_removed > 0 {
-            info!("🧹 清理: 移除 {} 个空文件夹", clean_stats.empty_folders_removed);
+            info!(
+                "🧹 清理: 移除 {} 个空文件夹",
+                clean_stats.empty_folders_removed
+            );
         }
     }
-    
+
     // 4. 导出
     export_bookmarks_to_html(&working_bookmarks, output_path)?;
-    
+
     // 计算最终书签数
     fn count_final(bookmarks: &[Bookmark]) -> usize {
-        bookmarks.iter().map(|b| {
-            if b.folder { count_final(&b.children) } else { 1 }
-        }).sum()
+        bookmarks
+            .iter()
+            .map(|b| {
+                if b.folder {
+                    count_final(&b.children)
+                } else {
+                    1
+                }
+            })
+            .sum()
     }
     let final_count = count_final(&working_bookmarks);
-    
+
     Ok((final_count, flatten_stats, dedupe_stats, clean_stats))
 }
 
@@ -6044,8 +6362,7 @@ mod export_quality_tests {
 
     // Strategy: generate random URLs
     fn arb_url() -> impl Strategy<Value = String> {
-        prop::string::string_regex("https?://[a-z0-9]+\\.[a-z]{2,4}/[a-z0-9]*")
-            .unwrap()
+        prop::string::string_regex("https?://[a-z0-9]+\\.[a-z]{2,4}/[a-z0-9]*").unwrap()
     }
 
     // **Feature: export-quality-improvement, Property 3: 扁平导出无根文件夹**
@@ -6104,7 +6421,7 @@ mod export_quality_tests {
                 .collect();
             let unique: std::collections::HashSet<_> = urls.iter().collect();
             prop_assert_eq!(urls.len(), unique.len());
-            
+
             // First bookmark should be kept
             prop_assert_eq!(bookmarks.len(), 1);
             prop_assert!(stats.duplicates_removed >= 1);
@@ -6156,7 +6473,7 @@ mod export_quality_tests {
 
             // Property: folder name appears in HTML (escaped)
             let escaped_name = html_escape(&folder_name);
-            prop_assert!(html.contains(&escaped_name), 
+            prop_assert!(html.contains(&escaped_name),
                 "Folder name '{}' (escaped: '{}') not found in HTML", folder_name, escaped_name);
         }
     }
@@ -6217,7 +6534,13 @@ mod dump_rules_test {
             "播客电台",
             "Podcast & Radio",
             vec!["podcast", "radio", "fm"],
-            vec!["overcast.fm", "pocketcasts.com", "stitcher.com", "ximalaya.com", "qingting.fm"],
+            vec![
+                "overcast.fm",
+                "pocketcasts.com",
+                "stitcher.com",
+                "ximalaya.com",
+                "qingting.fm",
+            ],
             vec!["/podcast", "/listen"],
             vec!["播客", "电台", "podcast", "radio"],
             32,
@@ -6228,7 +6551,13 @@ mod dump_rules_test {
             "法律产权",
             "Legal & Copyright",
             vec!["law", "legal", "copyright", "patent"],
-            vec!["law.com", "findlaw.com", "uspto.gov", "court.gov.cn", "pkulaw.com"],
+            vec![
+                "law.com",
+                "findlaw.com",
+                "uspto.gov",
+                "court.gov.cn",
+                "pkulaw.com",
+            ],
             vec![],
             vec!["法律", "法规", "法院", "专利", "版权", "legal", "law"],
             42,

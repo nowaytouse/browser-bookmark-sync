@@ -32,6 +32,7 @@ fn close_browser(browser: &BrowserType, force: bool) -> Result<()> {
         BrowserType::BraveNightly => ("Brave Browser Nightly", "Brave Browser Nightly"),
         BrowserType::Waterfox => ("Waterfox", "waterfox-bin"),
         BrowserType::FirefoxNightly => ("Firefox Nightly", "firefox"),
+        BrowserType::LibreWolf => ("LibreWolf", "librewolf"),
     };
 
     if !force {
@@ -78,6 +79,7 @@ pub fn parse_browser_list(browsers_str: &str) -> Vec<BrowserType> {
                 "brave-nightly" | "bravenightly" => Some(BrowserType::BraveNightly),
                 "waterfox" => Some(BrowserType::Waterfox),
                 "firefox-nightly" | "firefoxnightly" => Some(BrowserType::FirefoxNightly),
+                "librewolf" => Some(BrowserType::LibreWolf),
                 _ => None,
             }
         })

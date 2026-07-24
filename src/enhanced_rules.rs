@@ -1,5 +1,5 @@
 //! 增强分类规则引擎
-//! 
+//!
 //! 支持更精确的URL和标题匹配，包括：
 //! - 域名通配符匹配
 //! - 路径前缀和正则匹配
@@ -49,8 +49,8 @@ pub struct TitleMatcher {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
 pub enum MatchLogic {
     #[default]
-    And,  // URL和Title条件都必须满足
-    Or,   // URL或Title任一满足即可
+    And, // URL和Title条件都必须满足
+    Or, // URL或Title任一满足即可
 }
 
 /// 增强的匹配条件
@@ -78,30 +78,32 @@ impl UrlMatcher {
     pub fn matches(&self, url: &str) -> bool {
         // 解析URL
         let url_lower = url.to_lowercase();
-        
+
         // 提取域名和路径
         let (domain, path, query) = parse_url_parts(&url_lower);
-        
+
         // 检查域名模式
         if !self.domain_patterns.is_empty() {
-            let domain_matched = self.domain_patterns.iter().any(|pattern| {
-                match_domain_pattern(&domain, pattern)
-            });
+            let domain_matched = self
+                .domain_patterns
+                .iter()
+                .any(|pattern| match_domain_pattern(&domain, pattern));
             if !domain_matched {
                 return false;
             }
         }
-        
+
         // 检查路径前缀
         if !self.path_prefixes.is_empty() {
-            let prefix_matched = self.path_prefixes.iter().any(|prefix| {
-                path.starts_with(&prefix.to_lowercase())
-            });
+            let prefix_matched = self
+                .path_prefixes
+                .iter()
+                .any(|prefix| path.starts_with(&prefix.to_lowercase()));
             if !prefix_matched {
                 return false;
             }
         }
-        
+
         // 检查路径正则
         if let Some(ref regex_str) = self.path_regex {
             if let Ok(re) = Regex::new(regex_str) {
@@ -110,7 +112,7 @@ impl UrlMatcher {
                 }
             }
         }
-        
+
         // 检查查询参数
         if let Some(ref params) = self.query_params {
             let query_map = parse_query_params(&query);
@@ -125,7 +127,7 @@ impl UrlMatcher {
                 }
             }
         }
-        
+
         // 检查完整URL正则
         if let Some(ref regex_str) = self.full_url_regex {
             if let Ok(re) = Regex::new(regex_str) {
@@ -134,7 +136,7 @@ impl UrlMatcher {
                 }
             }
         }
-        
+
         true
     }
 }
@@ -143,22 +145,27 @@ impl TitleMatcher {
     /// 检查标题是否匹配
     pub fn matches(&self, title: &str) -> bool {
         let title_lower = title.to_lowercase();
-        
+
         // 检查排除词 (任一匹配则排除)
-        if self.excludes.iter().any(|ex| title_lower.contains(&ex.to_lowercase())) {
+        if self
+            .excludes
+            .iter()
+            .any(|ex| title_lower.contains(&ex.to_lowercase()))
+        {
             return false;
         }
-        
+
         // 检查关键词 (任一匹配即可)
         if !self.keywords.is_empty() {
-            let keyword_matched = self.keywords.iter().any(|kw| {
-                title_lower.contains(&kw.to_lowercase())
-            });
+            let keyword_matched = self
+                .keywords
+                .iter()
+                .any(|kw| title_lower.contains(&kw.to_lowercase()));
             if !keyword_matched {
                 return false;
             }
         }
-        
+
         // 检查正则
         if let Some(ref regex_str) = self.regex {
             if let Ok(re) = Regex::new(regex_str) {
@@ -167,7 +174,7 @@ impl TitleMatcher {
                 }
             }
         }
-        
+
         true
     }
 }
@@ -176,8 +183,12 @@ impl MatchCondition {
     /// 检查是否匹配
     pub fn matches(&self, url: &str, title: &str) -> bool {
         let url_matched = self.url.as_ref().map(|m| m.matches(url)).unwrap_or(true);
-        let title_matched = self.title.as_ref().map(|m| m.matches(title)).unwrap_or(true);
-        
+        let title_matched = self
+            .title
+            .as_ref()
+            .map(|m| m.matches(title))
+            .unwrap_or(true);
+
         match self.logic {
             MatchLogic::And => url_matched && title_matched,
             MatchLogic::Or => {
@@ -195,25 +206,27 @@ impl MatchCondition {
 
 /// 解析URL的各部分
 fn parse_url_parts(url: &str) -> (String, String, String) {
-    let url = url.trim_start_matches("http://").trim_start_matches("https://");
-    
+    let url = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+
     let (domain_path, query) = match url.find('?') {
-        Some(pos) => (&url[..pos], &url[pos+1..]),
+        Some(pos) => (&url[..pos], &url[pos + 1..]),
         None => (url, ""),
     };
-    
+
     let (domain, path) = match domain_path.find('/') {
         Some(pos) => (&domain_path[..pos], &domain_path[pos..]),
         None => (domain_path, "/"),
     };
-    
+
     (domain.to_string(), path.to_string(), query.to_string())
 }
 
 /// 匹配域名模式 (支持通配符)
 fn match_domain_pattern(domain: &str, pattern: &str) -> bool {
     let pattern_lower = pattern.to_lowercase();
-    
+
     if pattern_lower.starts_with("*.") {
         // 通配符匹配: *.example.com 匹配 sub.example.com 和 example.com
         let suffix = &pattern_lower[2..];
@@ -230,7 +243,7 @@ fn parse_query_params(query: &str) -> HashMap<String, String> {
     for pair in query.split('&') {
         if let Some(pos) = pair.find('=') {
             let key = &pair[..pos];
-            let value = &pair[pos+1..];
+            let value = &pair[pos + 1..];
             params.insert(key.to_string(), value.to_string());
         }
     }
@@ -332,10 +345,10 @@ mod tests {
         assert!(condition.matches("https://github.com/user/repo", "My Repo"));
         assert!(condition.matches("https://github.com/user/repo", "My Project")); // URL matches
         assert!(condition.matches("https://gitlab.com/user/repo", "My Repo")); // Title matches
-        assert!(!condition.matches("https://gitlab.com/user/repo", "My Project")); // Neither matches
+        assert!(!condition.matches("https://gitlab.com/user/repo", "My Project"));
+        // Neither matches
     }
 }
-
 
 #[cfg(test)]
 mod property_tests {
@@ -352,13 +365,13 @@ mod property_tests {
         ) {
             let full_path = format!("{}{}", prefix, suffix);
             let url = format!("https://example.com{}", full_path);
-            
+
             let matcher = UrlMatcher {
                 domain_patterns: vec!["example.com".to_string()],
                 path_prefixes: vec![prefix.clone()],
                 ..Default::default()
             };
-            
+
             // 路径以前缀开头应该匹配
             prop_assert!(matcher.matches(&url));
         }
@@ -369,13 +382,13 @@ mod property_tests {
             other_prefix in "/[0-9]{1,5}/",
         ) {
             let url = format!("https://example.com{}", other_prefix);
-            
+
             let matcher = UrlMatcher {
                 domain_patterns: vec!["example.com".to_string()],
                 path_prefixes: vec![prefix],
                 ..Default::default()
             };
-            
+
             // 路径不以前缀开头不应该匹配
             prop_assert!(!matcher.matches(&url));
         }
@@ -391,12 +404,12 @@ mod property_tests {
             suffix in " [a-z]{1,5}",
         ) {
             let title = format!("{}{}{}", prefix, keyword, suffix);
-            
+
             let matcher = TitleMatcher {
                 keywords: vec![keyword.clone()],
                 ..Default::default()
             };
-            
+
             // 标题包含关键词应该匹配
             prop_assert!(matcher.matches(&title));
         }
@@ -408,15 +421,15 @@ mod property_tests {
         ) {
             // 确保keyword和exclude不同
             prop_assume!(keyword != exclude);
-            
+
             let title = format!("Title with {} and {}", keyword, exclude);
-            
+
             let matcher = TitleMatcher {
                 keywords: vec![keyword],
                 excludes: vec![exclude],
                 ..Default::default()
             };
-            
+
             // 标题包含排除词不应该匹配
             prop_assert!(!matcher.matches(&title));
         }
@@ -432,7 +445,7 @@ mod property_tests {
         ) {
             let url = format!("https://{}/path", domain);
             let title = format!("Title with {}", keyword);
-            
+
             let condition = MatchCondition {
                 url: Some(UrlMatcher {
                     domain_patterns: vec![domain],
@@ -444,7 +457,7 @@ mod property_tests {
                 }),
                 logic: MatchLogic::And,
             };
-            
+
             // AND逻辑：两个都满足应该匹配
             prop_assert!(condition.matches(&url, &title));
         }
@@ -457,7 +470,7 @@ mod property_tests {
         ) {
             let url = format!("https://{}/path", other_domain);
             let title = format!("Title with {}", keyword);
-            
+
             let condition = MatchCondition {
                 url: Some(UrlMatcher {
                     domain_patterns: vec![domain],
@@ -469,7 +482,7 @@ mod property_tests {
                 }),
                 logic: MatchLogic::And,
             };
-            
+
             // AND逻辑：URL不匹配，整体不应该匹配
             prop_assert!(!condition.matches(&url, &title));
         }
@@ -482,7 +495,7 @@ mod property_tests {
         ) {
             let url = format!("https://{}/path", other_domain);
             let title = format!("Title with {}", keyword);
-            
+
             let condition = MatchCondition {
                 url: Some(UrlMatcher {
                     domain_patterns: vec![domain],
@@ -494,7 +507,7 @@ mod property_tests {
                 }),
                 logic: MatchLogic::Or,
             };
-            
+
             // OR逻辑：标题匹配，整体应该匹配
             prop_assert!(condition.matches(&url, &title));
         }

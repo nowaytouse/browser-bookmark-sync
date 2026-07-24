@@ -95,6 +95,7 @@ pub enum BrowserType {
     BraveNightly,
     Chrome,
     FirefoxNightly,
+    LibreWolf,
 }
 
 impl BrowserType {
@@ -106,6 +107,7 @@ impl BrowserType {
             BrowserType::BraveNightly => "Brave Nightly",
             BrowserType::Chrome => "Chrome",
             BrowserType::FirefoxNightly => "Firefox Nightly",
+            BrowserType::LibreWolf => "LibreWolf",
         }
     }
 }
@@ -114,6 +116,11 @@ pub trait BrowserAdapter: Send + Sync {
     fn browser_type(&self) -> BrowserType;
     fn detect_bookmark_path(&self) -> Result<PathBuf>;
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>>;
+
+    /// Read bookmarks from all user profiles of this browser
+    fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        self.read_bookmarks()
+    }
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()>;
     fn backup_bookmarks(&self) -> Result<PathBuf>;
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool>;
@@ -190,6 +197,7 @@ pub fn get_all_adapters() -> Vec<Box<dyn BrowserAdapter + Send + Sync>> {
         Box::new(BraveNightlyAdapter),
         Box::new(ChromeAdapter),
         Box::new(FirefoxNightlyAdapter),
+        Box::new(LibreWolfAdapter),
     ]
 }
 
@@ -231,6 +239,11 @@ impl BrowserAdapter for WaterfoxAdapter {
         }
 
         Ok(Vec::new())
+    }
+
+    fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.detect_all_profiles()?;
+        read_all_firefox_bookmarks("Waterfox", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
@@ -672,6 +685,11 @@ impl BrowserAdapter for BraveAdapter {
         Ok(bookmarks)
     }
 
+    fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.detect_all_profiles()?;
+        read_all_chromium_bookmarks("Brave", &profiles)
+    }
+
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
         // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
@@ -841,6 +859,11 @@ impl BrowserAdapter for BraveNightlyAdapter {
         let count = count_bookmarks(&bookmarks);
         info!("✅ Brave Nightly (Default): {} bookmarks", count);
         Ok(bookmarks)
+    }
+
+    fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.detect_all_profiles()?;
+        read_all_chromium_bookmarks("Brave Nightly", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
@@ -1021,6 +1044,11 @@ impl BrowserAdapter for ChromeAdapter {
         let count = count_bookmarks(&bookmarks);
         info!("✅ Chrome (Default): {} bookmarks", count);
         Ok(bookmarks)
+    }
+
+    fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.detect_all_profiles()?;
+        read_all_chromium_bookmarks("Chrome", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
@@ -1249,6 +1277,16 @@ impl BrowserAdapter for FirefoxNightlyAdapter {
         read_firefox_bookmarks(&path)
     }
 
+    fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        if let Ok(profiles) = self.detect_all_profiles() {
+            read_all_firefox_bookmarks("Firefox Nightly", &profiles)
+        } else if let Ok(path) = self.detect_bookmark_path() {
+            read_all_firefox_bookmarks("Firefox Nightly", &[path])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
         let path = self.detect_bookmark_path()?;
         write_firefox_bookmarks(&path, bookmarks)
@@ -1264,6 +1302,207 @@ impl BrowserAdapter for FirefoxNightlyAdapter {
     fn validate_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<bool> {
         Ok(true)
     }
+}
+
+impl FirefoxNightlyAdapter {
+    fn detect_all_profiles(&self) -> Result<Vec<PathBuf>> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let path = PathBuf::from(format!(
+                "{}/Library/Application Support/Firefox/Profiles",
+                home
+            ));
+
+            if !path.exists() {
+                anyhow::bail!("Firefox profile directory not found");
+            }
+
+            let mut profiles = Vec::new();
+            for entry in std::fs::read_dir(&path)? {
+                let entry = entry?;
+                let profile_path = entry.path();
+                if profile_path.is_dir() {
+                    let bookmarks_path = profile_path.join("places.sqlite");
+                    if bookmarks_path.exists() {
+                        profiles.push(bookmarks_path);
+                    }
+                }
+            }
+
+            if profiles.is_empty() {
+                anyhow::bail!("No Firefox profiles with bookmarks found");
+            }
+
+            info!("🔍 Found {} Firefox profile(s)", profiles.len());
+            Ok(profiles)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("Firefox detection not implemented for this platform")
+        }
+    }
+}
+
+// LibreWolf Adapter
+pub struct LibreWolfAdapter;
+
+impl BrowserAdapter for LibreWolfAdapter {
+    fn browser_type(&self) -> BrowserType {
+        BrowserType::LibreWolf
+    }
+
+    fn detect_bookmark_path(&self) -> Result<PathBuf> {
+        let profiles = self.detect_all_profiles()?;
+        let valid = profiles
+            .iter()
+            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            .or_else(|| profiles.first());
+        Ok(valid
+            .ok_or_else(|| anyhow::anyhow!("No LibreWolf profiles found"))?
+            .clone())
+    }
+
+    fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.detect_all_profiles()?;
+
+        for profile_path in profiles.iter() {
+            match read_firefox_bookmarks(profile_path) {
+                Ok(bookmarks) if !bookmarks.is_empty() => {
+                    let count = count_bookmarks(&bookmarks);
+                    info!("✅ LibreWolf (Default): {} bookmarks", count);
+                    return Ok(bookmarks);
+                }
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+
+        Ok(Vec::new())
+    }
+
+    fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        if let Ok(profiles) = self.detect_all_profiles() {
+            read_all_firefox_bookmarks("LibreWolf", &profiles)
+        } else if let Ok(path) = self.detect_bookmark_path() {
+            read_all_firefox_bookmarks("LibreWolf", &[path])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+        let profiles = self.detect_all_profiles()?;
+        let valid_profile = profiles
+            .iter()
+            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            .ok_or_else(|| anyhow::anyhow!("No valid LibreWolf profile found"))?;
+
+        match write_firefox_bookmarks(valid_profile, bookmarks) {
+            Ok(_) => info!("✅ Wrote {} bookmarks to LibreWolf", bookmarks.len()),
+            Err(e) => warn!("⚠️  Failed to write to LibreWolf: {}", e),
+        }
+        Ok(())
+    }
+
+    fn backup_bookmarks(&self) -> Result<PathBuf> {
+        let source = self.detect_bookmark_path()?;
+        let backup_path = source.with_extension("sqlite.backup");
+        std::fs::copy(&source, &backup_path)?;
+        Ok(backup_path)
+    }
+
+    fn validate_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+impl LibreWolfAdapter {
+    fn detect_all_profiles(&self) -> Result<Vec<PathBuf>> {
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME")?;
+            let path = PathBuf::from(format!(
+                "{}/Library/Application Support/LibreWolf/Profiles",
+                home
+            ));
+
+            if !path.exists() {
+                anyhow::bail!("LibreWolf profile directory not found");
+            }
+
+            let mut profiles = Vec::new();
+            for entry in std::fs::read_dir(&path)? {
+                let entry = entry?;
+                let profile_path = entry.path();
+                if profile_path.is_dir() {
+                    let bookmarks_path = profile_path.join("places.sqlite");
+                    if bookmarks_path.exists() {
+                        profiles.push(bookmarks_path);
+                    }
+                }
+            }
+
+            if profiles.is_empty() {
+                anyhow::bail!("No LibreWolf profiles with bookmarks found");
+            }
+
+            info!("🔍 Found {} LibreWolf profile(s)", profiles.len());
+            Ok(profiles)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            anyhow::bail!("LibreWolf detection not implemented for this platform")
+        }
+    }
+}
+
+fn read_all_chromium_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
+    let mut all_bookmarks = Vec::new();
+    for profile_path in profiles {
+        let bookmarks_path = profile_path.join("Bookmarks");
+        if !bookmarks_path.exists() {
+            continue;
+        }
+        let profile_name = profile_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Profile");
+
+        if let Ok(data) = std::fs::read_to_string(&bookmarks_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Ok(bookmarks) = parse_chromium_bookmarks(&json) {
+                    if !bookmarks.is_empty() {
+                        let count = count_bookmarks(&bookmarks);
+                        info!("✅ {} ({}): {} bookmarks", browser_name, profile_name, count);
+                        all_bookmarks.extend(bookmarks);
+                    }
+                }
+            }
+        }
+    }
+    Ok(all_bookmarks)
+}
+
+fn read_all_firefox_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
+    let mut all_bookmarks = Vec::new();
+    for profile_path in profiles {
+        if let Ok(bookmarks) = read_firefox_bookmarks(profile_path) {
+            if !bookmarks.is_empty() {
+                let profile_name = profile_path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Profile");
+                let count = count_bookmarks(&bookmarks);
+                info!("✅ {} ({}): {} bookmarks", browser_name, profile_name, count);
+                all_bookmarks.extend(bookmarks);
+            }
+        }
+    }
+    Ok(all_bookmarks)
 }
 
 // Helper functions for Safari plist parsing
@@ -2646,7 +2885,7 @@ mod tests {
     #[test]
     fn test_get_all_adapters() {
         let adapters = get_all_adapters();
-        assert_eq!(adapters.len(), 6);
+        assert_eq!(adapters.len(), 7);
 
         let names: Vec<&str> = adapters.iter().map(|a| a.browser_type().name()).collect();
         assert!(names.contains(&"Waterfox"));
@@ -2655,6 +2894,7 @@ mod tests {
         assert!(names.contains(&"Brave Nightly"));
         assert!(names.contains(&"Chrome"));
         assert!(names.contains(&"Firefox Nightly"));
+        assert!(names.contains(&"LibreWolf"));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! URL有效性检查模块
-//! 
+//!
 //! 通过代理和直连双网络验证收藏夹URL的有效性。
 //! 判断逻辑：任一网络成功即有效，双网络都失败才判定为无效。
 
@@ -29,33 +29,36 @@ impl ValidationStatus {
     /// - 双网络都返回 404/410/DNS失败 = 无效（资源确实不存在）
     /// - 403/503/429 等 = 不确定（可能是 CF 验证、WAF）
     /// - 单网络失败/超时 = 不确定
-    pub fn determine(proxy_result: Option<&HttpResult>, direct_result: Option<&HttpResult>) -> Self {
+    pub fn determine(
+        proxy_result: Option<&HttpResult>,
+        direct_result: Option<&HttpResult>,
+    ) -> Self {
         let proxy_success = proxy_result.map(|r| r.is_success()).unwrap_or(false);
         let direct_success = direct_result.map(|r| r.is_success()).unwrap_or(false);
-        
+
         // 任一网络成功即有效
         if proxy_success || direct_success {
             return ValidationStatus::Valid;
         }
-        
+
         // 检查是否有被拦截的情况（CF 验证、WAF 等）
-        // 403/503/429 说明服务器在线，浏览器通常能正常访问，视为有效
+        // 403/503/429 等状态码说明服务器可能在线但触发了防护机制，标记为不确定
         let proxy_blocked = proxy_result.map(|r| r.is_blocked()).unwrap_or(false);
         let direct_blocked = direct_result.map(|r| r.is_blocked()).unwrap_or(false);
-        
+
         if proxy_blocked || direct_blocked {
-            return ValidationStatus::Valid; // 服务器在线，浏览器可访问
+            return ValidationStatus::Uncertain;
         }
-        
+
         // 检查是否双网络都有确定性失败结果（404/410/DNS失败）
         let proxy_failed = proxy_result.map(|r| r.is_failure()).unwrap_or(false);
         let direct_failed = direct_result.map(|r| r.is_failure()).unwrap_or(false);
-        
+
         // 双网络都确定性失败才判定为无效
         if proxy_failed && direct_failed {
             return ValidationStatus::Invalid;
         }
-        
+
         // 其他情况（单网络失败、超时等）判定为不确定
         ValidationStatus::Uncertain
     }
@@ -84,7 +87,7 @@ impl HttpResult {
             is_timeout: false,
         }
     }
-    
+
     /// 创建失败结果
     pub fn failure(error: String, latency_ms: u64) -> Self {
         Self {
@@ -94,7 +97,7 @@ impl HttpResult {
             is_timeout: false,
         }
     }
-    
+
     /// 创建超时结果
     pub fn timeout(latency_ms: u64) -> Self {
         Self {
@@ -104,7 +107,7 @@ impl HttpResult {
             is_timeout: true,
         }
     }
-    
+
     /// 判断是否成功 (HTTP 2xx/3xx)
     pub fn is_success(&self) -> bool {
         match self.status_code {
@@ -112,7 +115,7 @@ impl HttpResult {
             None => false,
         }
     }
-    
+
     /// 判断是否失败 (仅 404/410 等明确的"不存在"状态码)
     /// 403/503/429 等可能是 CF 验证、WAF 拦截、限流，不算确定性失败
     pub fn is_failure(&self) -> bool {
@@ -133,18 +136,18 @@ impl HttpResult {
                     let err_lower = err.to_lowercase();
                     // DNS 解析失败 = 域名不存在 = 确定性失败
                     // 连接拒绝/重置 = 服务器问题 = 不确定
-                    err_lower.contains("dns") || 
-                    err_lower.contains("no such host") ||
-                    err_lower.contains("name or service not known") ||
-                    err_lower.contains("getaddrinfo") ||
-                    err_lower.contains("resolve")
+                    err_lower.contains("dns")
+                        || err_lower.contains("no such host")
+                        || err_lower.contains("name or service not known")
+                        || err_lower.contains("getaddrinfo")
+                        || err_lower.contains("resolve")
                 } else {
                     false
                 }
             }
         }
     }
-    
+
     /// 判断是否是"可能有效但被拦截"的状态码
     /// 这些状态码通常是 CF 验证、WAF、限流等，浏览器可能可以正常访问
     pub fn is_blocked(&self) -> bool {
@@ -187,7 +190,7 @@ impl UrlCheckResult {
             error_message: Some(reason.to_string()),
         }
     }
-    
+
     /// 从检查结果创建
     pub fn from_results(
         url: String,
@@ -195,7 +198,7 @@ impl UrlCheckResult {
         direct_result: Option<HttpResult>,
     ) -> Self {
         let status = ValidationStatus::determine(proxy_result.as_ref(), direct_result.as_ref());
-        
+
         // 生成错误信息
         let error_message = if status == ValidationStatus::Invalid {
             let mut errors = Vec::new();
@@ -213,11 +216,15 @@ impl UrlCheckResult {
                     errors.push(format!("Direct: HTTP {}", code));
                 }
             }
-            if errors.is_empty() { None } else { Some(errors.join("; ")) }
+            if errors.is_empty() {
+                None
+            } else {
+                Some(errors.join("; "))
+            }
         } else {
             None
         };
-        
+
         Self {
             url,
             status,
@@ -283,7 +290,7 @@ impl CheckReport {
             invalid_urls: Vec::new(),
             check_duration_secs: duration_secs,
         };
-        
+
         for result in results {
             match result.status {
                 ValidationStatus::Valid => report.valid_count += 1,
@@ -294,23 +301,21 @@ impl CheckReport {
                         url: result.url.clone(),
                         browser: String::new(),
                         folder_path: String::new(),
-                        proxy_error: result.proxy_result.as_ref()
-                            .and_then(|r| r.error.clone()),
-                        direct_error: result.direct_result.as_ref()
-                            .and_then(|r| r.error.clone()),
+                        proxy_error: result.proxy_result.as_ref().and_then(|r| r.error.clone()),
+                        direct_error: result.direct_result.as_ref().and_then(|r| r.error.clone()),
                     });
                 }
                 ValidationStatus::Uncertain => report.uncertain_count += 1,
                 ValidationStatus::Skipped => report.skipped_count += 1,
             }
         }
-        
+
         report
     }
-    
+
     /// 验证数量一致性 (属性8)
     pub fn is_consistent(&self) -> bool {
-        self.valid_count + self.invalid_count + self.uncertain_count + self.skipped_count 
+        self.valid_count + self.invalid_count + self.uncertain_count + self.skipped_count
             == self.total_checked
     }
 }
@@ -361,7 +366,7 @@ mod tests {
             ValidationStatus::Invalid
         );
     }
-    
+
     #[test]
     fn test_validation_status_cf_blocked() {
         // 403/503 是 CF 验证，应该标记为不确定
@@ -409,7 +414,6 @@ mod tests {
     }
 }
 
-
 /// URL检查器
 pub struct UrlChecker {
     config: CheckerConfig,
@@ -424,7 +428,7 @@ impl UrlChecker {
     pub fn new(config: CheckerConfig) -> Result<Self> {
         let timeout = Duration::from_secs(config.timeout_secs);
         let connect_timeout = Duration::from_secs(10); // 连接超时固定10秒
-        
+
         // 创建直连客户端
         let direct_client = Client::builder()
             .timeout(timeout)
@@ -434,36 +438,40 @@ impl UrlChecker {
             .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()?;
-        
+
         // 创建代理客户端 (如果配置了代理)
         let proxy_client = if let Some(ref proxy_url) = config.proxy_url {
             info!("🌐 配置代理: {}", proxy_url);
             let proxy = reqwest::Proxy::all(proxy_url)?;
-            Some(Client::builder()
-                .timeout(timeout)
-                .connect_timeout(connect_timeout)
-                .pool_idle_timeout(Duration::from_secs(30))
-                .pool_max_idle_per_host(10)
-                .proxy(proxy)
-                .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-                .redirect(reqwest::redirect::Policy::limited(5))
-                .build()?)
+            Some(
+                Client::builder()
+                    .timeout(timeout)
+                    .connect_timeout(connect_timeout)
+                    .pool_idle_timeout(Duration::from_secs(30))
+                    .pool_max_idle_per_host(10)
+                    .proxy(proxy)
+                    .user_agent(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    )
+                    .redirect(reqwest::redirect::Policy::limited(5))
+                    .build()?,
+            )
         } else {
             debug!("未配置代理，仅使用直连模式");
             None
         };
-        
+
         Ok(Self {
             config,
             proxy_client,
             direct_client,
         })
     }
-    
+
     /// 检查URL是否应该跳过
     fn should_skip(url: &str) -> Option<&'static str> {
         let url_lower = url.to_lowercase();
-        
+
         if url_lower.starts_with("javascript:") {
             return Some("JavaScript URL");
         }
@@ -490,27 +498,27 @@ impl UrlChecker {
         if url_lower.contains("127.0.0.1") || url_lower.contains("localhost") {
             return Some("Local address");
         }
-        
+
         None
     }
-    
+
     /// 执行单个HTTP请求
     /// 先尝试 HEAD 请求，如果返回 405 则回退到 GET 请求
     async fn do_request(client: &Client, url: &str) -> HttpResult {
         let start = std::time::Instant::now();
-        
+
         // 先尝试 HEAD 请求
         match client.head(url).send().await {
             Ok(response) => {
                 let status = response.status().as_u16();
                 let latency = start.elapsed().as_millis() as u64;
-                
+
                 // 如果 HEAD 返回 405 (Method Not Allowed)，回退到 GET
                 if status == 405 {
                     debug!("HEAD 返回 405，回退到 GET: {}", url);
                     return Self::do_get_request(client, url, start).await;
                 }
-                
+
                 HttpResult::success(status, latency)
             }
             Err(e) => {
@@ -523,7 +531,7 @@ impl UrlChecker {
             }
         }
     }
-    
+
     /// 执行 GET 请求（仅获取响应头，不下载 body）
     async fn do_get_request(client: &Client, url: &str, start: std::time::Instant) -> HttpResult {
         match client.get(url).send().await {
@@ -541,19 +549,19 @@ impl UrlChecker {
             }
         }
     }
-    
+
     /// 检查单个URL
     pub async fn check_url(&self, url: &str) -> UrlCheckResult {
         // 检查是否应该跳过
         if let Some(reason) = Self::should_skip(url) {
             return UrlCheckResult::skipped(url.to_string(), reason);
         }
-        
+
         // 并行发起代理和直连请求
         let (proxy_result, direct_result) = if let Some(ref proxy_client) = self.proxy_client {
             let proxy_fut = Self::do_request(proxy_client, url);
             let direct_fut = Self::do_request(&self.direct_client, url);
-            
+
             let (pr, dr) = tokio::join!(proxy_fut, direct_fut);
             (Some(pr), Some(dr))
         } else {
@@ -561,10 +569,10 @@ impl UrlChecker {
             let dr = Self::do_request(&self.direct_client, url).await;
             (None, Some(dr))
         };
-        
+
         UrlCheckResult::from_results(url.to_string(), proxy_result, direct_result)
     }
-    
+
     /// 批量检查URL - 使用流式处理，分批执行避免资源耗尽
     pub async fn check_batch<F>(
         &self,
@@ -575,16 +583,16 @@ impl UrlChecker {
         F: Fn(usize, usize, &str),
     {
         use futures::stream::{self, StreamExt};
-        
+
         let total = urls.len();
         let concurrency = self.config.concurrency;
-        
+
         // 使用 buffer_unordered 流式处理，限制并发数
         let results: Vec<UrlCheckResult> = stream::iter(urls.into_iter().enumerate())
             .map(|(i, url)| {
                 let proxy_client = self.proxy_client.clone();
                 let direct_client = self.direct_client.clone();
-                
+
                 async move {
                     let result = if let Some(reason) = Self::should_skip(&url) {
                         UrlCheckResult::skipped(url.clone(), reason)
@@ -610,21 +618,20 @@ impl UrlChecker {
             .map(|(_, _, result)| result)
             .collect()
             .await;
-        
+
         results
     }
-    
+
     /// 获取配置
     pub fn config(&self) -> &CheckerConfig {
         &self.config
     }
-    
+
     /// 是否配置了代理
     pub fn has_proxy(&self) -> bool {
         self.proxy_client.is_some()
     }
 }
-
 
 #[cfg(test)]
 mod property_tests {
@@ -651,7 +658,7 @@ mod property_tests {
             Just(451u16), // Unavailable For Legal Reasons
         ]
     }
-    
+
     // 可能被拦截的状态码（CF 验证、WAF 等）
     fn blocked_status_code() -> impl Strategy<Value = u16> {
         prop_oneof![
@@ -741,7 +748,7 @@ mod property_tests {
             prop_assert_eq!(status, ValidationStatus::Invalid);
         }
     }
-    
+
     /// **Feature: bookmark-validity-checker, Property 9: CF/WAF 拦截标记为不确定**
     /// **Validates: Requirements 1.6 (新增)**
     proptest! {
@@ -758,7 +765,7 @@ mod property_tests {
             let status = ValidationStatus::determine(Some(&proxy), Some(&direct));
             prop_assert_eq!(status, ValidationStatus::Uncertain);
         }
-        
+
         #[test]
         fn prop_one_blocked_is_uncertain(
             blocked_code in blocked_status_code(),
@@ -785,7 +792,7 @@ mod property_tests {
             skipped_count in 0usize..100,
         ) {
             let mut results = Vec::new();
-            
+
             // 生成有效结果
             for _ in 0..valid_count {
                 results.push(UrlCheckResult::from_results(
@@ -794,7 +801,7 @@ mod property_tests {
                     Some(HttpResult::success(200, 50)),
                 ));
             }
-            
+
             // 生成无效结果
             for _ in 0..invalid_count {
                 results.push(UrlCheckResult::from_results(
@@ -803,7 +810,7 @@ mod property_tests {
                     Some(HttpResult::success(404, 50)),
                 ));
             }
-            
+
             // 生成不确定结果
             for _ in 0..uncertain_count {
                 results.push(UrlCheckResult::from_results(
@@ -812,7 +819,7 @@ mod property_tests {
                     Some(HttpResult::success(404, 50)),
                 ));
             }
-            
+
             // 生成跳过结果
             for _ in 0..skipped_count {
                 results.push(UrlCheckResult::skipped(
@@ -820,9 +827,9 @@ mod property_tests {
                     "JavaScript URL",
                 ));
             }
-            
+
             let report = CheckReport::from_results(&results, 1.0);
-            
+
             // 验证数量一致性
             prop_assert!(report.is_consistent());
             prop_assert_eq!(
@@ -832,7 +839,6 @@ mod property_tests {
         }
     }
 }
-
 
 #[cfg(test)]
 mod property_tests_2 {
@@ -845,10 +851,7 @@ mod property_tests_2 {
 
     // 确定性失败状态码
     fn definite_failure_status_code() -> impl Strategy<Value = u16> {
-        prop_oneof![
-            Just(404u16),
-            Just(410u16),
-        ]
+        prop_oneof![Just(404u16), Just(410u16),]
     }
 
     /// **Feature: bookmark-validity-checker, Property 7: 超时标记为不确定**
@@ -909,7 +912,6 @@ mod property_tests_2 {
     }
 }
 
-
 /// 删除操作结果
 #[derive(Debug, Clone)]
 pub struct DeleteResult {
@@ -936,7 +938,7 @@ impl DeleteResult {
             urls_to_delete,
         }
     }
-    
+
     /// 创建实际删除结果
     pub fn actual(deleted_count: usize, preserved_count: usize, backup_path: String) -> Self {
         Self {
@@ -988,7 +990,7 @@ fn remove_invalid_recursive(
             remove_invalid_recursive(&mut bookmark.children, invalid_urls, removed);
         }
     }
-    
+
     // 然后删除当前层级的无效收藏夹
     let before_len = bookmarks.len();
     bookmarks.retain(|b| {
@@ -1062,7 +1064,7 @@ pub fn validate_delete_targets(
     for result in results {
         let is_target = targets.contains(&result.url);
         let is_invalid = result.status == ValidationStatus::Invalid;
-        
+
         // 如果是删除目标，必须是Invalid状态
         if is_target && !is_invalid {
             return false;
@@ -1105,12 +1107,15 @@ mod delete_tests {
     fn test_collect_urls() {
         let bookmarks = vec![
             make_bookmark("A", "http://a.com"),
-            make_folder("Folder", vec![
-                make_bookmark("B", "http://b.com"),
-                make_bookmark("C", "http://c.com"),
-            ]),
+            make_folder(
+                "Folder",
+                vec![
+                    make_bookmark("B", "http://b.com"),
+                    make_bookmark("C", "http://c.com"),
+                ],
+            ),
         ];
-        
+
         let urls = collect_urls_from_bookmarks(&bookmarks);
         assert_eq!(urls.len(), 3);
         assert!(urls.contains(&"http://a.com".to_string()));
@@ -1123,25 +1128,29 @@ mod delete_tests {
         let mut bookmarks = vec![
             make_bookmark("Valid", "http://valid.com"),
             make_bookmark("Invalid", "http://invalid.com"),
-            make_folder("Folder", vec![
-                make_bookmark("Valid2", "http://valid2.com"),
-                make_bookmark("Invalid2", "http://invalid2.com"),
-            ]),
+            make_folder(
+                "Folder",
+                vec![
+                    make_bookmark("Valid2", "http://valid2.com"),
+                    make_bookmark("Invalid2", "http://invalid2.com"),
+                ],
+            ),
         ];
-        
+
         let invalid: HashSet<String> = vec![
             "http://invalid.com".to_string(),
             "http://invalid2.com".to_string(),
-        ].into_iter().collect();
-        
+        ]
+        .into_iter()
+        .collect();
+
         let removed = remove_invalid_bookmarks(&mut bookmarks, &invalid);
-        
+
         assert_eq!(removed, 2);
         assert_eq!(bookmarks.len(), 2); // Valid + Folder
         assert_eq!(bookmarks[1].children.len(), 1); // Only Valid2
     }
 }
-
 
 #[cfg(test)]
 mod property_tests_3 {
@@ -1174,7 +1183,7 @@ mod property_tests_3 {
             let mut results = Vec::new();
             let mut bookmarks = Vec::new();
             let mut invalid_urls = HashSet::new();
-            
+
             // 生成有效收藏夹
             for i in 0..valid_count {
                 let url = format!("http://valid{}.com", i);
@@ -1185,7 +1194,7 @@ mod property_tests_3 {
                     Some(HttpResult::success(200, 50)),
                 ));
             }
-            
+
             // 生成无效收藏夹
             for i in 0..invalid_count {
                 let url = format!("http://invalid{}.com", i);
@@ -1197,7 +1206,7 @@ mod property_tests_3 {
                 ));
                 invalid_urls.insert(url);
             }
-            
+
             // 生成不确定收藏夹
             for i in 0..uncertain_count {
                 let url = format!("http://uncertain{}.com", i);
@@ -1208,10 +1217,10 @@ mod property_tests_3 {
                     Some(HttpResult::success(404, 50)),
                 ));
             }
-            
+
             let original_count = bookmarks.len();
             let removed = remove_invalid_bookmarks(&mut bookmarks, &invalid_urls);
-            
+
             // 验证：只删除了Invalid状态的收藏夹
             prop_assert_eq!(removed, invalid_count);
             // 验证：Valid和Uncertain都被保留
@@ -1230,7 +1239,7 @@ mod property_tests_3 {
         ) {
             let mut bookmarks = Vec::new();
             let mut invalid_urls = HashSet::new();
-            
+
             for i in 0..bookmark_count {
                 let url = format!("http://test{}.com", i);
                 bookmarks.push(make_bookmark(&format!("Test{}", i), &url));
@@ -1238,17 +1247,17 @@ mod property_tests_3 {
                     invalid_urls.insert(url);
                 }
             }
-            
+
             // 克隆原始数据
             let original_bookmarks = bookmarks.clone();
-            
+
             // 模拟dry-run：只计算要删除的，不实际删除
             let urls_to_delete: Vec<String> = invalid_urls.iter().cloned().collect();
             let _dry_run_result = DeleteResult::dry_run(
                 urls_to_delete,
                 bookmark_count - invalid_urls.len(),
             );
-            
+
             // 验证：原始数据未被修改
             prop_assert_eq!(bookmarks.len(), original_bookmarks.len());
             for (a, b) in bookmarks.iter().zip(original_bookmarks.iter()) {
@@ -1258,7 +1267,6 @@ mod property_tests_3 {
         }
     }
 }
-
 
 // ============================================================
 // 结构保持删除模块 - 保持文件夹层级关系
@@ -1273,7 +1281,9 @@ pub struct RemoveConfig {
 
 impl Default for RemoveConfig {
     fn default() -> Self {
-        Self { keep_empty_folders: false }  // 默认删除空文件夹
+        Self {
+            keep_empty_folders: false,
+        } // 默认删除空文件夹
     }
 }
 
@@ -1302,7 +1312,7 @@ impl RemoveStats {
 }
 
 /// 从收藏夹树中删除指定URL的书签（保持文件夹结构）
-/// 
+///
 /// 两阶段处理：
 /// 1. 先删除书签项（保留所有文件夹）
 /// 2. 根据配置决定是否清理空文件夹
@@ -1312,10 +1322,10 @@ pub fn remove_invalid_bookmarks_preserve_structure(
     config: &RemoveConfig,
 ) -> RemoveStats {
     let mut stats = RemoveStats::default();
-    
+
     // 阶段1: 递归删除死链书签（保持所有文件夹）
     remove_bookmarks_only(bookmarks, invalid_urls, &mut stats);
-    
+
     // 阶段2: 如果不保留空文件夹，则清理
     if !config.keep_empty_folders {
         cleanup_empty_folders_recursive(bookmarks, &mut stats);
@@ -1323,7 +1333,7 @@ pub fn remove_invalid_bookmarks_preserve_structure(
         // 统计保留的文件夹数量
         count_folders_recursive(bookmarks, &mut stats.folders_preserved);
     }
-    
+
     stats
 }
 
@@ -1339,22 +1349,22 @@ fn remove_bookmarks_only(
             remove_bookmarks_only(&mut bookmark.children, invalid_urls, stats);
         }
     }
-    
+
     // 只删除书签项，保留所有文件夹
     bookmarks.retain(|b| {
         if b.folder {
-            true  // 始终保留文件夹
+            true // 始终保留文件夹
         } else if let Some(ref url) = b.url {
             if invalid_urls.contains(url) {
                 stats.bookmarks_removed += 1;
-                false  // 删除死链
+                false // 删除死链
             } else {
                 stats.bookmarks_preserved += 1;
-                true  // 保留有效书签
+                true // 保留有效书签
             }
         } else {
             stats.bookmarks_preserved += 1;
-            true  // 保留没有URL的项
+            true // 保留没有URL的项
         }
     });
 }
@@ -1370,12 +1380,12 @@ fn cleanup_empty_folders_recursive(
             cleanup_empty_folders_recursive(&mut bookmark.children, stats);
         }
     }
-    
+
     // 删除空文件夹
     bookmarks.retain(|b| {
         if b.folder && b.children.is_empty() {
             stats.empty_folders_removed += 1;
-            false  // 删除空文件夹
+            false // 删除空文件夹
         } else {
             if b.folder {
                 stats.folders_preserved += 1;
@@ -1409,7 +1419,7 @@ fn extract_preserve_structure_recursive(
     target_urls: &std::collections::HashSet<String>,
 ) -> Vec<crate::browsers::Bookmark> {
     let mut result = Vec::new();
-    
+
     for bookmark in bookmarks {
         if bookmark.folder {
             // 递归处理子文件夹
@@ -1426,7 +1436,7 @@ fn extract_preserve_structure_recursive(
             }
         }
     }
-    
+
     result
 }
 
@@ -1455,7 +1465,7 @@ pub fn get_bookmark_path(
         }
         None
     }
-    
+
     let mut path = Vec::new();
     find_path(bookmarks, target_url, &mut path)
 }
@@ -1525,7 +1535,6 @@ pub fn count_folders(bookmarks: &[crate::browsers::Bookmark]) -> usize {
     count
 }
 
-
 #[cfg(test)]
 mod structure_preserve_tests {
     use super::*;
@@ -1560,21 +1569,29 @@ mod structure_preserve_tests {
     fn test_preserve_structure_basic() {
         // 创建嵌套结构: Root/AI工具/ChatGPT, Root/AI工具/Claude
         let mut bookmarks = vec![
-            make_folder("AI工具", vec![
-                make_bookmark("ChatGPT", "http://chatgpt.com"),
-                make_bookmark("Claude", "http://claude.ai"),
-            ]),
-            make_folder("开发工具", vec![
-                make_bookmark("GitHub", "http://github.com"),
-                make_bookmark("DeadLink", "http://dead.link"),
-            ]),
+            make_folder(
+                "AI工具",
+                vec![
+                    make_bookmark("ChatGPT", "http://chatgpt.com"),
+                    make_bookmark("Claude", "http://claude.ai"),
+                ],
+            ),
+            make_folder(
+                "开发工具",
+                vec![
+                    make_bookmark("GitHub", "http://github.com"),
+                    make_bookmark("DeadLink", "http://dead.link"),
+                ],
+            ),
         ];
-        
+
         let invalid: HashSet<String> = vec!["http://dead.link".to_string()].into_iter().collect();
-        let config = RemoveConfig { keep_empty_folders: true };
-        
+        let config = RemoveConfig {
+            keep_empty_folders: true,
+        };
+
         let stats = remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid, &config);
-        
+
         assert_eq!(stats.bookmarks_removed, 1);
         assert_eq!(stats.bookmarks_preserved, 3);
         // 文件夹结构应该保持
@@ -1588,23 +1605,29 @@ mod structure_preserve_tests {
     fn test_default_removes_empty_folders() {
         // 创建一个文件夹，其中所有书签都是死链
         let mut bookmarks = vec![
-            make_folder("全是死链", vec![
-                make_bookmark("Dead1", "http://dead1.com"),
-                make_bookmark("Dead2", "http://dead2.com"),
-            ]),
-            make_folder("有效文件夹", vec![
-                make_bookmark("Valid", "http://valid.com"),
-            ]),
+            make_folder(
+                "全是死链",
+                vec![
+                    make_bookmark("Dead1", "http://dead1.com"),
+                    make_bookmark("Dead2", "http://dead2.com"),
+                ],
+            ),
+            make_folder(
+                "有效文件夹",
+                vec![make_bookmark("Valid", "http://valid.com")],
+            ),
         ];
-        
+
         let invalid: HashSet<String> = vec![
             "http://dead1.com".to_string(),
             "http://dead2.com".to_string(),
-        ].into_iter().collect();
-        
+        ]
+        .into_iter()
+        .collect();
+
         let config = RemoveConfig::default(); // keep_empty_folders = false
         let stats = remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid, &config);
-        
+
         assert_eq!(stats.bookmarks_removed, 2);
         assert_eq!(stats.empty_folders_removed, 1);
         assert_eq!(bookmarks.len(), 1); // 只剩"有效文件夹"
@@ -1613,17 +1636,18 @@ mod structure_preserve_tests {
 
     #[test]
     fn test_keep_empty_folders() {
-        let mut bookmarks = vec![
-            make_folder("全是死链", vec![
-                make_bookmark("Dead1", "http://dead1.com"),
-            ]),
-        ];
-        
+        let mut bookmarks = vec![make_folder(
+            "全是死链",
+            vec![make_bookmark("Dead1", "http://dead1.com")],
+        )];
+
         let invalid: HashSet<String> = vec!["http://dead1.com".to_string()].into_iter().collect();
-        let config = RemoveConfig { keep_empty_folders: true };
-        
+        let config = RemoveConfig {
+            keep_empty_folders: true,
+        };
+
         let stats = remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid, &config);
-        
+
         assert_eq!(stats.bookmarks_removed, 1);
         assert_eq!(stats.empty_folders_removed, 0);
         assert_eq!(bookmarks.len(), 1); // 空文件夹保留
@@ -1633,21 +1657,22 @@ mod structure_preserve_tests {
     #[test]
     fn test_nested_empty_folders_cleanup() {
         // 嵌套空文件夹: A/B/C，C中的书签全是死链
-        let mut bookmarks = vec![
-            make_folder("A", vec![
-                make_folder("B", vec![
-                    make_folder("C", vec![
-                        make_bookmark("Dead", "http://dead.com"),
-                    ]),
-                ]),
-            ]),
-        ];
-        
+        let mut bookmarks = vec![make_folder(
+            "A",
+            vec![make_folder(
+                "B",
+                vec![make_folder(
+                    "C",
+                    vec![make_bookmark("Dead", "http://dead.com")],
+                )],
+            )],
+        )];
+
         let invalid: HashSet<String> = vec!["http://dead.com".to_string()].into_iter().collect();
         let config = RemoveConfig::default();
-        
+
         let stats = remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid, &config);
-        
+
         assert_eq!(stats.bookmarks_removed, 1);
         assert_eq!(stats.empty_folders_removed, 3); // A, B, C 都被删除
         assert!(bookmarks.is_empty());
@@ -1655,23 +1680,30 @@ mod structure_preserve_tests {
 
     #[test]
     fn test_path_preserved() {
-        let mut bookmarks = vec![
-            make_folder("工具", vec![
-                make_folder("AI", vec![
+        let mut bookmarks = vec![make_folder(
+            "工具",
+            vec![make_folder(
+                "AI",
+                vec![
                     make_bookmark("ChatGPT", "http://chatgpt.com"),
                     make_bookmark("Dead", "http://dead.com"),
-                ]),
-            ]),
-        ];
-        
+                ],
+            )],
+        )];
+
         // 记录删除前的路径
         let path_before = get_bookmark_path(&bookmarks, "http://chatgpt.com");
-        assert_eq!(path_before, Some(vec!["工具".to_string(), "AI".to_string()]));
-        
+        assert_eq!(
+            path_before,
+            Some(vec!["工具".to_string(), "AI".to_string()])
+        );
+
         let invalid: HashSet<String> = vec!["http://dead.com".to_string()].into_iter().collect();
-        let config = RemoveConfig { keep_empty_folders: true };
+        let config = RemoveConfig {
+            keep_empty_folders: true,
+        };
         remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid, &config);
-        
+
         // 验证路径不变
         let path_after = get_bookmark_path(&bookmarks, "http://chatgpt.com");
         assert_eq!(path_before, path_after);
@@ -1721,29 +1753,29 @@ mod property_tests_structure {
             let mut bookmarks_in_folder = Vec::new();
             let mut all_urls = Vec::new();
             let mut invalid_urls = HashSet::new();
-            
+
             for i in 0..valid_count {
                 let url = format!("http://valid{}.com", i);
                 bookmarks_in_folder.push(make_bookmark(&format!("Valid{}", i), &url));
                 all_urls.push(url);
             }
-            
+
             for i in 0..invalid_count {
                 let url = format!("http://invalid{}.com", i);
                 bookmarks_in_folder.push(make_bookmark(&format!("Invalid{}", i), &url));
                 invalid_urls.insert(url);
             }
-            
+
             let mut bookmarks = vec![
                 make_folder("TestFolder", bookmarks_in_folder),
             ];
-            
+
             // 记录删除前的路径
             let paths_before = collect_all_bookmark_paths(&bookmarks);
-            
+
             let config = RemoveConfig { keep_empty_folders: true };
             remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid_urls, &config);
-            
+
             // 验证所有保留书签的路径不变
             let paths_after = collect_all_bookmark_paths(&bookmarks);
             for (url, path) in paths_after {
@@ -1765,26 +1797,26 @@ mod property_tests_structure {
             let mut bookmarks = Vec::new();
             let mut invalid_urls = HashSet::new();
             let mut valid_urls = HashSet::new();
-            
+
             for i in 0..valid_count {
                 let url = format!("http://valid{}.com", i);
                 bookmarks.push(make_bookmark(&format!("Valid{}", i), &url));
                 valid_urls.insert(url);
             }
-            
+
             for i in 0..invalid_count {
                 let url = format!("http://invalid{}.com", i);
                 bookmarks.push(make_bookmark(&format!("Invalid{}", i), &url));
                 invalid_urls.insert(url);
             }
-            
+
             let config = RemoveConfig { keep_empty_folders: true };
             let stats = remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid_urls, &config);
-            
+
             // 验证删除数量正确
             prop_assert_eq!(stats.bookmarks_removed, invalid_count);
             prop_assert_eq!(stats.bookmarks_preserved, valid_count);
-            
+
             // 验证所有有效URL都保留
             for bookmark in &bookmarks {
                 if let Some(ref url) = bookmark.url {
@@ -1805,7 +1837,7 @@ mod property_tests_structure {
         ) {
             let mut bookmarks = Vec::new();
             let mut invalid_urls = HashSet::new();
-            
+
             for f in 0..folder_count {
                 let mut children = Vec::new();
                 for b in 0..bookmarks_per_folder {
@@ -1816,10 +1848,10 @@ mod property_tests_structure {
                 }
                 bookmarks.push(make_folder(&format!("Folder{}", f), children));
             }
-            
+
             let config = RemoveConfig::default(); // keep_empty_folders = false
             remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid_urls, &config);
-            
+
             // 验证没有空文件夹
             prop_assert!(!has_empty_folders(&bookmarks));
         }
@@ -1834,21 +1866,21 @@ mod property_tests_structure {
         ) {
             let mut bookmarks = Vec::new();
             let mut invalid_urls = HashSet::new();
-            
+
             for f in 0..folder_count {
                 let url = format!("http://dead{}.com", f);
                 let children = vec![make_bookmark(&format!("Dead{}", f), &url)];
                 bookmarks.push(make_folder(&format!("Folder{}", f), children));
                 invalid_urls.insert(url);
             }
-            
+
             let folders_before = count_folders(&bookmarks);
-            
+
             let config = RemoveConfig { keep_empty_folders: true };
             remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid_urls, &config);
-            
+
             let folders_after = count_folders(&bookmarks);
-            
+
             // 验证文件夹数量不变
             prop_assert_eq!(folders_before, folders_after);
         }
@@ -1864,23 +1896,23 @@ mod property_tests_structure {
         ) {
             let mut bookmarks = Vec::new();
             let mut invalid_urls = HashSet::new();
-            
+
             for i in 0..valid_count {
                 let url = format!("http://valid{}.com", i);
                 bookmarks.push(make_bookmark(&format!("Valid{}", i), &url));
             }
-            
+
             for i in 0..invalid_count {
                 let url = format!("http://invalid{}.com", i);
                 bookmarks.push(make_bookmark(&format!("Invalid{}", i), &url));
                 invalid_urls.insert(url);
             }
-            
+
             let total_before = count_bookmarks(&bookmarks);
-            
+
             let config = RemoveConfig { keep_empty_folders: true };
             let stats = remove_invalid_bookmarks_preserve_structure(&mut bookmarks, &invalid_urls, &config);
-            
+
             // 验证数量一致性
             prop_assert_eq!(
                 stats.bookmarks_removed + stats.bookmarks_preserved,
@@ -1891,7 +1923,6 @@ mod property_tests_structure {
         }
     }
 }
-
 
 #[cfg(test)]
 mod extract_preserve_tests {
@@ -1925,21 +1956,23 @@ mod extract_preserve_tests {
 
     #[test]
     fn test_extract_preserve_structure() {
-        let bookmarks = vec![
-            make_folder("工具", vec![
-                make_folder("AI", vec![
-                    make_bookmark("ChatGPT", "http://chatgpt.com"),
-                    make_bookmark("Claude", "http://claude.ai"),
-                ]),
-                make_folder("开发", vec![
-                    make_bookmark("GitHub", "http://github.com"),
-                ]),
-            ]),
-        ];
-        
+        let bookmarks = vec![make_folder(
+            "工具",
+            vec![
+                make_folder(
+                    "AI",
+                    vec![
+                        make_bookmark("ChatGPT", "http://chatgpt.com"),
+                        make_bookmark("Claude", "http://claude.ai"),
+                    ],
+                ),
+                make_folder("开发", vec![make_bookmark("GitHub", "http://github.com")]),
+            ],
+        )];
+
         let target: HashSet<String> = vec!["http://chatgpt.com".to_string()].into_iter().collect();
         let extracted = extract_by_status_preserve_structure(&bookmarks, &target);
-        
+
         // 验证结构保持
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].title, "工具");
@@ -1951,36 +1984,40 @@ mod extract_preserve_tests {
 
     #[test]
     fn test_extract_multiple_from_same_folder() {
-        let bookmarks = vec![
-            make_folder("AI", vec![
+        let bookmarks = vec![make_folder(
+            "AI",
+            vec![
                 make_bookmark("ChatGPT", "http://chatgpt.com"),
                 make_bookmark("Claude", "http://claude.ai"),
                 make_bookmark("Gemini", "http://gemini.google.com"),
-            ]),
-        ];
-        
+            ],
+        )];
+
         let target: HashSet<String> = vec![
             "http://chatgpt.com".to_string(),
             "http://claude.ai".to_string(),
-        ].into_iter().collect();
-        
+        ]
+        .into_iter()
+        .collect();
+
         let extracted = extract_by_status_preserve_structure(&bookmarks, &target);
-        
+
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].children.len(), 2);
     }
 
     #[test]
     fn test_extract_empty_result() {
-        let bookmarks = vec![
-            make_folder("AI", vec![
-                make_bookmark("ChatGPT", "http://chatgpt.com"),
-            ]),
-        ];
-        
-        let target: HashSet<String> = vec!["http://nonexistent.com".to_string()].into_iter().collect();
+        let bookmarks = vec![make_folder(
+            "AI",
+            vec![make_bookmark("ChatGPT", "http://chatgpt.com")],
+        )];
+
+        let target: HashSet<String> = vec!["http://nonexistent.com".to_string()]
+            .into_iter()
+            .collect();
         let extracted = extract_by_status_preserve_structure(&bookmarks, &target);
-        
+
         assert!(extracted.is_empty());
     }
 }
@@ -2027,29 +2064,29 @@ mod property_tests_extract {
             // 创建嵌套结构
             let mut children = Vec::new();
             let mut all_urls = Vec::new();
-            
+
             for i in 0..bookmark_count {
                 let url = format!("http://test{}.com", i);
                 children.push(make_bookmark(&format!("Test{}", i), &url));
                 all_urls.push(url);
             }
-            
+
             let bookmarks = vec![
                 make_folder("Parent", vec![
                     make_folder("Child", children),
                 ]),
             ];
-            
+
             // 选择部分URL作为目标
             let target_count = ((bookmark_count as f64) * target_ratio).max(1.0) as usize;
             let target_urls: HashSet<String> = all_urls.into_iter().take(target_count).collect();
-            
+
             // 记录原始路径
             let original_paths = collect_all_bookmark_paths(&bookmarks);
-            
+
             // 提取
             let extracted = extract_by_status_preserve_structure(&bookmarks, &target_urls);
-            
+
             // 验证提取结果中的路径与原始路径一致
             let extracted_paths = collect_all_bookmark_paths(&extracted);
             for (url, path) in extracted_paths {
@@ -2069,19 +2106,19 @@ mod property_tests_extract {
         ) {
             let mut children = Vec::new();
             let mut target_urls = HashSet::new();
-            
+
             for i in 0..bookmark_count {
                 let url = format!("http://test{}.com", i);
                 children.push(make_bookmark(&format!("Test{}", i), &url));
                 target_urls.insert(url);
             }
-            
+
             let bookmarks = vec![
                 make_folder("Root", children),
             ];
-            
+
             let extracted = extract_by_status_preserve_structure(&bookmarks, &target_urls);
-            
+
             // 验证所有目标URL都能在提取结果中找到
             let extracted_paths = collect_all_bookmark_paths(&extracted);
             for url in &target_urls {

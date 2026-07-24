@@ -4,8 +4,8 @@
 use std::process::Command;
 
 fn run_cli(args: &[&str]) -> (bool, String, String) {
-    let output = Command::new("cargo")
-        .args(["run", "--release", "--"])
+    let bin_path = env!("CARGO_BIN_EXE_browser-bookmark-sync");
+    let output = Command::new(bin_path)
         .args(args)
         .output()
         .expect("Failed to execute command");
