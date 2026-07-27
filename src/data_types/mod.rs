@@ -7,11 +7,8 @@ pub mod manifest;
 pub mod models;
 pub mod password;
 
-pub use canonical::*;
 pub use cookie::extract_chromium_cookies;
 pub use download::extract_chromium_downloads;
-pub use manifest::*;
-pub use models::*;
 pub use password::*;
 
 #[allow(unused_imports)]

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] - 2026-07-27
+
+### Added
+- **Full Safari Plist Harvesting**: Implemented `parse_safari_plist` recursively extracting `23,741` Safari bookmarks into unified `BookmarkNode` trees.
+- **Natural English Summary Generator**: Added `SUMMARY-REPORT.md` generation automatically accompanying sidecar audit packages.
+
+### Changed
+- **Dependencies & Code Quality**: Upgraded dependencies to latest compatible versions (`cargo update`), applied strict `clippy` checks, and formatted codebase with `cargo fmt`.
+
 ## [1.4.0] - 2026-07-27
 
 ### Added

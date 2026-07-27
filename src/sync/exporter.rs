@@ -165,7 +165,9 @@ impl ReportExporter {
         ));
 
         report.push_str("## 2. Scanned Scope: Browsers & User Profiles\n\n");
-        report.push_str("| Browser | Channel | Profile ID | Display Name | Bookmark Count | Folder Count |\n");
+        report.push_str(
+            "| Browser | Channel | Profile ID | Display Name | Bookmark Count | Folder Count |\n",
+        );
         report.push_str("| --- | --- | --- | --- | --- | --- |\n");
 
         for inst_summary in &inventory.installations {
@@ -194,12 +196,15 @@ impl ReportExporter {
         }
 
         report.push_str("\n## 3. Deduplication Policy & Tie-Breaking Rules\n\n");
-        report.push_str("The deduplication engine performed **exact URL matching** (`raw_url.trim()`).\n");
+        report.push_str(
+            "The deduplication engine performed **exact URL matching** (`raw_url.trim()`).\n",
+        );
         report.push_str("For each set of duplicate bookmark occurrences pointing to the exact same URL, a single **Primary Canonical Bookmark** was selected based on the following deterministic tie-breaking priority:\n\n");
         report.push_str("1. **Preferred Browser Source**: User-configured or default browser authority priority.\n");
         report.push_str("2. **Bookmark Root Semantics**: `BookmarkBar` > `BookmarkMenu` / `Toolbar` > `OtherBookmarks` > `MobileBookmarks`.\n");
         report.push_str("3. **Folder Hierarchy Specificity**: Deeper and more descriptive custom folder paths are prioritized over root or unfiled folders.\n");
-        report.push_str("4. **Creation Timestamp**: Earliest `date_added` timestamp is retained.\n");
+        report
+            .push_str("4. **Creation Timestamp**: Earliest `date_added` timestamp is retained.\n");
         report.push_str("5. **Deterministic ID Fallback**: Stable UUID ordering ensures 100% reproducible builds across multiple runs.\n\n");
 
         report.push_str("## 4. Generated Artifacts & Verification\n\n");
