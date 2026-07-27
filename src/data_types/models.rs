@@ -133,6 +133,7 @@ pub enum BookmarkNode {
     Separator(SeparatorNode),
 }
 
+#[allow(dead_code)]
 impl BookmarkNode {
     pub fn is_folder(&self) -> bool {
         matches!(self, BookmarkNode::Folder(_))

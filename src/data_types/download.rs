@@ -70,7 +70,7 @@ pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<D
         });
     }
 
-    downloads.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+    downloads.sort_by_key(|a| std::cmp::Reverse(a.start_time));
 
     Ok(downloads)
 }

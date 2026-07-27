@@ -1096,7 +1096,7 @@ async fn main() -> Result<()> {
                 .check_batch(unique_urls, |current, _total, url| {
                     pb.set_position(current as u64);
                     if verbose {
-                        pb.set_message(format!("{}", url));
+                        pb.set_message(url.to_string());
                     }
                 })
                 .await;
@@ -1623,7 +1623,8 @@ async fn main() -> Result<()> {
                 true,
                 false,
                 true,
-            );
+            )
+            .await;
             info!("   ✅ Step 2: Organized bookmarks");
 
             // Step 3: Check

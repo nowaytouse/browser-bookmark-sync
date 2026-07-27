@@ -254,7 +254,7 @@ impl DedupeEngine {
 mod tests {
     use super::*;
     use crate::data_types::models::{
-        BookmarkNode, BookmarkOccurrence, BookmarkRootKind, BookmarkTree, BrowserKind, FolderNode,
+        BookmarkNode, BookmarkOccurrence, BookmarkRootKind, BookmarkTree, BrowserKind,
         SourceDescriptor,
     };
     use chrono::Utc;
@@ -297,7 +297,7 @@ mod tests {
             harvested_at: Utc::now(),
         };
 
-        let (canonicals, reports, csvs, raw_count, dup_count) =
+        let (canonicals, _reports, _csvs, raw_count, dup_count) =
             DedupeEngine::deduplicate_tree(&tree, &["Chrome".into()]);
 
         assert_eq!(raw_count, 3);

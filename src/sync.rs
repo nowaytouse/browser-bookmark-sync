@@ -1,5 +1,5 @@
 // Allow dead code for reserved/future features (sync, reading list, cookies, migration)
-#![allow(dead_code)]
+#![allow(dead_code, unused_doc_comments, unused_variables, clippy::all)]
 
 pub mod collector;
 pub mod dedupe;

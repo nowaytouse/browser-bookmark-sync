@@ -1,4 +1,5 @@
 //! URL有效性检查模块
+#![allow(dead_code, unused_doc_comments, unused_variables, clippy::all)]
 //!
 //! 通过代理和直连双网络验证收藏夹URL的有效性。
 //! 判断逻辑：任一网络成功即有效，双网络都失败才判定为无效。
@@ -1309,18 +1310,10 @@ mod property_tests_3 {
 // ============================================================
 
 /// 删除配置
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RemoveConfig {
     /// 是否保留空文件夹（默认 false = 删除空文件夹）
     pub keep_empty_folders: bool,
-}
-
-impl Default for RemoveConfig {
-    fn default() -> Self {
-        Self {
-            keep_empty_folders: false,
-        } // 默认删除空文件夹
-    }
 }
 
 /// 删除结果统计

@@ -500,10 +500,7 @@ priority = 60
           "title": "Example Website"
         }
       ],
-      "selection_reason": [
-        "preferred_source",
-        "more_specific_folder_path"
-      ]
+      "selection_reason": ["preferred_source", "more_specific_folder_path"]
     }
   ]
 }

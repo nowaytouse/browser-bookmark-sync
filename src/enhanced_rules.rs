@@ -1,4 +1,5 @@
 //! 增强分类规则引擎
+#![allow(dead_code, unused_doc_comments)]
 //!
 //! 支持更精确的URL和标题匹配，包括：
 //! - 域名通配符匹配
@@ -227,9 +228,8 @@ fn parse_url_parts(url: &str) -> (String, String, String) {
 fn match_domain_pattern(domain: &str, pattern: &str) -> bool {
     let pattern_lower = pattern.to_lowercase();
 
-    if pattern_lower.starts_with("*.") {
+    if let Some(suffix) = pattern_lower.strip_prefix("*.") {
         // 通配符匹配: *.example.com 匹配 sub.example.com 和 example.com
-        let suffix = &pattern_lower[2..];
         domain.ends_with(suffix) || domain == suffix
     } else {
         // 精确匹配

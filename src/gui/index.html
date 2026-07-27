@@ -1,827 +1,1145 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>bsync — Browser Bookmark Manager</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<style>
-:root {
-  --bg: #0d1117;
-  --surface: #161b22;
-  --surface2: #1c2230;
-  --border: rgba(255,255,255,0.07);
-  --border-glow: rgba(139,92,246,0.3);
-  --purple: #8b5cf6;
-  --purple-light: #a78bfa;
-  --blue: #3b82f6;
-  --cyan: #06b6d4;
-  --green: #10b981;
-  --red: #ef4444;
-  --yellow: #f59e0b;
-  --text: #e6edf3;
-  --text-muted: #8b949e;
-  --text-dim: #6e7681;
-  --radius: 12px;
-  --grad: linear-gradient(135deg, #8b5cf6, #3b82f6);
-}
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>bsync — Browser Bookmark Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0d1117;
+        --surface: #161b22;
+        --surface2: #1c2230;
+        --border: rgba(255, 255, 255, 0.07);
+        --border-glow: rgba(139, 92, 246, 0.3);
+        --purple: #8b5cf6;
+        --purple-light: #a78bfa;
+        --blue: #3b82f6;
+        --cyan: #06b6d4;
+        --green: #10b981;
+        --red: #ef4444;
+        --yellow: #f59e0b;
+        --text: #e6edf3;
+        --text-muted: #8b949e;
+        --text-dim: #6e7681;
+        --radius: 12px;
+        --grad: linear-gradient(135deg, #8b5cf6, #3b82f6);
+      }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
 
-body {
-  font-family: 'Inter', sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  min-height: 100vh;
-  overflow-x: hidden;
-}
+      body {
+        font-family: "Inter", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
 
-/* Grid background */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(139,92,246,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(139,92,246,0.03) 1px, transparent 1px);
-  background-size: 40px 40px;
-  pointer-events: none;
-  z-index: 0;
-}
+      /* Grid background */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(139, 92, 246, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(139, 92, 246, 0.03) 1px, transparent 1px);
+        background-size: 40px 40px;
+        pointer-events: none;
+        z-index: 0;
+      }
 
-.layout { display: flex; height: 100vh; position: relative; z-index: 1; }
+      .layout {
+        display: flex;
+        height: 100vh;
+        position: relative;
+        z-index: 1;
+      }
 
-/* ── Sidebar ── */
-.sidebar {
-  width: 220px;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  padding: 24px 0;
-}
+      /* ── Sidebar ── */
+      .sidebar {
+        width: 220px;
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        padding: 24px 0;
+      }
 
-.logo {
-  padding: 0 20px 28px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 20px;
-}
+      .logo {
+        padding: 0 20px 28px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 20px;
+      }
 
-.logo-text {
-  font-size: 26px;
-  font-weight: 700;
-  background: var(--grad);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  letter-spacing: -0.5px;
-}
+      .logo-text {
+        font-size: 26px;
+        font-weight: 700;
+        background: var(--grad);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        letter-spacing: -0.5px;
+      }
 
-.logo-sub {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-top: 2px;
-  letter-spacing: 0.3px;
-}
+      .logo-sub {
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-top: 2px;
+        letter-spacing: 0.3px;
+      }
 
-.nav { flex: 1; padding: 0 12px; }
+      .nav {
+        flex: 1;
+        padding: 0 12px;
+      }
 
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: 13.5px;
-  font-weight: 500;
-  transition: all 0.18s;
-  border: 1px solid transparent;
-  user-select: none;
-  margin-bottom: 2px;
-}
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 13.5px;
+        font-weight: 500;
+        transition: all 0.18s;
+        border: 1px solid transparent;
+        user-select: none;
+        margin-bottom: 2px;
+      }
 
-.nav-item:hover { background: var(--surface2); color: var(--text); }
-.nav-item.active {
-  background: rgba(139,92,246,0.12);
-  color: var(--purple-light);
-  border-color: rgba(139,92,246,0.2);
-}
+      .nav-item:hover {
+        background: var(--surface2);
+        color: var(--text);
+      }
+      .nav-item.active {
+        background: rgba(139, 92, 246, 0.12);
+        color: var(--purple-light);
+        border-color: rgba(139, 92, 246, 0.2);
+      }
 
-.nav-icon { font-size: 16px; width: 22px; text-align: center; }
+      .nav-icon {
+        font-size: 16px;
+        width: 22px;
+        text-align: center;
+      }
 
-.sidebar-footer {
-  padding: 16px 20px 0;
-  border-top: 1px solid var(--border);
-  margin-top: auto;
-}
+      .sidebar-footer {
+        padding: 16px 20px 0;
+        border-top: 1px solid var(--border);
+        margin-top: auto;
+      }
 
-.version-badge {
-  font-size: 11px;
-  color: var(--text-dim);
-  padding: 4px 10px;
-  background: var(--surface2);
-  border-radius: 20px;
-  display: inline-block;
-}
+      .version-badge {
+        font-size: 11px;
+        color: var(--text-dim);
+        padding: 4px 10px;
+        background: var(--surface2);
+        border-radius: 20px;
+        display: inline-block;
+      }
 
-/* ── Main content ── */
-.main {
-  flex: 1;
-  overflow-y: auto;
-  padding: 28px 32px;
-}
+      /* ── Main content ── */
+      .main {
+        flex: 1;
+        overflow-y: auto;
+        padding: 28px 32px;
+      }
 
-/* Scrollbar */
-.main::-webkit-scrollbar { width: 5px; }
-.main::-webkit-scrollbar-track { background: transparent; }
-.main::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+      /* Scrollbar */
+      .main::-webkit-scrollbar {
+        width: 5px;
+      }
+      .main::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .main::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 3px;
+      }
 
-.page { display: none; }
-.page.active { display: block; }
+      .page {
+        display: none;
+      }
+      .page.active {
+        display: block;
+      }
 
-.page-title {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 24px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
+      .page-title {
+        font-size: 22px;
+        font-weight: 700;
+        color: var(--text);
+        margin-bottom: 24px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
 
-/* ── Cards ── */
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 24px;
-  margin-bottom: 20px;
-  transition: border-color 0.2s;
-}
+      /* ── Cards ── */
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+        margin-bottom: 20px;
+        transition: border-color 0.2s;
+      }
 
-.card:hover { border-color: rgba(139,92,246,0.2); }
-.card-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  margin-bottom: 18px;
-}
+      .card:hover {
+        border-color: rgba(139, 92, 246, 0.2);
+      }
+      .card-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        margin-bottom: 18px;
+      }
 
-/* ── Browser grid ── */
-.browser-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 14px;
-}
+      /* ── Browser grid ── */
+      .browser-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        gap: 14px;
+      }
 
-.browser-card {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 18px 16px;
-  position: relative;
-  transition: all 0.2s;
-}
+      .browser-card {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px 16px;
+        position: relative;
+        transition: all 0.2s;
+      }
 
-.browser-card:hover {
-  border-color: rgba(139,92,246,0.35);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
-}
+      .browser-card:hover {
+        border-color: rgba(139, 92, 246, 0.35);
+        transform: translateY(-2px);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+      }
 
-.browser-card.unavailable { opacity: 0.45; }
+      .browser-card.unavailable {
+        opacity: 0.45;
+      }
 
-.browser-icon { font-size: 28px; margin-bottom: 10px; }
-.browser-name { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
-.browser-count {
-  font-size: 11px;
-  color: var(--text-dim);
-}
+      .browser-icon {
+        font-size: 28px;
+        margin-bottom: 10px;
+      }
+      .browser-name {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text);
+        margin-bottom: 4px;
+      }
+      .browser-count {
+        font-size: 11px;
+        color: var(--text-dim);
+      }
 
-.status-dot {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-dim);
-}
-.status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+      .status-dot {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--text-dim);
+      }
+      .status-dot.online {
+        background: var(--green);
+        box-shadow: 0 0 6px var(--green);
+      }
 
-.count-badge {
-  position: absolute;
-  top: 10px;
-  right: 24px;
-  font-size: 10px;
-  color: var(--text-dim);
-  background: var(--surface);
-  padding: 2px 7px;
-  border-radius: 10px;
-}
+      .count-badge {
+        position: absolute;
+        top: 10px;
+        right: 24px;
+        font-size: 10px;
+        color: var(--text-dim);
+        background: var(--surface);
+        padding: 2px 7px;
+        border-radius: 10px;
+      }
 
-/* ── Forms ── */
-.form-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
+      /* ── Forms ── */
+      .form-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
 
-.form-group { display: flex; flex-direction: column; gap: 6px; }
-.form-group label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+      .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .form-group label {
+        font-size: 12px;
+        color: var(--text-muted);
+        font-weight: 500;
+      }
 
-.input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 9px 14px;
-  color: var(--text);
-  font-size: 13px;
-  font-family: inherit;
-  transition: border-color 0.2s;
-  outline: none;
-}
+      .input {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 9px 14px;
+        color: var(--text);
+        font-size: 13px;
+        font-family: inherit;
+        transition: border-color 0.2s;
+        outline: none;
+      }
 
-.input:focus { border-color: var(--purple); }
-.input-wide { width: 340px; }
-.input-short { width: 100px; }
+      .input:focus {
+        border-color: var(--purple);
+      }
+      .input-wide {
+        width: 340px;
+      }
+      .input-short {
+        width: 100px;
+      }
 
-/* Toggle */
-.toggle-row { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-muted); }
-.toggle {
-  width: 38px; height: 20px;
-  background: var(--surface2);
-  border-radius: 10px;
-  cursor: pointer;
-  position: relative;
-  border: 1px solid var(--border);
-  transition: background 0.2s;
-  flex-shrink: 0;
-}
-.toggle.on { background: var(--purple); border-color: var(--purple); }
-.toggle::after {
-  content: '';
-  position: absolute;
-  width: 14px; height: 14px;
-  background: white;
-  border-radius: 50%;
-  top: 2px; left: 2px;
-  transition: transform 0.2s;
-}
-.toggle.on::after { transform: translateX(18px); }
+      /* Toggle */
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+      .toggle {
+        width: 38px;
+        height: 20px;
+        background: var(--surface2);
+        border-radius: 10px;
+        cursor: pointer;
+        position: relative;
+        border: 1px solid var(--border);
+        transition: background 0.2s;
+        flex-shrink: 0;
+      }
+      .toggle.on {
+        background: var(--purple);
+        border-color: var(--purple);
+      }
+      .toggle::after {
+        content: "";
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        background: white;
+        border-radius: 50%;
+        top: 2px;
+        left: 2px;
+        transition: transform 0.2s;
+      }
+      .toggle.on::after {
+        transform: translateX(18px);
+      }
 
-/* Buttons */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 20px;
-  border-radius: 8px;
-  border: none;
-  font-family: inherit;
-  font-size: 13.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.18s;
-  outline: none;
-  text-decoration: none;
-}
+      /* Buttons */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 20px;
+        border-radius: 8px;
+        border: none;
+        font-family: inherit;
+        font-size: 13.5px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.18s;
+        outline: none;
+        text-decoration: none;
+      }
 
-.btn-primary {
-  background: var(--grad);
-  color: white;
-  box-shadow: 0 4px 16px rgba(139,92,246,0.3);
-}
-.btn-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(139,92,246,0.45);
-}
-.btn-primary:active { transform: translateY(0); }
-.btn-primary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
-}
+      .btn-primary {
+        background: var(--grad);
+        color: white;
+        box-shadow: 0 4px 16px rgba(139, 92, 246, 0.3);
+      }
+      .btn-primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 24px rgba(139, 92, 246, 0.45);
+      }
+      .btn-primary:active {
+        transform: translateY(0);
+      }
+      .btn-primary:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        transform: none;
+      }
 
-.btn-secondary {
-  background: var(--surface2);
-  color: var(--text);
-  border: 1px solid var(--border);
-}
-.btn-secondary:hover { border-color: rgba(139,92,246,0.4); color: var(--purple-light); }
+      .btn-secondary {
+        background: var(--surface2);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .btn-secondary:hover {
+        border-color: rgba(139, 92, 246, 0.4);
+        color: var(--purple-light);
+      }
 
-.btn-sm { padding: 7px 14px; font-size: 12.5px; }
+      .btn-sm {
+        padding: 7px 14px;
+        font-size: 12.5px;
+      }
 
-/* Progress */
-.progress-wrap { margin-top: 18px; }
-.progress-label { font-size: 12px; color: var(--text-muted); margin-bottom: 8px; display: flex; justify-content: space-between; }
-.progress-bar {
-  height: 6px;
-  background: var(--surface2);
-  border-radius: 3px;
-  overflow: hidden;
-}
-.progress-fill {
-  height: 100%;
-  background: var(--grad);
-  border-radius: 3px;
-  width: 0%;
-  transition: width 0.4s ease;
-}
+      /* Progress */
+      .progress-wrap {
+        margin-top: 18px;
+      }
+      .progress-label {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .progress-bar {
+        height: 6px;
+        background: var(--surface2);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .progress-fill {
+        height: 100%;
+        background: var(--grad);
+        border-radius: 3px;
+        width: 0%;
+        transition: width 0.4s ease;
+      }
 
-/* Stats row */
-.stats-row {
-  display: flex;
-  gap: 20px;
-  margin-top: 18px;
-  flex-wrap: wrap;
-}
+      /* Stats row */
+      .stats-row {
+        display: flex;
+        gap: 20px;
+        margin-top: 18px;
+        flex-wrap: wrap;
+      }
 
-.stat-item {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 18px;
-  min-width: 130px;
-}
+      .stat-item {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 18px;
+        min-width: 130px;
+      }
 
-.stat-val {
-  font-size: 22px;
-  font-weight: 700;
-  background: var(--grad);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
+      .stat-val {
+        font-size: 22px;
+        font-weight: 700;
+        background: var(--grad);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
 
-.stat-label { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+      .stat-label {
+        font-size: 11px;
+        color: var(--text-dim);
+        margin-top: 2px;
+      }
 
-/* Log terminal */
-.log-terminal {
-  background: #010409;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 12px;
-  color: #7ee787;
-  height: 220px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin-top: 16px;
-}
-.log-terminal::-webkit-scrollbar { width: 4px; }
-.log-terminal::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
-.log-line { line-height: 1.7; }
-.log-line.err { color: #f85149; }
-.log-line.warn { color: #f0883e; }
-.log-line.ok { color: #7ee787; }
-.log-line.info { color: #79c0ff; }
+      /* Log terminal */
+      .log-terminal {
+        background: #010409;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
+        font-family: "SF Mono", "Fira Code", monospace;
+        font-size: 12px;
+        color: #7ee787;
+        height: 220px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+        margin-top: 16px;
+      }
+      .log-terminal::-webkit-scrollbar {
+        width: 4px;
+      }
+      .log-terminal::-webkit-scrollbar-thumb {
+        background: #333;
+        border-radius: 2px;
+      }
+      .log-line {
+        line-height: 1.7;
+      }
+      .log-line.err {
+        color: #f85149;
+      }
+      .log-line.warn {
+        color: #f0883e;
+      }
+      .log-line.ok {
+        color: #7ee787;
+      }
+      .log-line.info {
+        color: #79c0ff;
+      }
 
-/* Alert toast */
-.toast {
-  position: fixed;
-  bottom: 28px;
-  right: 28px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 20px;
-  font-size: 13px;
-  max-width: 340px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-  z-index: 999;
-  display: none;
-  animation: slideIn 0.25s ease;
-}
-.toast.show { display: flex; align-items: center; gap: 10px; }
-.toast.success { border-color: var(--green); }
-.toast.error { border-color: var(--red); }
-@keyframes slideIn {
-  from { opacity:0; transform: translateY(10px); }
-  to { opacity:1; transform: translateY(0); }
-}
+      /* Alert toast */
+      .toast {
+        position: fixed;
+        bottom: 28px;
+        right: 28px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 20px;
+        font-size: 13px;
+        max-width: 340px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        z-index: 999;
+        display: none;
+        animation: slideIn 0.25s ease;
+      }
+      .toast.show {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .toast.success {
+        border-color: var(--green);
+      }
+      .toast.error {
+        border-color: var(--red);
+      }
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
 
-/* Loading spinner */
-.spinner {
-  width: 16px; height: 16px;
-  border: 2px solid rgba(255,255,255,0.2);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-  display: none;
-}
-.spinner.show { display: inline-block; }
-@keyframes spin { to { transform: rotate(360deg); } }
+      /* Loading spinner */
+      .spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        border-top-color: white;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        display: none;
+      }
+      .spinner.show {
+        display: inline-block;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
 
-/* Section separator */
-.section-sep { height: 1px; background: var(--border); margin: 24px 0; }
+      /* Section separator */
+      .section-sep {
+        height: 1px;
+        background: var(--border);
+        margin: 24px 0;
+      }
 
-/* Result file list */
-.file-list { margin-top: 12px; }
-.file-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  background: var(--surface2);
-  border-radius: 7px;
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-.file-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.file-dot.valid { background: var(--green); }
-.file-dot.invalid { background: var(--red); }
-.file-dot.uncertain { background: var(--yellow); }
-.file-dot.skipped { background: var(--text-dim); }
+      /* Result file list */
+      .file-list {
+        margin-top: 12px;
+      }
+      .file-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        background: var(--surface2);
+        border-radius: 7px;
+        margin-bottom: 8px;
+        font-size: 13px;
+      }
+      .file-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .file-dot.valid {
+        background: var(--green);
+      }
+      .file-dot.invalid {
+        background: var(--red);
+      }
+      .file-dot.uncertain {
+        background: var(--yellow);
+      }
+      .file-dot.skipped {
+        background: var(--text-dim);
+      }
 
-/* Responsive tweaks */
-@media (max-width: 700px) {
-  .sidebar { width: 60px; }
-  .logo-text, .logo-sub, .nav-item span { display: none; }
-  .nav-item { justify-content: center; }
-  .main { padding: 18px; }
-}
-</style>
-</head>
-<body>
-<div class="layout">
+      /* Responsive tweaks */
+      @media (max-width: 700px) {
+        .sidebar {
+          width: 60px;
+        }
+        .logo-text,
+        .logo-sub,
+        .nav-item span {
+          display: none;
+        }
+        .nav-item {
+          justify-content: center;
+        }
+        .main {
+          padding: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <!-- Sidebar -->
+      <nav class="sidebar">
+        <div class="logo">
+          <div class="logo-text">bsync</div>
+          <div class="logo-sub">Browser Bookmark Manager</div>
+        </div>
+        <div class="nav">
+          <div class="nav-item active" data-page="browsers">
+            <span class="nav-icon">🌐</span><span>Browsers</span>
+          </div>
+          <div class="nav-item" data-page="export">
+            <span class="nav-icon">📤</span><span>Export</span>
+          </div>
+          <div class="nav-item" data-page="check">
+            <span class="nav-icon">🔍</span><span>Check URLs</span>
+          </div>
+          <div class="nav-item" data-page="merge">
+            <span class="nav-icon">📦</span><span>Merge Results</span>
+          </div>
+          <div class="nav-item" data-page="logs">
+            <span class="nav-icon">📋</span><span>Logs</span>
+          </div>
+        </div>
+        <div class="sidebar-footer">
+          <span class="version-badge">v0.1.0</span>
+        </div>
+      </nav>
 
-<!-- Sidebar -->
-<nav class="sidebar">
-  <div class="logo">
-    <div class="logo-text">bsync</div>
-    <div class="logo-sub">Browser Bookmark Manager</div>
-  </div>
-  <div class="nav">
-    <div class="nav-item active" data-page="browsers">
-      <span class="nav-icon">🌐</span><span>Browsers</span>
+      <!-- Main -->
+      <main class="main">
+        <!-- Browsers Page -->
+        <div class="page active" id="page-browsers">
+          <div class="page-title">🌐 Browser Detection</div>
+          <div class="card">
+            <div class="card-title">Detected Browsers</div>
+            <div class="browser-grid" id="browser-grid">
+              <div
+                style="color: var(--text-dim); font-size: 13px; padding: 12px 0"
+              >
+                Loading browsers…
+              </div>
+            </div>
+            <div class="section-sep"></div>
+            <button class="btn btn-secondary btn-sm" onclick="loadBrowsers()">
+              🔄 Refresh
+            </button>
+          </div>
+          <div class="card">
+            <div class="card-title">Total Bookmarks</div>
+            <div class="stats-row" id="browser-stats">
+              <div class="stat-item">
+                <div class="stat-val" id="total-count">—</div>
+                <div class="stat-label">Total across all browsers</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-val" id="avail-count">—</div>
+                <div class="stat-label">Available browsers</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Export Page -->
+        <div class="page" id="page-export">
+          <div class="page-title">📤 Export Bookmarks</div>
+          <div class="card">
+            <div class="card-title">Export Settings</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Output Path</label>
+                <input
+                  id="exp-output"
+                  class="input input-wide"
+                  value="~/Downloads/all_bookmarks.html"
+                  placeholder="~/Downloads/all_bookmarks.html"
+                />
+              </div>
+            </div>
+            <div class="form-row" style="gap: 24px; flex-wrap: wrap">
+              <div class="toggle-row">
+                <div
+                  class="toggle on"
+                  id="tog-profiles"
+                  onclick="toggleEl(this)"
+                ></div>
+                All Profiles
+              </div>
+              <div class="toggle-row">
+                <div
+                  class="toggle on"
+                  id="tog-dedup"
+                  onclick="toggleEl(this)"
+                ></div>
+                Deduplicate
+              </div>
+              <div class="toggle-row">
+                <div
+                  class="toggle on"
+                  id="tog-flat"
+                  onclick="toggleEl(this)"
+                ></div>
+                Flat Export
+              </div>
+              <div class="toggle-row">
+                <div
+                  class="toggle on"
+                  id="tog-merge"
+                  onclick="toggleEl(this)"
+                ></div>
+                Merge
+              </div>
+            </div>
+            <div
+              style="
+                margin-top: 20px;
+                display: flex;
+                align-items: center;
+                gap: 14px;
+              "
+            >
+              <button
+                class="btn btn-primary"
+                id="btn-export"
+                onclick="doExport()"
+              >
+                <div class="spinner" id="exp-spinner"></div>
+                <span id="exp-btn-text">⚡ Export All Bookmarks</span>
+              </button>
+            </div>
+            <div class="progress-wrap" id="exp-progress" style="display: none">
+              <div class="progress-label">
+                <span id="exp-prog-label">Exporting…</span>
+                <span id="exp-prog-pct">0%</span>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="exp-prog-fill"></div>
+              </div>
+            </div>
+            <div class="log-terminal" id="exp-log"></div>
+          </div>
+        </div>
+
+        <!-- Check URLs Page -->
+        <div class="page" id="page-check">
+          <div class="page-title">🔍 URL Validity Check</div>
+          <div class="card">
+            <div class="card-title">Check Settings</div>
+            <div class="form-row" style="flex-wrap: wrap; gap: 14px">
+              <div class="form-group">
+                <label>Input File</label>
+                <input
+                  id="chk-file"
+                  class="input input-wide"
+                  value="~/Downloads/all_bookmarks.html"
+                />
+              </div>
+              <div class="form-group">
+                <label>Proxy URL (optional)</label>
+                <input
+                  id="chk-proxy"
+                  class="input"
+                  style="width: 220px"
+                  placeholder="http://127.0.0.1:6152"
+                />
+              </div>
+            </div>
+            <div class="form-row" style="flex-wrap: wrap; gap: 14px">
+              <div class="form-group">
+                <label>Limit (0 = all)</label>
+                <input
+                  id="chk-limit"
+                  type="number"
+                  class="input input-short"
+                  value="200"
+                />
+              </div>
+              <div class="form-group">
+                <label>Concurrency</label>
+                <input
+                  id="chk-conc"
+                  type="number"
+                  class="input input-short"
+                  value="10"
+                />
+              </div>
+              <div class="form-group">
+                <label>Timeout (s)</label>
+                <input
+                  id="chk-timeout"
+                  type="number"
+                  class="input input-short"
+                  value="15"
+                />
+              </div>
+              <div class="form-group">
+                <label>Export Results Dir</label>
+                <input
+                  id="chk-dir"
+                  class="input"
+                  style="width: 240px"
+                  value="~/Downloads/check_results"
+                />
+              </div>
+            </div>
+            <div
+              style="
+                margin-top: 20px;
+                display: flex;
+                gap: 12px;
+                align-items: center;
+              "
+            >
+              <button class="btn btn-primary" onclick="doCheck()">
+                🔬 Start URL Check
+              </button>
+              <span style="font-size: 12px; color: var(--text-dim)"
+                >Uses dual-network validation (proxy + direct)</span
+              >
+            </div>
+            <div class="log-terminal" id="chk-log"></div>
+          </div>
+          <div class="card" id="chk-results-card" style="display: none">
+            <div class="card-title">Results</div>
+            <div class="stats-row" id="chk-stats"></div>
+          </div>
+        </div>
+
+        <!-- Merge Page -->
+        <div class="page" id="page-merge">
+          <div class="page-title">📦 Merge Check Results</div>
+          <div class="card">
+            <div class="card-title">Merge Settings</div>
+            <div class="form-row" style="flex-wrap: wrap; gap: 14px">
+              <div class="form-group">
+                <label>Results Directory (contains valid.html etc.)</label>
+                <input
+                  id="mrg-dir"
+                  class="input"
+                  style="width: 320px"
+                  value="~/Downloads/check_results"
+                />
+              </div>
+              <div class="form-group">
+                <label>Output File</label>
+                <input
+                  id="mrg-output"
+                  class="input"
+                  style="width: 280px"
+                  value="~/Downloads/merged_results.html"
+                />
+              </div>
+            </div>
+            <button class="btn btn-primary" onclick="doMerge()">
+              📦 Merge Results
+            </button>
+            <div class="log-terminal" id="mrg-log"></div>
+          </div>
+        </div>
+
+        <!-- Logs Page -->
+        <div class="page" id="page-logs">
+          <div class="page-title">📋 Activity Log</div>
+          <div class="card">
+            <div
+              style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 12px;
+              "
+            >
+              <div class="card-title" style="margin: 0">Live Log Stream</div>
+              <button class="btn btn-secondary btn-sm" onclick="clearLog()">
+                Clear
+              </button>
+            </div>
+            <div
+              class="log-terminal"
+              id="global-log"
+              style="height: 420px"
+            ></div>
+          </div>
+        </div>
+      </main>
     </div>
-    <div class="nav-item" data-page="export">
-      <span class="nav-icon">📤</span><span>Export</span>
-    </div>
-    <div class="nav-item" data-page="check">
-      <span class="nav-icon">🔍</span><span>Check URLs</span>
-    </div>
-    <div class="nav-item" data-page="merge">
-      <span class="nav-icon">📦</span><span>Merge Results</span>
-    </div>
-    <div class="nav-item" data-page="logs">
-      <span class="nav-icon">📋</span><span>Logs</span>
-    </div>
-  </div>
-  <div class="sidebar-footer">
-    <span class="version-badge">v0.1.0</span>
-  </div>
-</nav>
 
-<!-- Main -->
-<main class="main">
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
 
-  <!-- Browsers Page -->
-  <div class="page active" id="page-browsers">
-    <div class="page-title">🌐 Browser Detection</div>
-    <div class="card">
-      <div class="card-title">Detected Browsers</div>
-      <div class="browser-grid" id="browser-grid">
-        <div style="color:var(--text-dim);font-size:13px;padding:12px 0">Loading browsers…</div>
-      </div>
-      <div class="section-sep"></div>
-      <button class="btn btn-secondary btn-sm" onclick="loadBrowsers()">🔄 Refresh</button>
-    </div>
-    <div class="card">
-      <div class="card-title">Total Bookmarks</div>
-      <div class="stats-row" id="browser-stats">
-        <div class="stat-item">
-          <div class="stat-val" id="total-count">—</div>
-          <div class="stat-label">Total across all browsers</div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-val" id="avail-count">—</div>
-          <div class="stat-label">Available browsers</div>
-        </div>
-      </div>
-    </div>
-  </div>
+    <script>
+      // ── Navigation ───────────────────────────────────────────────────────────────
+      document.querySelectorAll(".nav-item").forEach((el) => {
+        el.addEventListener("click", () => {
+          document
+            .querySelectorAll(".nav-item")
+            .forEach((x) => x.classList.remove("active"));
+          document
+            .querySelectorAll(".page")
+            .forEach((x) => x.classList.remove("active"));
+          el.classList.add("active");
+          document
+            .getElementById("page-" + el.dataset.page)
+            .classList.add("active");
+        });
+      });
 
-  <!-- Export Page -->
-  <div class="page" id="page-export">
-    <div class="page-title">📤 Export Bookmarks</div>
-    <div class="card">
-      <div class="card-title">Export Settings</div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Output Path</label>
-          <input id="exp-output" class="input input-wide" value="~/Downloads/all_bookmarks.html" placeholder="~/Downloads/all_bookmarks.html">
-        </div>
-      </div>
-      <div class="form-row" style="gap:24px;flex-wrap:wrap">
-        <div class="toggle-row">
-          <div class="toggle on" id="tog-profiles" onclick="toggleEl(this)"></div>
-          All Profiles
-        </div>
-        <div class="toggle-row">
-          <div class="toggle on" id="tog-dedup" onclick="toggleEl(this)"></div>
-          Deduplicate
-        </div>
-        <div class="toggle-row">
-          <div class="toggle on" id="tog-flat" onclick="toggleEl(this)"></div>
-          Flat Export
-        </div>
-        <div class="toggle-row">
-          <div class="toggle on" id="tog-merge" onclick="toggleEl(this)"></div>
-          Merge
-        </div>
-      </div>
-      <div style="margin-top:20px;display:flex;align-items:center;gap:14px">
-        <button class="btn btn-primary" id="btn-export" onclick="doExport()">
-          <div class="spinner" id="exp-spinner"></div>
-          <span id="exp-btn-text">⚡ Export All Bookmarks</span>
-        </button>
-      </div>
-      <div class="progress-wrap" id="exp-progress" style="display:none">
-        <div class="progress-label">
-          <span id="exp-prog-label">Exporting…</span>
-          <span id="exp-prog-pct">0%</span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill" id="exp-prog-fill"></div></div>
-      </div>
-      <div class="log-terminal" id="exp-log"></div>
-    </div>
-  </div>
+      // ── Helpers ──────────────────────────────────────────────────────────────────
+      function toggleEl(el) {
+        el.classList.toggle("on");
+      }
+      function isOn(id) {
+        return document.getElementById(id).classList.contains("on");
+      }
 
-  <!-- Check URLs Page -->
-  <div class="page" id="page-check">
-    <div class="page-title">🔍 URL Validity Check</div>
-    <div class="card">
-      <div class="card-title">Check Settings</div>
-      <div class="form-row" style="flex-wrap:wrap;gap:14px">
-        <div class="form-group">
-          <label>Input File</label>
-          <input id="chk-file" class="input input-wide" value="~/Downloads/all_bookmarks.html">
-        </div>
-        <div class="form-group">
-          <label>Proxy URL (optional)</label>
-          <input id="chk-proxy" class="input" style="width:220px" placeholder="http://127.0.0.1:6152">
-        </div>
-      </div>
-      <div class="form-row" style="flex-wrap:wrap;gap:14px">
-        <div class="form-group">
-          <label>Limit (0 = all)</label>
-          <input id="chk-limit" type="number" class="input input-short" value="200">
-        </div>
-        <div class="form-group">
-          <label>Concurrency</label>
-          <input id="chk-conc" type="number" class="input input-short" value="10">
-        </div>
-        <div class="form-group">
-          <label>Timeout (s)</label>
-          <input id="chk-timeout" type="number" class="input input-short" value="15">
-        </div>
-        <div class="form-group">
-          <label>Export Results Dir</label>
-          <input id="chk-dir" class="input" style="width:240px" value="~/Downloads/check_results">
-        </div>
-      </div>
-      <div style="margin-top:20px;display:flex;gap:12px;align-items:center">
-        <button class="btn btn-primary" onclick="doCheck()">
-          🔬 Start URL Check
-        </button>
-        <span style="font-size:12px;color:var(--text-dim)">Uses dual-network validation (proxy + direct)</span>
-      </div>
-      <div class="log-terminal" id="chk-log"></div>
-    </div>
-    <div class="card" id="chk-results-card" style="display:none">
-      <div class="card-title">Results</div>
-      <div class="stats-row" id="chk-stats"></div>
-    </div>
-  </div>
+      function showToast(msg, type = "success") {
+        const t = document.getElementById("toast");
+        t.className = "toast show " + type;
+        t.innerHTML = (type === "success" ? "✅" : "❌") + " " + msg;
+        setTimeout(() => (t.className = "toast"), 3500);
+      }
 
-  <!-- Merge Page -->
-  <div class="page" id="page-merge">
-    <div class="page-title">📦 Merge Check Results</div>
-    <div class="card">
-      <div class="card-title">Merge Settings</div>
-      <div class="form-row" style="flex-wrap:wrap;gap:14px">
-        <div class="form-group">
-          <label>Results Directory (contains valid.html etc.)</label>
-          <input id="mrg-dir" class="input" style="width:320px" value="~/Downloads/check_results">
-        </div>
-        <div class="form-group">
-          <label>Output File</label>
-          <input id="mrg-output" class="input" style="width:280px" value="~/Downloads/merged_results.html">
-        </div>
-      </div>
-      <button class="btn btn-primary" onclick="doMerge()">📦 Merge Results</button>
-      <div class="log-terminal" id="mrg-log"></div>
-    </div>
-  </div>
+      function appendLog(logId, line) {
+        const el = document.getElementById(logId);
+        if (!el) return;
+        const div = document.createElement("div");
+        div.className =
+          "log-line" +
+          (line.includes("❌") || line.includes("error")
+            ? " err"
+            : line.includes("⚠️")
+              ? " warn"
+              : line.includes("✅")
+                ? " ok"
+                : " info");
+        div.textContent = line;
+        el.appendChild(div);
+        el.scrollTop = el.scrollHeight;
+      }
 
-  <!-- Logs Page -->
-  <div class="page" id="page-logs">
-    <div class="page-title">📋 Activity Log</div>
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div class="card-title" style="margin:0">Live Log Stream</div>
-        <button class="btn btn-secondary btn-sm" onclick="clearLog()">Clear</button>
-      </div>
-      <div class="log-terminal" id="global-log" style="height:420px"></div>
-    </div>
-  </div>
+      function clearLog() {
+        document.getElementById("global-log").innerHTML = "";
+      }
 
-</main>
-</div>
+      // ── SSE Live Log ─────────────────────────────────────────────────────────────
+      const evtSource = new EventSource("/api/events");
+      evtSource.onmessage = (e) => {
+        appendLog("global-log", e.data);
+        // mirror to active sub-logs
+        ["exp-log", "chk-log", "mrg-log"].forEach((id) => {
+          const page = id.split("-")[0];
+          if (
+            document
+              .getElementById(
+                "page-" +
+                  (page === "exp"
+                    ? "export"
+                    : page === "chk"
+                      ? "check"
+                      : "merge"),
+              )
+              .classList.contains("active")
+          ) {
+            appendLog(id, e.data);
+          }
+        });
+      };
 
-<!-- Toast -->
-<div class="toast" id="toast"></div>
+      // ── Browsers ─────────────────────────────────────────────────────────────────
+      async function loadBrowsers() {
+        const grid = document.getElementById("browser-grid");
+        grid.innerHTML =
+          '<div style="color:var(--text-dim);font-size:13px;padding:12px 0">Detecting browsers…</div>';
 
-<script>
-// ── Navigation ───────────────────────────────────────────────────────────────
-document.querySelectorAll('.nav-item').forEach(el => {
-  el.addEventListener('click', () => {
-    document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
-    document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
-    el.classList.add('active');
-    document.getElementById('page-' + el.dataset.page).classList.add('active');
-  });
-});
+        const resp = await fetch("/api/list");
+        const browsers = await resp.json();
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-function toggleEl(el) { el.classList.toggle('on'); }
-function isOn(id) { return document.getElementById(id).classList.contains('on'); }
-
-function showToast(msg, type='success') {
-  const t = document.getElementById('toast');
-  t.className = 'toast show ' + type;
-  t.innerHTML = (type === 'success' ? '✅' : '❌') + ' ' + msg;
-  setTimeout(() => t.className = 'toast', 3500);
-}
-
-function appendLog(logId, line) {
-  const el = document.getElementById(logId);
-  if (!el) return;
-  const div = document.createElement('div');
-  div.className = 'log-line' +
-    (line.includes('❌') || line.includes('error') ? ' err' :
-     line.includes('⚠️') ? ' warn' :
-     line.includes('✅') ? ' ok' : ' info');
-  div.textContent = line;
-  el.appendChild(div);
-  el.scrollTop = el.scrollHeight;
-}
-
-function clearLog() {
-  document.getElementById('global-log').innerHTML = '';
-}
-
-// ── SSE Live Log ─────────────────────────────────────────────────────────────
-const evtSource = new EventSource('/api/events');
-evtSource.onmessage = e => {
-  appendLog('global-log', e.data);
-  // mirror to active sub-logs
-  ['exp-log','chk-log','mrg-log'].forEach(id => {
-    const page = id.split('-')[0];
-    if (document.getElementById('page-' + (page==='exp'?'export':page==='chk'?'check':'merge')).classList.contains('active')) {
-      appendLog(id, e.data);
-    }
-  });
-};
-
-// ── Browsers ─────────────────────────────────────────────────────────────────
-async function loadBrowsers() {
-  const grid = document.getElementById('browser-grid');
-  grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:12px 0">Detecting browsers…</div>';
-
-  const resp = await fetch('/api/list');
-  const browsers = await resp.json();
-
-  let total = 0, avail = 0;
-  grid.innerHTML = '';
-  browsers.forEach(b => {
-    if (b.available) { total += b.count; avail++; }
-    const card = document.createElement('div');
-    card.className = 'browser-card' + (b.available ? '' : ' unavailable');
-    card.innerHTML = `
-      <div class="status-dot ${b.available ? 'online' : ''}"></div>
-      ${b.count > 0 ? `<div class="count-badge">📌 ${b.count.toLocaleString()}</div>` : ''}
+        let total = 0,
+          avail = 0;
+        grid.innerHTML = "";
+        browsers.forEach((b) => {
+          if (b.available) {
+            total += b.count;
+            avail++;
+          }
+          const card = document.createElement("div");
+          card.className = "browser-card" + (b.available ? "" : " unavailable");
+          card.innerHTML = `
+      <div class="status-dot ${b.available ? "online" : ""}"></div>
+      ${b.count > 0 ? `<div class="count-badge">📌 ${b.count.toLocaleString()}</div>` : ""}
       <div class="browser-icon">${b.icon}</div>
       <div class="browser-name">${b.name}</div>
-      <div class="browser-count">${b.available ? b.count.toLocaleString() + ' bookmarks' : 'Not detected'}</div>
+      <div class="browser-count">${b.available ? b.count.toLocaleString() + " bookmarks" : "Not detected"}</div>
     `;
-    grid.appendChild(card);
-  });
+          grid.appendChild(card);
+        });
 
-  document.getElementById('total-count').textContent = total.toLocaleString();
-  document.getElementById('avail-count').textContent = avail + ' / ' + browsers.length;
-}
+        document.getElementById("total-count").textContent =
+          total.toLocaleString();
+        document.getElementById("avail-count").textContent =
+          avail + " / " + browsers.length;
+      }
 
-loadBrowsers();
+      loadBrowsers();
 
-// ── Export ───────────────────────────────────────────────────────────────────
-async function doExport() {
-  const btn = document.getElementById('btn-export');
-  const spinner = document.getElementById('exp-spinner');
-  const btnText = document.getElementById('exp-btn-text');
-  const prog = document.getElementById('exp-progress');
-  const fill = document.getElementById('exp-prog-fill');
-  const label = document.getElementById('exp-prog-label');
+      // ── Export ───────────────────────────────────────────────────────────────────
+      async function doExport() {
+        const btn = document.getElementById("btn-export");
+        const spinner = document.getElementById("exp-spinner");
+        const btnText = document.getElementById("exp-btn-text");
+        const prog = document.getElementById("exp-progress");
+        const fill = document.getElementById("exp-prog-fill");
+        const label = document.getElementById("exp-prog-label");
 
-  btn.disabled = true;
-  spinner.classList.add('show');
-  btnText.textContent = 'Exporting…';
-  prog.style.display = 'block';
-  document.getElementById('exp-log').innerHTML = '';
+        btn.disabled = true;
+        spinner.classList.add("show");
+        btnText.textContent = "Exporting…";
+        prog.style.display = "block";
+        document.getElementById("exp-log").innerHTML = "";
 
-  // Animate progress bar
-  let pct = 0;
-  const interval = setInterval(() => {
-    pct = Math.min(pct + Math.random() * 8, 85);
-    fill.style.width = pct + '%';
-    document.getElementById('exp-prog-pct').textContent = Math.round(pct) + '%';
-  }, 300);
+        // Animate progress bar
+        let pct = 0;
+        const interval = setInterval(() => {
+          pct = Math.min(pct + Math.random() * 8, 85);
+          fill.style.width = pct + "%";
+          document.getElementById("exp-prog-pct").textContent =
+            Math.round(pct) + "%";
+        }, 300);
 
-  const body = {
-    output: document.getElementById('exp-output').value,
-    all_profiles: isOn('tog-profiles'),
-    deduplicate: isOn('tog-dedup'),
-    flat: isOn('tog-flat'),
-    merge: isOn('tog-merge'),
-  };
+        const body = {
+          output: document.getElementById("exp-output").value,
+          all_profiles: isOn("tog-profiles"),
+          deduplicate: isOn("tog-dedup"),
+          flat: isOn("tog-flat"),
+          merge: isOn("tog-merge"),
+        };
 
-  try {
-    const resp = await fetch('/api/export', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-    });
-    const result = await resp.json();
-    clearInterval(interval);
-    fill.style.width = '100%';
-    document.getElementById('exp-prog-pct').textContent = '100%';
-    label.textContent = result.ok ? '✅ Export complete!' : '❌ Export failed';
-    showToast(result.message, result.ok ? 'success' : 'error');
-  } catch(e) {
-    clearInterval(interval);
-    showToast('Request failed: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-    spinner.classList.remove('show');
-    btnText.textContent = '⚡ Export All Bookmarks';
-  }
-}
+        try {
+          const resp = await fetch("/api/export", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const result = await resp.json();
+          clearInterval(interval);
+          fill.style.width = "100%";
+          document.getElementById("exp-prog-pct").textContent = "100%";
+          label.textContent = result.ok
+            ? "✅ Export complete!"
+            : "❌ Export failed";
+          showToast(result.message, result.ok ? "success" : "error");
+        } catch (e) {
+          clearInterval(interval);
+          showToast("Request failed: " + e.message, "error");
+        } finally {
+          btn.disabled = false;
+          spinner.classList.remove("show");
+          btnText.textContent = "⚡ Export All Bookmarks";
+        }
+      }
 
-// ── Check URLs ───────────────────────────────────────────────────────────────
-async function doCheck() {
-  document.getElementById('chk-log').innerHTML = '';
-  document.getElementById('chk-results-card').style.display = 'none';
-  appendLog('chk-log', '🔍 Starting URL check... (this may take a while)');
+      // ── Check URLs ───────────────────────────────────────────────────────────────
+      async function doCheck() {
+        document.getElementById("chk-log").innerHTML = "";
+        document.getElementById("chk-results-card").style.display = "none";
+        appendLog(
+          "chk-log",
+          "🔍 Starting URL check... (this may take a while)",
+        );
 
-  // URL check is a long operation — open the CLI in background via binary
-  // For now, delegate to merge-results API after manual check
-  // Show note about running check command
-  appendLog('chk-log', '');
-  appendLog('chk-log', '💡 URL checking is a long-running operation.');
-  appendLog('chk-log', '   Run from terminal:');
-  appendLog('chk-log', `   bsync check --file ${document.getElementById('chk-file').value} \\`);
-  const proxy = document.getElementById('chk-proxy').value;
-  if (proxy) appendLog('chk-log', `     --proxy ${proxy} \\`);
-  appendLog('chk-log', `     --limit ${document.getElementById('chk-limit').value} \\`);
-  appendLog('chk-log', `     --concurrency ${document.getElementById('chk-conc').value} \\`);
-  appendLog('chk-log', `     --timeout ${document.getElementById('chk-timeout').value} \\`);
-  appendLog('chk-log', `     --export-dir ${document.getElementById('chk-dir').value}`);
-  appendLog('chk-log', '');
-  appendLog('chk-log', '   Then use Merge Results to combine the output.');
-}
+        // URL check is a long operation — open the CLI in background via binary
+        // For now, delegate to merge-results API after manual check
+        // Show note about running check command
+        appendLog("chk-log", "");
+        appendLog("chk-log", "💡 URL checking is a long-running operation.");
+        appendLog("chk-log", "   Run from terminal:");
+        appendLog(
+          "chk-log",
+          `   bsync check --file ${document.getElementById("chk-file").value} \\`,
+        );
+        const proxy = document.getElementById("chk-proxy").value;
+        if (proxy) appendLog("chk-log", `     --proxy ${proxy} \\`);
+        appendLog(
+          "chk-log",
+          `     --limit ${document.getElementById("chk-limit").value} \\`,
+        );
+        appendLog(
+          "chk-log",
+          `     --concurrency ${document.getElementById("chk-conc").value} \\`,
+        );
+        appendLog(
+          "chk-log",
+          `     --timeout ${document.getElementById("chk-timeout").value} \\`,
+        );
+        appendLog(
+          "chk-log",
+          `     --export-dir ${document.getElementById("chk-dir").value}`,
+        );
+        appendLog("chk-log", "");
+        appendLog(
+          "chk-log",
+          "   Then use Merge Results to combine the output.",
+        );
+      }
 
-// ── Merge ────────────────────────────────────────────────────────────────────
-async function doMerge() {
-  document.getElementById('mrg-log').innerHTML = '';
-  const body = {
-    dir: document.getElementById('mrg-dir').value,
-    output: document.getElementById('mrg-output').value,
-  };
+      // ── Merge ────────────────────────────────────────────────────────────────────
+      async function doMerge() {
+        document.getElementById("mrg-log").innerHTML = "";
+        const body = {
+          dir: document.getElementById("mrg-dir").value,
+          output: document.getElementById("mrg-output").value,
+        };
 
-  try {
-    const resp = await fetch('/api/merge-results', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-    });
-    const result = await resp.json();
-    showToast(result.message, result.ok ? 'success' : 'error');
-  } catch(e) {
-    showToast('Request failed: ' + e.message, 'error');
-  }
-}
-</script>
-</body>
+        try {
+          const resp = await fetch("/api/merge-results", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const result = await resp.json();
+          showToast(result.message, result.ok ? "success" : "error");
+        } catch (e) {
+          showToast("Request failed: " + e.message, "error");
+        }
+      }
+    </script>
+  </body>
 </html>
