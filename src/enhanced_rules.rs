@@ -1,5 +1,3 @@
-//! 增强分类规则引擎
-#![allow(dead_code, unused_doc_comments)]
 //!
 //! 支持更精确的URL和标题匹配，包括：
 //! - 域名通配符匹配
@@ -355,8 +353,8 @@ mod property_tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// **Feature: bookmark-validity-checker, Property 15: 路径前缀匹配正确性**
-    /// **Validates: Requirements 8.2**
+    // **Feature: bookmark-validity-checker, Property 15: 路径前缀匹配正确性**
+    // **Validates: Requirements 8.2**
     proptest! {
         #[test]
         fn prop_path_prefix_match(
@@ -394,8 +392,8 @@ mod property_tests {
         }
     }
 
-    /// **Feature: bookmark-validity-checker, Property 12: 关键词包含/排除逻辑**
-    /// **Validates: Requirements 7.2**
+    // **Feature: bookmark-validity-checker, Property 12: 关键词包含/排除逻辑**
+    // **Validates: Requirements 7.2**
     proptest! {
         #[test]
         fn prop_keyword_include(
@@ -435,8 +433,8 @@ mod property_tests {
         }
     }
 
-    /// **Feature: bookmark-validity-checker, Property 13: AND/OR组合逻辑**
-    /// **Validates: Requirements 7.3**
+    // **Feature: bookmark-validity-checker, Property 13: AND/OR组合逻辑**
+    // **Validates: Requirements 7.3**
     proptest! {
         #[test]
         fn prop_and_logic_both_true(

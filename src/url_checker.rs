@@ -1,5 +1,3 @@
-//! URL有效性检查模块
-#![allow(dead_code, unused_doc_comments, unused_variables, clippy::all)]
 //!
 //! 通过代理和直连双网络验证收藏夹URL的有效性。
 //! 判断逻辑：任一网络成功即有效，双网络都失败才判定为无效。
@@ -710,8 +708,8 @@ mod property_tests {
         0u64..10000u64
     }
 
-    /// **Feature: bookmark-validity-checker, Property 1: 任一网络成功即判定为有效**
-    /// **Validates: Requirements 1.3**
+    // **Feature: bookmark-validity-checker, Property 1: 任一网络成功即判定为有效**
+    // **Validates: Requirements 1.3**
     proptest! {
         #[test]
         fn prop_any_success_is_valid(
@@ -756,8 +754,8 @@ mod property_tests {
         }
     }
 
-    /// **Feature: bookmark-validity-checker, Property 2: 双网络都返回404/410才判定为无效**
-    /// **Validates: Requirements 1.4**
+    // **Feature: bookmark-validity-checker, Property 2: 双网络都返回404/410才判定为无效**
+    // **Validates: Requirements 1.4**
     proptest! {
         #[test]
         fn prop_both_definite_fail_is_invalid(
@@ -786,8 +784,8 @@ mod property_tests {
         }
     }
 
-    /// **Feature: bookmark-validity-checker, Property 9: CF/WAF 拦截标记为不确定**
-    /// **Validates: Requirements 1.6 (新增)**
+    // **Feature: bookmark-validity-checker, Property 9: CF/WAF 拦截标记为不确定**
+    // **Validates: Requirements 1.6 (新增)**
     proptest! {
         #[test]
         fn prop_blocked_is_uncertain(
@@ -818,8 +816,8 @@ mod property_tests {
         }
     }
 
-    /// **Feature: bookmark-validity-checker, Property 8: 报告数量一致性**
-    /// **Validates: Requirements 4.2**
+    // **Feature: bookmark-validity-checker, Property 8: 报告数量一致性**
+    // **Validates: Requirements 4.2**
     proptest! {
         #[test]
         fn prop_report_consistency(
@@ -891,8 +889,8 @@ mod property_tests_2 {
         prop_oneof![Just(404u16), Just(410u16),]
     }
 
-    /// **Feature: bookmark-validity-checker, Property 7: 超时标记为不确定**
-    /// **Validates: Requirements 5.2**
+    // **Feature: bookmark-validity-checker, Property 7: 超时标记为不确定**
+    // **Validates: Requirements 5.2**
     proptest! {
         #[test]
         fn prop_timeout_is_uncertain(
@@ -922,8 +920,8 @@ mod property_tests_2 {
         }
     }
 
-    /// **Feature: bookmark-validity-checker, Property 3: 单网络模式失败判定为不确定**
-    /// **Validates: Requirements 1.5**
+    // **Feature: bookmark-validity-checker, Property 3: 单网络模式失败判定为不确定**
+    // **Validates: Requirements 1.5**
     proptest! {
         #[test]
         fn prop_single_network_fail_is_uncertain(
@@ -1208,8 +1206,8 @@ mod property_tests_3 {
         }
     }
 
-    /// **Feature: bookmark-validity-checker, Property 5: 仅删除高置信度无效项**
-    /// **Validates: Requirements 3.1**
+    // **Feature: bookmark-validity-checker, Property 5: 仅删除高置信度无效项**
+    // **Validates: Requirements 3.1**
     proptest! {
         #[test]
         fn prop_only_delete_invalid(
@@ -1255,7 +1253,7 @@ mod property_tests_3 {
                 ));
             }
 
-            let original_count = bookmarks.len();
+            let _original_count = bookmarks.len();
             let removed = remove_invalid_bookmarks(&mut bookmarks, &invalid_urls);
 
             // 验证：只删除了Invalid状态的收藏夹
@@ -1267,8 +1265,8 @@ mod property_tests_3 {
         }
     }
 
-    /// **Feature: bookmark-validity-checker, Property 6: Dry-run模式不修改数据**
-    /// **Validates: Requirements 3.4**
+    // **Feature: bookmark-validity-checker, Property 6: Dry-run模式不修改数据**
+    // **Validates: Requirements 3.4**
     proptest! {
         #[test]
         fn prop_dry_run_no_modification(
@@ -1770,8 +1768,8 @@ mod property_tests_structure {
         }
     }
 
-    /// **Feature: folder-structure-preservation, Property 1: 文件夹层级关系保持**
-    /// **Validates: Requirements 1.1, 1.3**
+    // **Feature: folder-structure-preservation, Property 1: 文件夹层级关系保持**
+    // **Validates: Requirements 1.1, 1.3**
     proptest! {
         #[test]
         fn prop_folder_path_preserved(
@@ -1815,8 +1813,8 @@ mod property_tests_structure {
         }
     }
 
-    /// **Feature: folder-structure-preservation, Property 5: 只删除死链书签**
-    /// **Validates: Requirements 1.1**
+    // **Feature: folder-structure-preservation, Property 5: 只删除死链书签**
+    // **Validates: Requirements 1.1**
     proptest! {
         #[test]
         fn prop_only_delete_dead_links(
@@ -1856,8 +1854,8 @@ mod property_tests_structure {
         }
     }
 
-    /// **Feature: folder-structure-preservation, Property 2: 默认模式删除空文件夹**
-    /// **Validates: Requirements 2.1**
+    // **Feature: folder-structure-preservation, Property 2: 默认模式删除空文件夹**
+    // **Validates: Requirements 2.1**
     proptest! {
         #[test]
         fn prop_no_empty_folders_default(
@@ -1886,8 +1884,8 @@ mod property_tests_structure {
         }
     }
 
-    /// **Feature: folder-structure-preservation, Property 3: 保留空文件夹模式**
-    /// **Validates: Requirements 2.2**
+    // **Feature: folder-structure-preservation, Property 3: 保留空文件夹模式**
+    // **Validates: Requirements 2.2**
     proptest! {
         #[test]
         fn prop_keep_empty_folders(
@@ -1915,8 +1913,8 @@ mod property_tests_structure {
         }
     }
 
-    /// **Feature: folder-structure-preservation, Property 4: 报告数量一致性**
-    /// **Validates: Requirements 1.4**
+    // **Feature: folder-structure-preservation, Property 4: 报告数量一致性**
+    // **Validates: Requirements 1.4**
     proptest! {
         #[test]
         fn prop_report_consistency(
@@ -2082,8 +2080,8 @@ mod property_tests_extract {
         }
     }
 
-    /// **Feature: folder-structure-preservation, Property 6: 导出保持结构**
-    /// **Validates: Requirements 6.1**
+    // **Feature: folder-structure-preservation, Property 6: 导出保持结构**
+    // **Validates: Requirements 6.1**
     proptest! {
         #[test]
         fn prop_extract_preserves_path(
@@ -2126,8 +2124,8 @@ mod property_tests_extract {
         }
     }
 
-    /// **Feature: folder-structure-preservation, Property 8: 路径可达性**
-    /// **Validates: Requirements 5.1**
+    // **Feature: folder-structure-preservation, Property 8: 路径可达性**
+    // **Validates: Requirements 5.1**
     proptest! {
         #[test]
         fn prop_all_extracted_reachable(

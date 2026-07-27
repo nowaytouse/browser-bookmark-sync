@@ -4,8 +4,6 @@
 //! Supports: passwords, cookies, history, bookmarks, downloads, localStorage, extensions
 //! Currently unused but kept for future integration.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -95,7 +93,6 @@ impl HackBrowser {
 
 /// Export format
 #[derive(Debug, Clone, Copy)]
-#[allow(clippy::upper_case_acronyms)]
 pub enum ExportFormat {
     Csv,
     Json,

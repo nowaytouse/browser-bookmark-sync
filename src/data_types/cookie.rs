@@ -71,7 +71,6 @@ pub fn extract_chromium_cookies(db_path: &Path, browser: &str) -> Result<Vec<Coo
 }
 
 /// Extract cookies from Firefox
-#[allow(dead_code)]
 pub fn extract_firefox_cookies(db_path: &Path) -> Result<Vec<Cookie>> {
     let conn = Connection::open(db_path)?;
 

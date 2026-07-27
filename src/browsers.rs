@@ -16,7 +16,6 @@ pub struct Bookmark {
 }
 
 // Reserved for future cookie sync feature
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cookie {
     pub host: String,
@@ -71,7 +70,6 @@ pub struct BrowserExtension {
 }
 
 // Reserved for future reading list sync feature
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadingListItem {
     pub url: String,
@@ -126,15 +124,12 @@ pub trait BrowserAdapter: Send + Sync {
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool>;
 
     // Reading list support (reserved for future)
-    #[allow(dead_code)]
     fn supports_reading_list(&self) -> bool {
         false
     }
-    #[allow(dead_code)]
     fn read_reading_list(&self) -> Result<Vec<ReadingListItem>> {
         Ok(vec![])
     }
-    #[allow(dead_code)]
     fn write_reading_list(&self, _items: &[ReadingListItem]) -> Result<()> {
         Ok(())
     }
@@ -151,39 +146,32 @@ pub trait BrowserAdapter: Send + Sync {
     }
 
     // Cookies support (reserved for future)
-    #[allow(dead_code)]
     fn supports_cookies(&self) -> bool {
         false
     }
-    #[allow(dead_code)]
     fn read_cookies(&self) -> Result<Vec<Cookie>> {
         Ok(vec![])
     }
-    #[allow(dead_code)]
     fn write_cookies(&self, _cookies: &[Cookie]) -> Result<()> {
         Ok(())
     }
 
     // ⚠️ Password support - SECURITY SENSITIVE
     // Implemented for completeness but STRONGLY DISCOURAGED
-    #[allow(dead_code)]
     fn supports_passwords(&self) -> bool {
         false
     }
     /// ⚠️ WARNING: Passwords are encrypted and cannot be decrypted without OS keychain
-    #[allow(dead_code)]
     fn read_passwords(&self) -> Result<Vec<SavedPassword>> {
         Ok(vec![])
     }
 
     // ⚠️ Extension support - LIMITED FUNCTIONALITY
     // Extensions have complex local state that cannot be fully transferred
-    #[allow(dead_code)]
     fn supports_extensions(&self) -> bool {
         false
     }
     /// ⚠️ WARNING: Only metadata is exported, not the actual extension files
-    #[allow(dead_code)]
     fn read_extensions(&self) -> Result<Vec<BrowserExtension>> {
         Ok(vec![])
     }
@@ -2200,10 +2188,8 @@ fn write_firefox_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Re
     })
 }
 
-// Safari reading list helper functions (reserved for future)
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem>> {
+pub(crate) fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem>> {
     let mut items = Vec::new();
 
     if let Some(dict) = value.as_dictionary() {
@@ -2250,8 +2236,10 @@ fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn update_safari_reading_list(_plist: &mut plist::Value, _items: &[ReadingListItem]) -> Result<()> {
+pub(crate) fn update_safari_reading_list(
+    _plist: &mut plist::Value,
+    _items: &[ReadingListItem],
+) -> Result<()> {
     // This is a simplified implementation
     // In reality, we need to preserve the existing structure and only update the reading list section
     // For now, we'll just log that this needs implementation
@@ -2489,8 +2477,7 @@ fn write_safari_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Res
 }
 
 // Firefox/Waterfox cookies helper functions (reserved for future)
-#[allow(dead_code)]
-fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
+pub(crate) fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
     use rusqlite::{Connection, OpenFlags};
 
     let conn = Connection::open_with_flags(
@@ -2526,8 +2513,7 @@ fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
     Ok(cookies)
 }
 
-#[allow(dead_code)]
-fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
+pub(crate) fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
     // 使用安全事务包装器
     crate::db_safety::safe_write_transaction(db_path, |conn| {
         conn.execute("BEGIN TRANSACTION", [])?;
@@ -2560,8 +2546,7 @@ fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Resul
 }
 
 // Chromium cookies helper functions (reserved for future)
-#[allow(dead_code)]
-fn read_chromium_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
+pub(crate) fn read_chromium_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
     use rusqlite::{Connection, OpenFlags};
 
     let conn = Connection::open_with_flags(
@@ -2597,8 +2582,7 @@ fn read_chromium_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
     Ok(cookies)
 }
 
-#[allow(dead_code)]
-fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
+pub(crate) fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
     use rusqlite::Connection;
 
     let conn = Connection::open(db_path)?;
@@ -2634,8 +2618,7 @@ fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Resu
 
 /// ⚠️ Read passwords from Chromium Login Data database
 /// WARNING: Passwords are ENCRYPTED and cannot be decrypted without OS keychain access
-#[allow(dead_code)] // Called by trait method which is reserved for future use
-fn read_chromium_passwords(db_path: &std::path::Path) -> Result<Vec<SavedPassword>> {
+pub(crate) fn read_chromium_passwords(db_path: &std::path::Path) -> Result<Vec<SavedPassword>> {
     use rusqlite::{Connection, OpenFlags};
 
     // Copy database to temp location to avoid locking issues
@@ -2684,8 +2667,9 @@ fn read_chromium_passwords(db_path: &std::path::Path) -> Result<Vec<SavedPasswor
 
 /// ⚠️ Read extension metadata from Chromium Extensions directory
 /// WARNING: Only metadata is exported, not the actual extension files or settings
-#[allow(dead_code)] // Called by trait method which is reserved for future use
-fn read_chromium_extensions(extensions_path: &std::path::Path) -> Result<Vec<BrowserExtension>> {
+pub(crate) fn read_chromium_extensions(
+    extensions_path: &std::path::Path,
+) -> Result<Vec<BrowserExtension>> {
     let mut extensions = Vec::new();
 
     if !extensions_path.exists() {

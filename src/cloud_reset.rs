@@ -1,5 +1,4 @@
 //! Cloud reset module - reserved for future cloud sync feature
-#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;

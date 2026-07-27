@@ -27,15 +27,12 @@ pub struct SyncFlags {
     pub history_days: Option<i32>,
 
     /// 是否去重 (用于export命令)
-    #[allow(dead_code)]
     pub deduplicate: bool,
 
     /// 是否合并文件夹结构 (用于export命令)
-    #[allow(dead_code)]
     pub merge: bool,
 
     /// 详细输出 (用于export命令)
-    #[allow(dead_code)]
     pub verbose: bool,
 }
 

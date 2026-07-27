@@ -66,7 +66,6 @@ pub fn extract_chromium_passwords(db_path: &Path, browser: &str) -> Result<Vec<P
 }
 
 /// Extract passwords from Firefox
-#[allow(dead_code)]
 pub fn extract_firefox_passwords(profile_path: &Path) -> Result<Vec<Password>> {
     let logins_file = profile_path.join("logins.json");
 

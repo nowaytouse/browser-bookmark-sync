@@ -1,5 +1,4 @@
 // Scheduler module - reserved for future scheduled sync feature
-#![allow(dead_code)]
 
 use anyhow::Result;
 use tokio_cron_scheduler::{Job, JobScheduler};

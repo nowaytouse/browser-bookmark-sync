@@ -1,6 +1,3 @@
-// Browser utilities - safe snapshotting and process checks
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use blake3::Hasher;
 use chrono::Utc;

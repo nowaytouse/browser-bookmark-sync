@@ -1,5 +1,4 @@
 //! Firefox Sync integration module - reserved for future cloud sync feature
-#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -263,7 +262,6 @@ impl FirefoxSyncHandler {
     }
 
     /// 检查是否启用了Sync
-    #[allow(dead_code)] // 公开API，预留给未来使用
     pub fn is_sync_enabled(&self) -> bool {
         self.config.sync_enabled
     }

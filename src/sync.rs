@@ -1,6 +1,3 @@
-// Allow dead code for reserved/future features (sync, reading list, cookies, migration)
-#![allow(dead_code, unused_doc_comments, unused_variables, clippy::all)]
-
 pub mod collector;
 pub mod dedupe;
 pub mod exporter;
@@ -74,7 +71,6 @@ struct BookmarkLocation {
 type BookmarkPath = Vec<usize>;
 
 /// Sync mode (reserved for future incremental sync feature)
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SyncMode {
     /// Incremental sync - only sync changes since last sync
@@ -82,7 +78,6 @@ pub enum SyncMode {
 }
 
 /// Sync statistics (reserved for future sync feature)
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct SyncStats {
     pub bookmarks_synced: usize,
@@ -93,7 +88,6 @@ pub struct SyncStats {
 
 pub struct SyncEngine {
     adapters: Vec<Box<dyn BrowserAdapter + Send + Sync>>,
-    #[allow(dead_code)]
     last_sync_time: Option<i64>,
 }
 
@@ -2383,8 +2377,7 @@ impl SyncEngine {
     }
 
     /// Find all empty folders (for reporting)
-    #[allow(dead_code)]
-    fn find_empty_folders(bookmarks: &[Bookmark], path: &str, results: &mut Vec<String>) {
+    pub fn find_empty_folders(bookmarks: &[Bookmark], path: &str, results: &mut Vec<String>) {
         for bookmark in bookmarks {
             if bookmark.folder {
                 let current_path = if path.is_empty() {
@@ -2540,7 +2533,6 @@ impl ClassificationRule {
     /// 3. Parameters are logically grouped: identity (3), patterns (4), metadata (2)
     /// 4. Public API uses ClassificationRuleBuilder for better ergonomics
     /// 5. Refactoring 95 call sites would add complexity without benefit
-    #[allow(clippy::too_many_arguments)]
     fn new(
         name: &str,
         folder_name: &str,
@@ -4189,9 +4181,9 @@ mod property_tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// **Feature: organize-accuracy-improvement, Property 1: 精确域名匹配**
-    /// **Validates: Requirements 1.1, 1.3**
-    /// 对于任意域名 D 和模式 P，如果 P 不包含通配符，则 D 必须完全等于 P 才能匹配
+    // **Feature: organize-accuracy-improvement, Property 1: 精确域名匹配**
+    // **Validates: Requirements 1.1, 1.3**
+    // 对于任意域名 D 和模式 P，如果 P 不包含通配符，则 D 必须完全等于 P 才能匹配
     proptest! {
         #[test]
         fn prop_exact_domain_match_no_substring(
@@ -4221,9 +4213,9 @@ mod property_tests {
         }
     }
 
-    /// **Feature: organize-accuracy-improvement, Property 2: 通配符域名匹配**
-    /// **Validates: Requirements 1.2**
-    /// 对于任意域名 D 和通配符模式 *.suffix，D 匹配当且仅当 D == suffix 或 D 以 .suffix 结尾
+    // **Feature: organize-accuracy-improvement, Property 2: 通配符域名匹配**
+    // **Validates: Requirements 1.2**
+    // 对于任意域名 D 和通配符模式 *.suffix，D 匹配当且仅当 D == suffix 或 D 以 .suffix 结尾
     proptest! {
         #[test]
         fn prop_wildcard_domain_match_subdomain(
@@ -4257,9 +4249,9 @@ mod property_tests {
         }
     }
 
-    /// **Feature: organize-accuracy-improvement, Property 3: 路径前缀匹配**
-    /// **Validates: Requirements 2.1**
-    /// 对于任意 URL 路径和前缀列表，如果路径以任一前缀开头，则匹配成功
+    // **Feature: organize-accuracy-improvement, Property 3: 路径前缀匹配**
+    // **Validates: Requirements 2.1**
+    // 对于任意 URL 路径和前缀列表，如果路径以任一前缀开头，则匹配成功
     proptest! {
         #[test]
         fn prop_path_prefix_match(
@@ -4302,6 +4294,8 @@ mod property_tests {
                 "Test rule",
             );
 
+            let _ = rule.matches(&url, "Test");
+
             // 前缀不在开头，不应该匹配（除非域名匹配）
             // 注意：由于域名匹配，这里会返回 true，所以我们测试不同的域名
             let url_other = format!("https://other.com{}", path);
@@ -4319,9 +4313,9 @@ mod property_tests {
         }
     }
 
-    /// **Feature: organize-accuracy-improvement, Property 7: 规则排序正确性**
-    /// **Validates: Requirements 6.1, 6.2**
-    /// 对于任意规则列表，排序后应按 priority 降序，相同 priority 按 specificity 降序
+    // **Feature: organize-accuracy-improvement, Property 7: 规则排序正确性**
+    // **Validates: Requirements 6.1, 6.2**
+    // 对于任意规则列表，排序后应按 priority 降序，相同 priority 按 specificity 降序
     proptest! {
         #[test]
         fn prop_rule_sorting_by_priority_then_specificity(
@@ -4376,9 +4370,9 @@ mod property_tests {
         }
     }
 
-    /// **Feature: organize-accuracy-improvement, Property 8: Specificity 计算正确性**
-    /// **Validates: Requirements 6.3**
-    /// 路径匹配的 specificity > 域名匹配的 specificity > 标题匹配的 specificity
+    // **Feature: organize-accuracy-improvement, Property 8: Specificity 计算正确性**
+    // **Validates: Requirements 6.3**
+    // 路径匹配的 specificity > 域名匹配的 specificity > 标题匹配的 specificity
     proptest! {
         #[test]
         fn prop_specificity_calculation_order(
@@ -4428,9 +4422,9 @@ mod property_tests {
         }
     }
 
-    /// **Feature: organize-accuracy-improvement, Property 9: 更具体规则优先**
-    /// **Validates: Requirements 1.4, 2.3**
-    /// 对于任意书签和多个匹配规则，应选择 specificity 最高的规则
+    // **Feature: organize-accuracy-improvement, Property 9: 更具体规则优先**
+    // **Validates: Requirements 1.4, 2.3**
+    // 对于任意书签和多个匹配规则，应选择 specificity 最高的规则
     proptest! {
         #[test]
         fn prop_more_specific_rule_wins(

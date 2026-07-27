@@ -76,7 +76,6 @@ pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<D
 }
 
 /// Extract downloads from Firefox
-#[allow(dead_code)]
 pub fn extract_firefox_downloads(db_path: &Path) -> Result<Vec<Download>> {
     let conn = Connection::open(db_path)?;
 

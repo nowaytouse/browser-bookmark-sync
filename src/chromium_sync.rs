@@ -3,8 +3,6 @@
 //! Detects if browser sync is enabled and shows appropriate warnings.
 //! Currently unused but kept for future sync conflict detection.
 
-#![allow(dead_code)]
-
 use anyhow::Result;
 use std::path::Path;
 use tracing::{info, warn};
