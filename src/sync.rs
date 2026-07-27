@@ -1,6 +1,10 @@
 // Allow dead code for reserved/future features (sync, reading list, cookies, migration)
 #![allow(dead_code)]
 
+pub mod collector;
+pub mod dedupe;
+pub mod exporter;
+
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};

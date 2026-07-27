@@ -19,6 +19,12 @@ It aggregates your bookmarks, mathematically deduplicates them by URL, validates
 - Provides a dark-mode, glassmorphism interface for visual control over exports and validations.
 - Features real-time log streaming directly to the browser via Server-Sent Events (SSE).
 
+### 🛠 High-Fidelity & Auditable Pipeline Commands
+- `bsync inventory`: Enumerate detected browser installations, user profiles, and bookmark counts across macOS.
+- `bsync collect --output-dir ./run`: Harvest original un-deduplicated bookmark tree and export `bookmarks-original.html` preserving full browser/profile/folder hierarchy.
+- `bsync dedupe --output-dir ./run`: Perform deterministic exact URL deduplication, exporting `bookmarks-deduplicated.html` and sidecar audit reports (`inventory.json`, `duplicates.json`, `duplicates.csv`, `run-manifest.json`).
+- `bsync pipeline`: Execute complete end-to-end collection, snapshot isolation, exact deduplication, and sidecar generation in one step.
+
 ### 📚 Deep Database Extraction (All Profiles)
 - **Chromium** (Chrome, Brave, Edge, Arc): Parses `Bookmarks` JSON files.
 - **Gecko** (Firefox, Waterfox, LibreWolf): Safely queries `places.sqlite` using WAL mode to extract bookmark trees.

@@ -1476,7 +1476,10 @@ fn read_all_chromium_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Resu
                 if let Ok(bookmarks) = parse_chromium_bookmarks(&json) {
                     if !bookmarks.is_empty() {
                         let count = count_bookmarks(&bookmarks);
-                        info!("✅ {} ({}): {} bookmarks", browser_name, profile_name, count);
+                        info!(
+                            "✅ {} ({}): {} bookmarks",
+                            browser_name, profile_name, count
+                        );
                         all_bookmarks.extend(bookmarks);
                     }
                 }
@@ -1497,7 +1500,10 @@ fn read_all_firefox_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Resul
                     .and_then(|n| n.to_str())
                     .unwrap_or("Profile");
                 let count = count_bookmarks(&bookmarks);
-                info!("✅ {} ({}): {} bookmarks", browser_name, profile_name, count);
+                info!(
+                    "✅ {} ({}): {} bookmarks",
+                    browser_name, profile_name, count
+                );
                 all_bookmarks.extend(bookmarks);
             }
         }

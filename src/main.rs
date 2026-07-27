@@ -41,6 +41,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Inspect and audit installed browsers and profiles without writing HTML
+    Inventory {
+        /// Include all profiles of each browser
+        #[arg(short = 'a', long, default_value = "true")]
+        all_profiles: bool,
+    },
+
+    /// Collect original un-deduplicated bookmark tree and export inventory
+    Collect {
+        /// Output directory for original HTML and inventory
+        #[arg(short, long, default_value = "./bookmark-run")]
+        output_dir: String,
+
+        /// Preserve original source tree hierarchy
+        #[arg(long, default_value = "true")]
+        preserve_source_tree: bool,
+    },
+
+    /// Perform exact deduplication over harvested inventory or bookmark tree
+    Dedupe {
+        /// Output directory for deduplicated HTML and audit reports
+        #[arg(short, long, default_value = "./bookmark-run")]
+        output_dir: String,
+
+        /// Deduplication mode (exact)
+        #[arg(long, default_value = "exact")]
+        mode: String,
+    },
+
     /// List detected browsers and bookmark counts
     #[command(alias = "l", alias = "ls")]
     List,
@@ -412,6 +441,79 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Inventory { .. } => {
+            use sync::collector::BookmarkCollector;
+            let installations = BookmarkCollector::discover_installations();
+            info!(
+                "🔍 Discovered {} browser installation(s)",
+                installations.len()
+            );
+            for inst in &installations {
+                let profiles = BookmarkCollector::discover_profiles(inst);
+                info!(
+                    "  🌐 {} ({} profile(s)): {:?}",
+                    inst.name,
+                    profiles.len(),
+                    profiles.iter().map(|p| &p.name).collect::<Vec<_>>()
+                );
+            }
+        }
+
+        Commands::Collect { output_dir, .. } => {
+            use sync::collector::BookmarkCollector;
+            use sync::exporter::ReportExporter;
+            let out_path = std::path::PathBuf::from(&output_dir);
+            std::fs::create_dir_all(&out_path)?;
+            let (tree, inventory, manifest) = BookmarkCollector::collect_all(&out_path)?;
+
+            let orig_html_path = out_path.join("bookmarks-original.html");
+            ReportExporter::export_original_html(&tree, &orig_html_path)?;
+            ReportExporter::write_sidecar_reports(&out_path, &inventory, &[], &[], &manifest)?;
+
+            info!(
+                "✅ Collection complete! Exported original HTML: {:?}",
+                orig_html_path
+            );
+            info!("✅ Sidecar inventory & manifest written to {:?}", out_path);
+        }
+
+        Commands::Dedupe { output_dir, .. } => {
+            use sync::collector::BookmarkCollector;
+            use sync::dedupe::DedupeEngine;
+            use sync::exporter::ReportExporter;
+            let out_path = std::path::PathBuf::from(&output_dir);
+            std::fs::create_dir_all(&out_path)?;
+
+            let (tree, inventory, mut manifest) = BookmarkCollector::collect_all(&out_path)?;
+            let (canonicals, reports, csv_records, total_raw, total_dups) =
+                DedupeEngine::deduplicate_tree(&tree, &[]);
+
+            manifest.total_canonical_bookmarks = canonicals.len();
+            manifest.total_removed_duplicates = total_dups;
+            manifest.invariant_satisfied = total_raw == canonicals.len() + total_dups;
+
+            let dedup_html_path = out_path.join("bookmarks-deduplicated.html");
+            ReportExporter::export_deduplicated_html(&canonicals, &dedup_html_path)?;
+            ReportExporter::write_sidecar_reports(
+                &out_path,
+                &inventory,
+                &reports,
+                &csv_records,
+                &manifest,
+            )?;
+
+            info!("✅ Deduplication complete! Output: {:?}", dedup_html_path);
+            info!(
+                "📊 Total raw: {}, Canonical kept: {}, Duplicates merged: {}",
+                total_raw,
+                canonicals.len(),
+                total_dups
+            );
+            info!(
+                "🔒 Invariant check (Raw == Canonical + Merged): {}",
+                manifest.invariant_satisfied
+            );
+        }
         Commands::List => {
             let engine = SyncEngine::new()?;
             engine.list_browsers()?;
@@ -1474,7 +1576,11 @@ async fn main() -> Result<()> {
             if let Some(ref inc_path) = include {
                 let expanded_inc = expand_path(inc_path);
                 if let Ok(imported) = sync::import_bookmarks_from_html(&expanded_inc) {
-                    info!("   📥 Included {} bookmarks from {}", imported.len(), expanded_inc);
+                    info!(
+                        "   📥 Included {} bookmarks from {}",
+                        imported.len(),
+                        expanded_inc
+                    );
                     extra_bookmarks = imported;
                 }
             }
@@ -1533,27 +1639,65 @@ async fn main() -> Result<()> {
 
             if let Ok(imported_org) = sync::import_bookmarks_from_html(&organized_file) {
                 let urls = url_checker::collect_urls_from_bookmarks(&imported_org);
-                let mut unique_urls: Vec<String> = urls.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect();
+                let mut unique_urls: Vec<String> = urls
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
                 if limit > 0 && unique_urls.len() > limit {
                     unique_urls.truncate(limit);
                 }
 
                 let results = checker.check_batch(unique_urls, |_, _, _| {}).await;
 
-                let valid_urls: std::collections::HashSet<String> = results.iter().filter(|r| r.status == url_checker::ValidationStatus::Valid).map(|r| r.url.clone()).collect();
-                let invalid_urls: std::collections::HashSet<String> = results.iter().filter(|r| r.status == url_checker::ValidationStatus::Invalid).map(|r| r.url.clone()).collect();
-                let uncertain_urls: std::collections::HashSet<String> = results.iter().filter(|r| r.status == url_checker::ValidationStatus::Uncertain).map(|r| r.url.clone()).collect();
-                let skipped_urls: std::collections::HashSet<String> = results.iter().filter(|r| r.status == url_checker::ValidationStatus::Skipped).map(|r| r.url.clone()).collect();
+                let valid_urls: std::collections::HashSet<String> = results
+                    .iter()
+                    .filter(|r| r.status == url_checker::ValidationStatus::Valid)
+                    .map(|r| r.url.clone())
+                    .collect();
+                let invalid_urls: std::collections::HashSet<String> = results
+                    .iter()
+                    .filter(|r| r.status == url_checker::ValidationStatus::Invalid)
+                    .map(|r| r.url.clone())
+                    .collect();
+                let uncertain_urls: std::collections::HashSet<String> = results
+                    .iter()
+                    .filter(|r| r.status == url_checker::ValidationStatus::Uncertain)
+                    .map(|r| r.url.clone())
+                    .collect();
+                let skipped_urls: std::collections::HashSet<String> = results
+                    .iter()
+                    .filter(|r| r.status == url_checker::ValidationStatus::Skipped)
+                    .map(|r| r.url.clone())
+                    .collect();
 
-                let valid_bms = url_checker::extract_by_status_preserve_structure(&imported_org, &valid_urls);
-                let invalid_bms = url_checker::extract_by_status_preserve_structure(&imported_org, &invalid_urls);
-                let uncertain_bms = url_checker::extract_by_status_preserve_structure(&imported_org, &uncertain_urls);
-                let skipped_bms = url_checker::extract_by_status_preserve_structure(&imported_org, &skipped_urls);
+                let valid_bms =
+                    url_checker::extract_by_status_preserve_structure(&imported_org, &valid_urls);
+                let invalid_bms =
+                    url_checker::extract_by_status_preserve_structure(&imported_org, &invalid_urls);
+                let uncertain_bms = url_checker::extract_by_status_preserve_structure(
+                    &imported_org,
+                    &uncertain_urls,
+                );
+                let skipped_bms =
+                    url_checker::extract_by_status_preserve_structure(&imported_org, &skipped_urls);
 
-                let _ = sync::export_bookmarks_to_html(&valid_bms, &format!("{}/valid.html", results_dir));
-                let _ = sync::export_bookmarks_to_html(&invalid_bms, &format!("{}/invalid.html", results_dir));
-                let _ = sync::export_bookmarks_to_html(&uncertain_bms, &format!("{}/uncertain.html", results_dir));
-                let _ = sync::export_bookmarks_to_html(&skipped_bms, &format!("{}/skipped.html", results_dir));
+                let _ = sync::export_bookmarks_to_html(
+                    &valid_bms,
+                    &format!("{}/valid.html", results_dir),
+                );
+                let _ = sync::export_bookmarks_to_html(
+                    &invalid_bms,
+                    &format!("{}/invalid.html", results_dir),
+                );
+                let _ = sync::export_bookmarks_to_html(
+                    &uncertain_bms,
+                    &format!("{}/uncertain.html", results_dir),
+                );
+                let _ = sync::export_bookmarks_to_html(
+                    &skipped_bms,
+                    &format!("{}/skipped.html", results_dir),
+                );
             }
 
             // Step 4: Merge check results
@@ -1582,7 +1726,9 @@ async fn main() -> Result<()> {
                 no_wrap: false,
                 all_profiles: true,
             };
-            engine.export_to_html_with_extra(Some("waterfox"), &expanded_output, &config, vec![]).await?;
+            engine
+                .export_to_html_with_extra(Some("waterfox"), &expanded_output, &config, vec![])
+                .await?;
             info!("✅ Waterfox cleanup export complete: {}", expanded_output);
         }
 

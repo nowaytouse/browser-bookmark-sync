@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1a710272f5c6e805aea03d94d54d16c994aeb609d423b5853027ceab94bd68d4 # shrinks to proxy_code = 403, direct_code = 403, latency1 = 0, latency2 = 0

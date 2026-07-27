@@ -1,15 +1,91 @@
-// Browser utilities - reserved for future browser control features
+// Browser utilities - safe snapshotting and process checks
 #![allow(dead_code)]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use chrono::Utc;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::browsers::BrowserType;
+use crate::data_types::models::{BrowserProfile, ProfileSnapshot};
 
-/// Force close browsers before sync to ensure clean state
+/// Safely create a read-only snapshot copy of a browser profile
+pub fn create_profile_snapshot(
+    profile: &BrowserProfile,
+    dest_dir: &Path,
+) -> Result<ProfileSnapshot> {
+    let snapshot_folder_name = format!(
+        "{}_{}",
+        profile.id.replace('/', "_"),
+        Utc::now().timestamp_millis()
+    );
+    let snapshot_dir = dest_dir.join(&snapshot_folder_name);
+    fs::create_dir_all(&snapshot_dir)
+        .with_context(|| format!("Failed to create snapshot directory {:?}", snapshot_dir))?;
+
+    let mut hashes = BTreeMap::new();
+
+    // Copy relevant bookmark and DB files safely
+    if profile.path.exists() {
+        if profile.path.is_file() {
+            // e.g. Safari Bookmarks.plist or single file
+            if let Some(file_name) = profile.path.file_name() {
+                let target_path = snapshot_dir.join(file_name);
+                if fs::copy(&profile.path, &target_path).is_ok() {
+                    if let Ok(hash) = calculate_file_hash(&target_path) {
+                        hashes.insert(file_name.to_string_lossy().to_string(), hash);
+                    }
+                }
+            }
+        } else if profile.path.is_dir() {
+            // Copy files like Bookmarks, places.sqlite, places.sqlite-wal, Local State, etc.
+            let targets = [
+                "Bookmarks",
+                "Bookmarks.bak",
+                "places.sqlite",
+                "places.sqlite-wal",
+                "places.sqlite-shm",
+                "favicons.sqlite",
+                "Local State",
+                "Preferences",
+            ];
+
+            for entry in targets {
+                let src_file = profile.path.join(entry);
+                if src_file.exists() && src_file.is_file() {
+                    let dst_file = snapshot_dir.join(entry);
+                    if fs::copy(&src_file, &dst_file).is_ok() {
+                        if let Ok(hash) = calculate_file_hash(&dst_file) {
+                            hashes.insert(entry.to_string(), hash);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ProfileSnapshot {
+        original_profile: profile.clone(),
+        snapshot_path: snapshot_dir,
+        created_at: Utc::now(),
+        sha256_hashes: hashes,
+    })
+}
+
+fn calculate_file_hash(file_path: &Path) -> Result<String> {
+    let mut file = fs::File::open(file_path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Force close browsers before sync if user explicitly requests writeback
 pub fn close_browsers(browsers: &[BrowserType], force: bool) -> Result<()> {
     info!("🔒 Closing browsers before sync...");
 
@@ -17,9 +93,8 @@ pub fn close_browsers(browsers: &[BrowserType], force: bool) -> Result<()> {
         close_browser(browser, force)?;
     }
 
-    // Wait for browsers to fully close
-    thread::sleep(Duration::from_secs(2));
-    info!("✅ All browsers closed");
+    thread::sleep(Duration::from_secs(1));
+    info!("✅ All target browsers closed");
 
     Ok(())
 }
@@ -36,22 +111,15 @@ fn close_browser(browser: &BrowserType, force: bool) -> Result<()> {
     };
 
     if !force {
-        // Try graceful close with AppleScript
         let script = format!("tell application \"{}\" to quit", app_name);
         let output = Command::new("osascript").arg("-e").arg(&script).output();
 
         if output.is_ok() {
             info!("  ✅ {} closed gracefully", app_name);
             return Ok(());
-        } else {
-            warn!(
-                "  ⚠️  {} graceful close failed, trying force kill",
-                app_name
-            );
         }
     }
 
-    // Force kill
     let output = Command::new("killall").arg("-9").arg(process_name).output();
 
     match output {

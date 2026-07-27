@@ -4317,5 +4317,249 @@
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
+  },
+  {
+    "name": "podcast",
+    "folder_name": "播客电台",
+    "folder_name_en": "Podcast & Radio",
+    "url_patterns": [
+      "podcast",
+      "radio",
+      "fm"
+    ],
+    "domain_patterns": [
+      "overcast.fm",
+      "pocketcasts.com",
+      "stitcher.com",
+      "ximalaya.com",
+      "qingting.fm"
+    ],
+    "path_patterns": [
+      "/podcast",
+      "/listen"
+    ],
+    "title_patterns": [
+      "播客",
+      "电台",
+      "podcast",
+      "radio"
+    ],
+    "priority": 32,
+    "description": "Podcasts, internet radio, and audio shows",
+    "specificity": 160
+  },
+  {
+    "name": "legal",
+    "folder_name": "法律产权",
+    "folder_name_en": "Legal & Copyright",
+    "url_patterns": [
+      "law",
+      "legal",
+      "copyright",
+      "patent"
+    ],
+    "domain_patterns": [
+      "law.com",
+      "findlaw.com",
+      "uspto.gov",
+      "court.gov.cn",
+      "pkulaw.com"
+    ],
+    "path_patterns": [],
+    "title_patterns": [
+      "法律",
+      "法规",
+      "法院",
+      "专利",
+      "版权",
+      "legal",
+      "law"
+    ],
+    "priority": 42,
+    "description": "Legal information, courts, and copyright resources",
+    "specificity": 60
+  },
+  {
+    "name": "podcast",
+    "folder_name": "播客电台",
+    "folder_name_en": "Podcast & Radio",
+    "url_patterns": [
+      "podcast",
+      "radio",
+      "fm"
+    ],
+    "domain_patterns": [
+      "overcast.fm",
+      "pocketcasts.com",
+      "stitcher.com",
+      "ximalaya.com",
+      "qingting.fm"
+    ],
+    "path_patterns": [
+      "/podcast",
+      "/listen"
+    ],
+    "title_patterns": [
+      "播客",
+      "电台",
+      "podcast",
+      "radio"
+    ],
+    "priority": 32,
+    "description": "Podcasts, internet radio, and audio shows",
+    "specificity": 160
+  },
+  {
+    "name": "legal",
+    "folder_name": "法律产权",
+    "folder_name_en": "Legal & Copyright",
+    "url_patterns": [
+      "law",
+      "legal",
+      "copyright",
+      "patent"
+    ],
+    "domain_patterns": [
+      "law.com",
+      "findlaw.com",
+      "uspto.gov",
+      "court.gov.cn",
+      "pkulaw.com"
+    ],
+    "path_patterns": [],
+    "title_patterns": [
+      "法律",
+      "法规",
+      "法院",
+      "专利",
+      "版权",
+      "legal",
+      "law"
+    ],
+    "priority": 42,
+    "description": "Legal information, courts, and copyright resources",
+    "specificity": 60
+  },
+  {
+    "name": "podcast",
+    "folder_name": "播客电台",
+    "folder_name_en": "Podcast & Radio",
+    "url_patterns": [
+      "podcast",
+      "radio",
+      "fm"
+    ],
+    "domain_patterns": [
+      "overcast.fm",
+      "pocketcasts.com",
+      "stitcher.com",
+      "ximalaya.com",
+      "qingting.fm"
+    ],
+    "path_patterns": [
+      "/podcast",
+      "/listen"
+    ],
+    "title_patterns": [
+      "播客",
+      "电台",
+      "podcast",
+      "radio"
+    ],
+    "priority": 32,
+    "description": "Podcasts, internet radio, and audio shows",
+    "specificity": 160
+  },
+  {
+    "name": "legal",
+    "folder_name": "法律产权",
+    "folder_name_en": "Legal & Copyright",
+    "url_patterns": [
+      "law",
+      "legal",
+      "copyright",
+      "patent"
+    ],
+    "domain_patterns": [
+      "law.com",
+      "findlaw.com",
+      "uspto.gov",
+      "court.gov.cn",
+      "pkulaw.com"
+    ],
+    "path_patterns": [],
+    "title_patterns": [
+      "法律",
+      "法规",
+      "法院",
+      "专利",
+      "版权",
+      "legal",
+      "law"
+    ],
+    "priority": 42,
+    "description": "Legal information, courts, and copyright resources",
+    "specificity": 60
+  },
+  {
+    "name": "podcast",
+    "folder_name": "播客电台",
+    "folder_name_en": "Podcast & Radio",
+    "url_patterns": [
+      "podcast",
+      "radio",
+      "fm"
+    ],
+    "domain_patterns": [
+      "overcast.fm",
+      "pocketcasts.com",
+      "stitcher.com",
+      "ximalaya.com",
+      "qingting.fm"
+    ],
+    "path_patterns": [
+      "/podcast",
+      "/listen"
+    ],
+    "title_patterns": [
+      "播客",
+      "电台",
+      "podcast",
+      "radio"
+    ],
+    "priority": 32,
+    "description": "Podcasts, internet radio, and audio shows",
+    "specificity": 160
+  },
+  {
+    "name": "legal",
+    "folder_name": "法律产权",
+    "folder_name_en": "Legal & Copyright",
+    "url_patterns": [
+      "law",
+      "legal",
+      "copyright",
+      "patent"
+    ],
+    "domain_patterns": [
+      "law.com",
+      "findlaw.com",
+      "uspto.gov",
+      "court.gov.cn",
+      "pkulaw.com"
+    ],
+    "path_patterns": [],
+    "title_patterns": [
+      "法律",
+      "法规",
+      "法院",
+      "专利",
+      "版权",
+      "legal",
+      "law"
+    ],
+    "priority": 42,
+    "description": "Legal information, courts, and copyright resources",
+    "specificity": 60
   }
 ]

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-07-27
+
+### Added
+- **Unified Internal Data Model**: Introduced `SourceDescriptor`, `BookmarkRootKind`, `FolderNode`, `BookmarkOccurrence`, `CanonicalBookmark`, `DuplicateGroupReport`, and `RunManifest` to guarantee full data lineage and auditability.
+- **Copy-on-Read Snapshot Isolation**: Added `create_profile_snapshot` to guarantee zero runtime DB mutations and compute SHA-256 integrity hashes for all harvested profiles.
+- **Auditable Pipeline Commands**: Added `bsync inventory`, `bsync collect`, `bsync dedupe`, and `bsync pipeline` subcommands.
+- **Dual HTML & Audit Reports**: Generates `bookmarks-original.html` (100% hierarchy preserved) alongside `bookmarks-deduplicated.html` (exact URL deduplicated) and sidecar reports (`inventory.json`, `duplicates.json`, `duplicates.csv`, `run-manifest.json`).
+- **Enhanced URL Health Classification**: Expanded `ValidationStatus` to 14+ fine-grained classifications preventing accidental deletion of 403, 429, 5xx, or transient network timeouts.
+
 ## [1.3.0] - 2026-07-24
 
 ### Added

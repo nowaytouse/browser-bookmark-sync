@@ -97,10 +97,20 @@ async fn api_list(State(state): State<AppState>) -> Json<Vec<BrowserInfo>> {
             Ok(bms) => {
                 let count = count_deep(&bms);
                 state.log(&format!("  ✅ {}: {} bookmarks", name, count));
-                infos.push(BrowserInfo { name, available: true, count, icon });
+                infos.push(BrowserInfo {
+                    name,
+                    available: true,
+                    count,
+                    icon,
+                });
             }
             Err(_) => {
-                infos.push(BrowserInfo { name, available: false, count: 0, icon });
+                infos.push(BrowserInfo {
+                    name,
+                    available: false,
+                    count: 0,
+                    icon,
+                });
             }
         }
     }
@@ -128,23 +138,35 @@ async fn api_export(
 
     match crate::sync::SyncEngine::new() {
         Ok(engine) => {
-            match engine.export_to_html_with_extra(Some("all"), &output, &cfg, vec![]).await {
+            match engine
+                .export_to_html_with_extra(Some("all"), &output, &cfg, vec![])
+                .await
+            {
                 Ok(count) => {
                     let msg = format!("✅ Exported {} bookmarks → {}", count, output);
                     state.log(&msg);
-                    Json(ApiResult { ok: true, message: msg })
+                    Json(ApiResult {
+                        ok: true,
+                        message: msg,
+                    })
                 }
                 Err(e) => {
                     let msg = format!("❌ Export failed: {}", e);
                     state.log(&msg);
-                    Json(ApiResult { ok: false, message: msg })
+                    Json(ApiResult {
+                        ok: false,
+                        message: msg,
+                    })
                 }
             }
         }
         Err(e) => {
             let msg = format!("❌ Engine init failed: {}", e);
             state.log(&msg);
-            Json(ApiResult { ok: false, message: msg })
+            Json(ApiResult {
+                ok: false,
+                message: msg,
+            })
         }
     }
 }
@@ -160,12 +182,18 @@ async fn api_merge(
         Ok(count) => {
             let msg = format!("✅ Merged {} bookmarks → {}", count, output);
             state.log(&msg);
-            Json(ApiResult { ok: true, message: msg })
+            Json(ApiResult {
+                ok: true,
+                message: msg,
+            })
         }
         Err(e) => {
             let msg = format!("❌ Merge failed: {}", e);
             state.log(&msg);
-            Json(ApiResult { ok: false, message: msg })
+            Json(ApiResult {
+                ok: false,
+                message: msg,
+            })
         }
     }
 }
@@ -178,18 +206,21 @@ async fn api_events(
     State(state): State<AppState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let rx = state.tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|msg| {
-        msg.ok().map(|data| Ok(Event::default().data(data)))
-    });
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+    let stream = BroadcastStream::new(rx)
+        .filter_map(|msg| msg.ok().map(|data| Ok(Event::default().data(data))));
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("ping"),
+    )
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 fn count_deep(bms: &[crate::browsers::Bookmark]) -> usize {
-    bms.iter().map(|b| {
-        (if b.url.is_some() { 1 } else { 0 }) + count_deep(&b.children)
-    }).sum()
+    bms.iter()
+        .map(|b| (if b.url.is_some() { 1 } else { 0 }) + count_deep(&b.children))
+        .sum()
 }
 
 fn browser_icon(name: &str) -> String {

@@ -1,16 +1,19 @@
-//! Data types module for browser data extraction
-//!
-//! Supports: passwords, cookies, downloads, localStorage, extensions
+//! Data types module for browser data extraction and bookmark model abstractions
 
+pub mod canonical;
 pub mod cookie;
 pub mod download;
+pub mod manifest;
+pub mod models;
 pub mod password;
 
+pub use canonical::*;
 pub use cookie::extract_chromium_cookies;
 pub use download::extract_chromium_downloads;
-pub use password::extract_chromium_passwords;
+pub use manifest::*;
+pub use models::*;
+pub use password::*;
 
-// Firefox support (currently unused but kept for future)
 #[allow(unused_imports)]
 pub use cookie::{extract_firefox_cookies, Cookie};
 #[allow(unused_imports)]

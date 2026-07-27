@@ -12,23 +12,65 @@ use tracing::{debug, info, warn};
 /// URL检查结果状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ValidationStatus {
-    /// 有效 - 任一网络返回成功(HTTP 2xx/3xx)
+    /// 有效 - 任一网络返回成功(HTTP 2xx)
     Valid,
-    /// 无效 - 两个网络都返回失败(HTTP 4xx/5xx或连接错误)
-    Invalid,
+    /// 重定向 - HTTP 3xx
+    Redirected,
+    /// 需身份验证 - HTTP 401
+    AuthenticationRequired,
+    /// 防火墙/Bot拦截 - HTTP 403 / Cloudflare
+    ForbiddenOrBotBlocked,
+    /// 触发限流 - HTTP 429
+    RateLimited,
+    /// 资源未找到 - HTTP 404
+    NotFound,
+    /// 资源已被永久删除 - HTTP 410
+    Gone,
+    /// 服务器内部错误 - HTTP 5xx
+    ServerError,
+    /// DNS解析失败
+    DnsError,
+    /// TLS/SSL握手错误
+    TlsError,
+    /// 请求超时
+    Timeout,
+    /// TCP连接错误
+    ConnectionError,
+    /// 不支持的协议 Scheme
+    UnsupportedScheme,
     /// 不确定 - 单网络模式失败或超时
     Uncertain,
+    /// 简单无效（保留兼容）
+    Invalid,
     /// 跳过 - 本地文件、javascript:等非HTTP URL
     Skipped,
 }
 
 impl ValidationStatus {
+    /// 绝不误删判断：仅确定性资源不存在 (Invalid/NotFound/Gone) 允许自动清除建议
+    pub fn should_auto_delete(&self) -> bool {
+        matches!(
+            self,
+            ValidationStatus::Invalid | ValidationStatus::NotFound | ValidationStatus::Gone
+        )
+    }
+
+    /// 根据 HTTP 状态码与结果分类
+    pub fn classify_http_code(code: u16) -> Self {
+        match code {
+            200..=299 => ValidationStatus::Valid,
+            300..=399 => ValidationStatus::Redirected,
+            401 => ValidationStatus::AuthenticationRequired,
+            403 => ValidationStatus::ForbiddenOrBotBlocked,
+            404 => ValidationStatus::NotFound,
+            410 => ValidationStatus::Gone,
+            429 => ValidationStatus::RateLimited,
+            500..=599 => ValidationStatus::ServerError,
+            _ => ValidationStatus::Uncertain,
+        }
+    }
+
     /// 根据代理和直连结果判定最终状态
-    /// 规则：
-    /// - 任一成功 = 有效
-    /// - 双网络都返回 404/410/DNS失败 = 无效（资源确实不存在）
-    /// - 403/503/429 等 = 不确定（可能是 CF 验证、WAF）
-    /// - 单网络失败/超时 = 不确定
     pub fn determine(
         proxy_result: Option<&HttpResult>,
         direct_result: Option<&HttpResult>,
@@ -36,13 +78,10 @@ impl ValidationStatus {
         let proxy_success = proxy_result.map(|r| r.is_success()).unwrap_or(false);
         let direct_success = direct_result.map(|r| r.is_success()).unwrap_or(false);
 
-        // 任一网络成功即有效
         if proxy_success || direct_success {
             return ValidationStatus::Valid;
         }
 
-        // 检查是否有被拦截的情况（CF 验证、WAF 等）
-        // 403/503/429 等状态码说明服务器可能在线但触发了防护机制，标记为不确定
         let proxy_blocked = proxy_result.map(|r| r.is_blocked()).unwrap_or(false);
         let direct_blocked = direct_result.map(|r| r.is_blocked()).unwrap_or(false);
 
@@ -50,16 +89,13 @@ impl ValidationStatus {
             return ValidationStatus::Uncertain;
         }
 
-        // 检查是否双网络都有确定性失败结果（404/410/DNS失败）
         let proxy_failed = proxy_result.map(|r| r.is_failure()).unwrap_or(false);
         let direct_failed = direct_result.map(|r| r.is_failure()).unwrap_or(false);
 
-        // 双网络都确定性失败才判定为无效
         if proxy_failed && direct_failed {
             return ValidationStatus::Invalid;
         }
 
-        // 其他情况（单网络失败、超时等）判定为不确定
         ValidationStatus::Uncertain
     }
 }
@@ -294,10 +330,10 @@ impl CheckReport {
         for result in results {
             match result.status {
                 ValidationStatus::Valid => report.valid_count += 1,
-                ValidationStatus::Invalid => {
+                ValidationStatus::Invalid | ValidationStatus::NotFound | ValidationStatus::Gone => {
                     report.invalid_count += 1;
                     report.invalid_urls.push(InvalidBookmark {
-                        title: String::new(), // 由调用者填充
+                        title: String::new(),
                         url: result.url.clone(),
                         browser: String::new(),
                         folder_path: String::new(),
@@ -305,8 +341,8 @@ impl CheckReport {
                         direct_error: result.direct_result.as_ref().and_then(|r| r.error.clone()),
                     });
                 }
-                ValidationStatus::Uncertain => report.uncertain_count += 1,
                 ValidationStatus::Skipped => report.skipped_count += 1,
+                _ => report.uncertain_count += 1,
             }
         }
 
