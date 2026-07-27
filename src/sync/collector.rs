@@ -307,15 +307,21 @@ impl BookmarkCollector {
         let mut inst_summaries = Vec::new();
         let mut snapshot_hashes = BTreeMap::new();
 
+        let mut warnings = Vec::new();
+
         for inst in &installations {
             let profiles = Self::discover_profiles(inst);
             total_profiles_count += profiles.len();
 
             let mut profile_summaries = Vec::new();
 
+            if profiles.is_empty() {
+                warnings.push(format!("Browser installation '{}' found at {:?} but has no active profiles with bookmarks.", inst.name, inst.root_path));
+            }
+
             for prof in &profiles {
                 let snapshot = create_profile_snapshot(prof, &snapshots_dir)?;
-                for (k, v) in &snapshot.sha256_hashes {
+                for (k, v) in &snapshot.blake3_hashes {
                     snapshot_hashes.insert(format!("{}/{}", prof.id, k), v.clone());
                 }
 
@@ -330,6 +336,10 @@ impl BookmarkCollector {
 
                 let (prof_nodes, bm_count, folder_count) =
                     Self::harvest_snapshot_bookmarks(inst, prof, &snapshot, &source_desc)?;
+
+                if bm_count == 0 {
+                    warnings.push(format!("Profile '{}' (`{}`) in '{}' was scanned but contained 0 valid bookmark occurrences.", prof.name, prof.id, inst.name));
+                }
 
                 total_bookmarks_count += bm_count;
 
@@ -373,6 +383,7 @@ impl BookmarkCollector {
             total_installations: installations.len(),
             total_profiles: total_profiles_count,
             total_bookmarks: total_bookmarks_count,
+            warnings: warnings.clone(),
             installations: inst_summaries,
         };
 
@@ -386,8 +397,9 @@ impl BookmarkCollector {
             total_canonical_bookmarks: 0,
             total_removed_duplicates: 0,
             invariant_satisfied: true,
+            warnings,
             output_files: BTreeMap::new(),
-            snapshot_hashes,
+            blake3_snapshot_hashes: snapshot_hashes,
         };
 
         Ok((tree, inventory, manifest))

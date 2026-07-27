@@ -213,9 +213,21 @@ impl ReportExporter {
         report.push_str("- `inventory.json`: Machine-readable audit inventory of all detected installations and profiles.\n");
         report.push_str("- `duplicates.csv`: Tabular spreadsheet logging all merged duplicates, original locations, and selection reasons.\n");
         report.push_str("- `duplicates.json`: Detailed JSON audit report mapping every canonical URL to its full list of merged duplicate occurrences.\n");
-        report.push_str("- `run-manifest.json`: Full operational manifest with snapshot SHA-256 integrity hashes.\n\n");
+        report.push_str("- `run-manifest.json`: Full operational manifest with snapshot BLAKE3 cryptographic integrity hashes.\n\n");
 
-        report.push_str("---\n*Generated automatically by browser-bookmark-sync (bsync v1.4.0)*\n");
+        report.push_str("## 5. Explicit Audit Warnings & Empty Profile Observations\n\n");
+        if manifest.warnings.is_empty() {
+            report.push_str(
+                "*No warnings or skipped profile observations recorded during this run.*\n\n",
+            );
+        } else {
+            for warn in &manifest.warnings {
+                report.push_str(&format!("- ⚠️ {}\n", warn));
+            }
+            report.push_str("\n");
+        }
+
+        report.push_str("---\n*Generated automatically by browser-bookmark-sync (bsync v1.4.1)*\n");
 
         report
     }

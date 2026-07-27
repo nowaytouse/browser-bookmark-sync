@@ -56,7 +56,7 @@ pub struct ProfileSnapshot {
     pub original_profile: BrowserProfile,
     pub snapshot_path: PathBuf,
     pub created_at: DateTime<Utc>,
-    pub sha256_hashes: BTreeMap<String, String>,
+    pub blake3_hashes: BTreeMap<String, String>,
 }
 
 /// Standardized browser bookmark root folder kinds

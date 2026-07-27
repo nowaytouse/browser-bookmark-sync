@@ -6,7 +6,6 @@ pub mod dedupe;
 pub mod exporter;
 
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
@@ -918,9 +917,7 @@ impl SyncEngine {
     }
 
     fn hash_url(&self, url: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(url.as_bytes());
-        format!("{:x}", hasher.finalize())
+        blake3::hash(url.as_bytes()).to_hex().to_string()
     }
 
     fn print_sync_preview(
@@ -2188,7 +2185,7 @@ impl SyncEngine {
     }
 
     /// Organize homepage bookmarks into a dedicated folder
-    /// Homepage = URL that is a root domain (e.g., https://example.com or https://example.com/)
+    /// Homepage = URL that is a root domain (e.g., `<https://example.com>` or `<https://example.com/>`)
     pub async fn organize_homepages(
         &mut self,
         browser_names: Option<&str>,
@@ -2330,7 +2327,7 @@ impl SyncEngine {
     }
 
     /// Check if a URL is a homepage (root domain)
-    /// Examples: https://example.com, https://example.com/, http://example.com
+    /// Examples: `<https://example.com>`, `<https://example.com/>`, `<http://example.com>`
     fn is_homepage_url(url: &str) -> bool {
         // Parse URL
         let normalized = url.trim().to_lowercase();

@@ -14,6 +14,7 @@ pub struct InventoryReport {
     pub total_installations: usize,
     pub total_profiles: usize,
     pub total_bookmarks: usize,
+    pub warnings: Vec<String>,
     pub installations: Vec<BrowserInstallationSummary>,
 }
 
@@ -43,6 +44,7 @@ pub struct RunManifest {
     pub total_canonical_bookmarks: usize,
     pub total_removed_duplicates: usize,
     pub invariant_satisfied: bool,
+    pub warnings: Vec<String>,
     pub output_files: BTreeMap<String, String>,
-    pub snapshot_hashes: BTreeMap<String, String>,
+    pub blake3_snapshot_hashes: BTreeMap<String, String>,
 }

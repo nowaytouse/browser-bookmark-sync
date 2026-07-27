@@ -2,8 +2,8 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
+use blake3::Hasher;
 use chrono::Utc;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -74,15 +74,15 @@ pub fn create_profile_snapshot(
         original_profile: profile.clone(),
         snapshot_path: snapshot_dir,
         created_at: Utc::now(),
-        sha256_hashes: hashes,
+        blake3_hashes: hashes,
     })
 }
 
 fn calculate_file_hash(file_path: &Path) -> Result<String> {
     let mut file = fs::File::open(file_path)?;
-    let mut hasher = Sha256::new();
+    let mut hasher = Hasher::new();
     std::io::copy(&mut file, &mut hasher)?;
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// Force close browsers before sync if user explicitly requests writeback
