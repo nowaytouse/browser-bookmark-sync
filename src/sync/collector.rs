@@ -636,10 +636,132 @@ impl BookmarkCollector {
     }
 
     fn parse_safari_plist(
-        _plist_path: &Path,
-        _source: &SourceDescriptor,
+        plist_path: &Path,
+        source: &SourceDescriptor,
     ) -> Result<(Vec<BookmarkNode>, usize, usize)> {
-        // Fallback for Safari reading
-        Ok((vec![], 0, 0))
+        let data = fs::read(plist_path)?;
+        let plist_value: plist::Value = plist::from_bytes(&data)?;
+
+        let mut nodes = Vec::new();
+        let mut bm_count = 0;
+        let mut folder_count = 0;
+
+        if let Some(dict) = plist_value.as_dictionary() {
+            if let Some(children) = dict.get("Children").and_then(|v| v.as_array()) {
+                for (idx, child) in children.iter().enumerate() {
+                    let (child_nodes, bm, fld) = Self::parse_safari_node(
+                        child,
+                        source,
+                        &BookmarkRootKind::Favorites,
+                        &["Favorites".into()],
+                        idx,
+                    )?;
+                    bm_count += bm;
+                    folder_count += fld;
+                    nodes.extend(child_nodes);
+                }
+            }
+        }
+
+        Ok((nodes, bm_count, folder_count))
+    }
+
+    fn parse_safari_node(
+        node: &plist::Value,
+        source: &SourceDescriptor,
+        root_kind: &BookmarkRootKind,
+        parent_path: &[String],
+        idx: usize,
+    ) -> Result<(Vec<BookmarkNode>, usize, usize)> {
+        let mut nodes = Vec::new();
+        let mut bm_count = 0;
+        let mut folder_count = 0;
+
+        let dict = match node.as_dictionary() {
+            Some(d) => d,
+            None => return Ok((nodes, bm_count, folder_count)),
+        };
+
+        let web_bookmark_type = dict
+            .get("WebBookmarkType")
+            .and_then(|v| v.as_string())
+            .unwrap_or("");
+
+        let title = dict
+            .get("Title")
+            .and_then(|v| v.as_string())
+            .or_else(|| {
+                dict.get("URIDictionary")
+                    .and_then(|v| v.as_dictionary())
+                    .and_then(|d| d.get("title"))
+                    .and_then(|v| v.as_string())
+            })
+            .unwrap_or("")
+            .to_string();
+
+        let uuid = dict
+            .get("WebBookmarkUUID")
+            .and_then(|v| v.as_string())
+            .unwrap_or("")
+            .to_string();
+
+        match web_bookmark_type {
+            "WebBookmarkTypeList" => {
+                if title == "com.apple.ReadingList" || title == "History" {
+                    return Ok((nodes, bm_count, folder_count));
+                }
+
+                folder_count += 1;
+                let mut child_path = parent_path.to_vec();
+                child_path.push(title.clone());
+
+                let mut sub_nodes = Vec::new();
+                if let Some(child_array) = dict.get("Children").and_then(|v| v.as_array()) {
+                    for (c_idx, child) in child_array.iter().enumerate() {
+                        let (c_nodes, c_bm, c_fld) =
+                            Self::parse_safari_node(child, source, root_kind, &child_path, c_idx)?;
+                        bm_count += c_bm;
+                        folder_count += c_fld;
+                        sub_nodes.extend(c_nodes);
+                    }
+                }
+
+                nodes.push(BookmarkNode::Folder(FolderNode {
+                    id: uuid,
+                    title,
+                    children: sub_nodes,
+                    source: source.clone(),
+                    root_kind: root_kind.clone(),
+                    original_position: idx,
+                    date_added: None,
+                    date_modified: None,
+                }));
+            }
+            "WebBookmarkTypeLeaf" => {
+                let url = dict
+                    .get("URLString")
+                    .and_then(|v| v.as_string())
+                    .unwrap_or("");
+
+                if !url.is_empty() {
+                    bm_count += 1;
+                    nodes.push(BookmarkNode::Bookmark(BookmarkOccurrence {
+                        id: uuid,
+                        title,
+                        raw_url: url.to_string(),
+                        source: source.clone(),
+                        root_kind: root_kind.clone(),
+                        folder_path: parent_path.to_vec(),
+                        original_position: idx,
+                        date_added: None,
+                        date_modified: None,
+                        metadata: BTreeMap::new(),
+                    }));
+                }
+            }
+            _ => {}
+        }
+
+        Ok((nodes, bm_count, folder_count))
     }
 }
