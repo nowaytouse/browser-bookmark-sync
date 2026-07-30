@@ -11,7 +11,7 @@ pub struct ValidationReport {
 }
 
 impl ValidationReport {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             browsers_detected: Vec::new(),
             browsers_not_detected: Vec::new(),
@@ -58,7 +58,7 @@ impl ValidationReport {
         for (browser, path) in &self.browsers_detected {
             output.push_str(&format!("  • {}\n", browser.name()));
             if detailed {
-                output.push_str(&format!("    Path: {:?}\n", path));
+                output.push_str(&format!("    Path: {path:?}\n"));
             }
         }
         output.push('\n');
@@ -69,7 +69,7 @@ impl ValidationReport {
             for (browser, reason) in &self.browsers_not_detected {
                 output.push_str(&format!("  • {}\n", browser.name()));
                 if detailed {
-                    output.push_str(&format!("    Reason: {}\n", reason));
+                    output.push_str(&format!("    Reason: {reason}\n"));
                 }
             }
             output.push('\n');
@@ -90,7 +90,7 @@ impl ValidationReport {
             for (browser, error) in &self.read_errors {
                 output.push_str(&format!("  • {}\n", browser.name()));
                 if detailed {
-                    output.push_str(&format!("    Error: {}\n", error));
+                    output.push_str(&format!("    Error: {error}\n"));
                 }
             }
             output.push('\n');
@@ -104,7 +104,7 @@ impl ValidationReport {
         for (browser, reason) in &self.validations_failed {
             output.push_str(&format!("  ❌ {} - FAILED\n", browser.name()));
             if detailed {
-                output.push_str(&format!("    Reason: {}\n", reason));
+                output.push_str(&format!("    Reason: {reason}\n"));
             }
         }
 
@@ -114,11 +114,16 @@ impl ValidationReport {
         let total_detected = self.browsers_detected.len();
         let total_validated = self.validations_passed.len();
         output.push_str(&format!(
-            "\n📊 Summary: {}/{} browsers validated successfully\n\n",
-            total_validated, total_detected
+            "\n📊 Summary: {total_validated}/{total_detected} browsers validated successfully\n\n"
         ));
 
         output
+    }
+}
+
+impl Default for ValidationReport {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

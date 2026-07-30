@@ -16,11 +16,11 @@ pub enum SelectionReason {
 impl std::fmt::Display for SelectionReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SelectionReason::PreferredSource => write!(f, "preferred_source"),
-            SelectionReason::PreferredRootKind => write!(f, "preferred_root_kind"),
-            SelectionReason::DeeperFolderPath => write!(f, "deeper_folder_path"),
-            SelectionReason::EarliestDateAdded => write!(f, "earliest_date_added"),
-            SelectionReason::DeterministicFallback => write!(f, "deterministic_fallback"),
+            Self::PreferredSource => write!(f, "preferred_source"),
+            Self::PreferredRootKind => write!(f, "preferred_root_kind"),
+            Self::DeeperFolderPath => write!(f, "deeper_folder_path"),
+            Self::EarliestDateAdded => write!(f, "earliest_date_added"),
+            Self::DeterministicFallback => write!(f, "deterministic_fallback"),
         }
     }
 }

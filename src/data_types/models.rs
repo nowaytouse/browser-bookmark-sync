@@ -16,9 +16,9 @@ pub enum BrowserKind {
 impl std::fmt::Display for BrowserKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BrowserKind::Chromium(name) => write!(f, "Chromium({})", name),
-            BrowserKind::Firefox(name) => write!(f, "Firefox({})", name),
-            BrowserKind::Safari => write!(f, "Safari"),
+            Self::Chromium(name) => write!(f, "Chromium({name})"),
+            Self::Firefox(name) => write!(f, "Firefox({name})"),
+            Self::Safari => write!(f, "Safari"),
         }
     }
 }
@@ -76,15 +76,15 @@ pub enum BookmarkRootKind {
 impl std::fmt::Display for BookmarkRootKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BookmarkRootKind::BookmarkBar => write!(f, "Bookmark Bar"),
-            BookmarkRootKind::OtherBookmarks => write!(f, "Other Bookmarks"),
-            BookmarkRootKind::MobileBookmarks => write!(f, "Mobile Bookmarks"),
-            BookmarkRootKind::BookmarkMenu => write!(f, "Bookmark Menu"),
-            BookmarkRootKind::Toolbar => write!(f, "Toolbar Bookmarks"),
-            BookmarkRootKind::Unfiled => write!(f, "Unfiled Bookmarks"),
-            BookmarkRootKind::ReadingList => write!(f, "Reading List"),
-            BookmarkRootKind::Favorites => write!(f, "Favorites"),
-            BookmarkRootKind::Custom(name) => write!(f, "{}", name),
+            Self::BookmarkBar => write!(f, "Bookmark Bar"),
+            Self::OtherBookmarks => write!(f, "Other Bookmarks"),
+            Self::MobileBookmarks => write!(f, "Mobile Bookmarks"),
+            Self::BookmarkMenu => write!(f, "Bookmark Menu"),
+            Self::Toolbar => write!(f, "Toolbar Bookmarks"),
+            Self::Unfiled => write!(f, "Unfiled Bookmarks"),
+            Self::ReadingList => write!(f, "Reading List"),
+            Self::Favorites => write!(f, "Favorites"),
+            Self::Custom(name) => write!(f, "{name}"),
         }
     }
 }
@@ -134,19 +134,19 @@ pub enum BookmarkNode {
 }
 
 impl BookmarkNode {
-    pub fn is_folder(&self) -> bool {
-        matches!(self, BookmarkNode::Folder(_))
+    pub const fn is_folder(&self) -> bool {
+        matches!(self, Self::Folder(_))
     }
 
-    pub fn is_bookmark(&self) -> bool {
-        matches!(self, BookmarkNode::Bookmark(_))
+    pub const fn is_bookmark(&self) -> bool {
+        matches!(self, Self::Bookmark(_))
     }
 
     pub fn title(&self) -> &str {
         match self {
-            BookmarkNode::Folder(f) => &f.title,
-            BookmarkNode::Bookmark(b) => &b.title,
-            BookmarkNode::Separator(_) => "---",
+            Self::Folder(f) => &f.title,
+            Self::Bookmark(b) => &b.title,
+            Self::Separator(_) => "---",
         }
     }
 }

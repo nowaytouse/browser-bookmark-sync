@@ -198,7 +198,7 @@ pub struct CleanupStats {
 }
 
 impl CleanupStats {
-    pub fn total_removed(&self) -> usize {
+    pub const fn total_removed(&self) -> usize {
         self.bulk_removed + self.history_removed + self.empty_removed
     }
 

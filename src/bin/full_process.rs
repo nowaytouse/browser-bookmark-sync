@@ -10,7 +10,9 @@ async fn main() -> Result<()> {
     args_with_cmd.extend(args);
 
     let current_exe = env::current_exe()?;
-    let exe_dir = current_exe.parent().unwrap();
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("No parent directory"))?;
     let main_bin = exe_dir.join("browser-bookmark-sync");
 
     let status = std::process::Command::new(if main_bin.exists() {

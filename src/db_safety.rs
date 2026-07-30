@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 /// 检查数据库兼容性，验证数据库是否可以被当前的 SQLite 版本安全打开
 pub fn check_compatibility(db_path: &Path) -> Result<()> {
     if !db_path.exists() {
-        return Err(anyhow!("Database file does not exist: {:?}", db_path));
+        return Err(anyhow!("Database file does not exist: {db_path:?}"));
     }
 
     // 尝试以只读模式打开
@@ -47,7 +47,7 @@ pub fn check_compatibility(db_path: &Path) -> Result<()> {
         .context("Failed to run integrity check")?;
 
     if integrity != "ok" {
-        return Err(anyhow!("Database integrity check failed: {}", integrity));
+        return Err(anyhow!("Database integrity check failed: {integrity}"));
     }
 
     Ok(())
@@ -96,7 +96,9 @@ pub fn is_database_locked(db_path: &Path) -> bool {
                 return true;
             }
             // 如果成功，回滚并关闭
-            let _ = conn.execute("ROLLBACK", []);
+            if let Err(e) = conn.execute("ROLLBACK", []) {
+                tracing::warn!("尝试对锁检测数据库连接执行 ROLLBACK 失败: {}", e);
+            }
             false
         }
         Err(e) => {
@@ -142,10 +144,22 @@ where
     let shm_path = db_path.with_extension("sqlite-shm");
 
     if wal_path.exists() {
-        let _ = fs::copy(&wal_path, temp_db_path.with_extension("sqlite-wal"));
+        if let Err(e) = fs::copy(&wal_path, temp_db_path.with_extension("sqlite-wal")) {
+            tracing::warn!(
+                "复制 SQLite WAL 日志文件 '{}' 失败: {}，可能导致事务状态快照不完整",
+                wal_path.display(),
+                e
+            );
+        }
     }
     if shm_path.exists() {
-        let _ = fs::copy(&shm_path, temp_db_path.with_extension("sqlite-shm"));
+        if let Err(e) = fs::copy(&shm_path, temp_db_path.with_extension("sqlite-shm")) {
+            tracing::warn!(
+                "复制 SQLite SHM 内存映射文件 '{}' 失败: {}，可能影响临时数据库快照连接",
+                shm_path.display(),
+                e
+            );
+        }
     }
 
     // 3. 在副本上执行操作
@@ -163,8 +177,7 @@ where
 
         if integrity != "ok" {
             return Err(anyhow!(
-                "Database integrity check failed after modification: {}",
-                integrity
+                "Database integrity check failed after modification: {integrity}"
             ));
         }
 
@@ -175,7 +188,7 @@ where
 
     // 5. 根据结果处理
     match result {
-        Ok(_) => {
+        Ok(()) => {
             info!("✅ Operation successful and verified. Replacing original database.");
 
             // 备份原始数据库（作为额外的安全措施）
@@ -200,10 +213,14 @@ where
             let temp_wal = temp_db_path.with_extension("sqlite-wal");
             let temp_shm = temp_db_path.with_extension("sqlite-shm");
             if temp_wal.exists() {
-                let _ = fs::remove_file(temp_wal);
+                if let Err(e) = fs::remove_file(&temp_wal) {
+                    tracing::debug!("清理临时 WAL 日志文件 '{}' 失败: {}", temp_wal.display(), e);
+                }
             }
             if temp_shm.exists() {
-                let _ = fs::remove_file(temp_shm);
+                if let Err(e) = fs::remove_file(&temp_shm) {
+                    tracing::debug!("清理临时 SHM 文件 '{}' 失败: {}", temp_shm.display(), e);
+                }
             }
 
             Ok(())
@@ -213,14 +230,32 @@ where
             error!("Error: {}", e);
 
             // 清理临时文件
-            let _ = fs::remove_file(&temp_db_path);
+            if let Err(e) = fs::remove_file(&temp_db_path) {
+                tracing::debug!(
+                    "发生错误后清理临时主数据库文件 '{}' 失败: {}",
+                    temp_db_path.display(),
+                    e
+                );
+            }
             let temp_wal = temp_db_path.with_extension("sqlite-wal");
             let temp_shm = temp_db_path.with_extension("sqlite-shm");
             if temp_wal.exists() {
-                let _ = fs::remove_file(temp_wal);
+                if let Err(e) = fs::remove_file(&temp_wal) {
+                    tracing::debug!(
+                        "发生错误后清理临时 WAL 文件 '{}' 失败: {}",
+                        temp_wal.display(),
+                        e
+                    );
+                }
             }
             if temp_shm.exists() {
-                let _ = fs::remove_file(temp_shm);
+                if let Err(e) = fs::remove_file(&temp_shm) {
+                    tracing::debug!(
+                        "发生错误后清理临时 SHM 文件 '{}' 失败: {}",
+                        temp_shm.display(),
+                        e
+                    );
+                }
             }
 
             Err(e)

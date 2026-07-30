@@ -32,12 +32,19 @@ pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<D
     let mut downloads = Vec::new();
 
     let rows = stmt.query_map([], |row| {
+        let end_time = match row.get::<_, Option<i64>>(4)? {
+            Some(t) => t,
+            None => {
+                tracing::debug!("下载记录的 end_time 列为 NULL，默认为 0");
+                0
+            }
+        };
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
             row.get::<_, i64>(3)?,
-            row.get::<_, i64>(4).unwrap_or(0),
+            end_time,
             row.get::<_, i32>(5)?,
         ))
     })?;
@@ -45,10 +52,16 @@ pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<D
     for row in rows {
         let (url, target_path, total_bytes, start_time, end_time, state) = row?;
 
-        let filename = Path::new(&target_path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let filename = match Path::new(&target_path).file_name() {
+            Some(n) => n.to_string_lossy().to_string(),
+            None => {
+                tracing::warn!(
+                    "下载路径 '{}' 无法提取文件名，已显式跳过此条目",
+                    target_path
+                );
+                continue;
+            }
+        };
 
         let state_str = match state {
             0 => "In Progress",

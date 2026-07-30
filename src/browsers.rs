@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Bookmark {
     pub id: String,
     pub title: String,
     pub url: Option<String>,
     pub folder: bool,
-    pub children: Vec<Bookmark>,
+    pub children: Vec<Self>,
     pub date_added: Option<i64>,
     pub date_modified: Option<i64>,
 }
@@ -97,15 +97,15 @@ pub enum BrowserType {
 }
 
 impl BrowserType {
-    pub fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self {
-            BrowserType::Waterfox => "Waterfox",
-            BrowserType::Safari => "Safari",
-            BrowserType::Brave => "Brave",
-            BrowserType::BraveNightly => "Brave Nightly",
-            BrowserType::Chrome => "Chrome",
-            BrowserType::FirefoxNightly => "Firefox Nightly",
-            BrowserType::LibreWolf => "LibreWolf",
+            Self::Waterfox => "Waterfox",
+            Self::Safari => "Safari",
+            Self::Brave => "Brave",
+            Self::BraveNightly => "Brave Nightly",
+            Self::Chrome => "Chrome",
+            Self::FirefoxNightly => "Firefox Nightly",
+            Self::LibreWolf => "LibreWolf",
         }
     }
 }
@@ -202,7 +202,7 @@ impl BrowserAdapter for WaterfoxAdapter {
         // Find first profile with valid (non-empty) places.sqlite
         let valid = profiles
             .iter()
-            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            .find(|p| p.exists() && p.metadata().is_ok_and(|m| m.len() > 0))
             .or_else(|| profiles.first());
         Ok(valid
             .ok_or_else(|| anyhow::anyhow!("No Waterfox profiles found"))?
@@ -213,7 +213,7 @@ impl BrowserAdapter for WaterfoxAdapter {
         // Only read from default profile (first one with valid data)
         let profiles = self.detect_all_profiles()?;
 
-        for profile_path in profiles.iter() {
+        for profile_path in &profiles {
             match read_firefox_bookmarks(profile_path) {
                 Ok(bookmarks) if !bookmarks.is_empty() => {
                     // 🔧 FIX: Use recursive count, not just top-level count
@@ -239,11 +239,11 @@ impl BrowserAdapter for WaterfoxAdapter {
         let profiles = self.detect_all_profiles()?;
         let valid_profile = profiles
             .iter()
-            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            .find(|p| p.exists() && p.metadata().is_ok_and(|m| m.len() > 0))
             .ok_or_else(|| anyhow::anyhow!("No valid Waterfox profile found"))?;
 
         match write_firefox_bookmarks(valid_profile, bookmarks) {
-            Ok(_) => {
+            Ok(()) => {
                 info!(
                     "✅ Wrote {} bookmarks to Waterfox (Default)",
                     bookmarks.len()
@@ -275,7 +275,7 @@ impl BrowserAdapter for WaterfoxAdapter {
         // Only read from default profile (first valid one) for performance
         let profiles = self.detect_all_profiles()?;
 
-        for profile_path in profiles.iter() {
+        for profile_path in &profiles {
             match read_firefox_history(profile_path, days) {
                 Ok(history) if !history.is_empty() => {
                     info!("✅ Waterfox (Default): {} history items", history.len());
@@ -294,11 +294,11 @@ impl BrowserAdapter for WaterfoxAdapter {
         let profiles = self.detect_all_profiles()?;
         let valid_profile = profiles
             .iter()
-            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            .find(|p| p.exists() && p.metadata().is_ok_and(|m| m.len() > 0))
             .ok_or_else(|| anyhow::anyhow!("No valid Waterfox profile found"))?;
 
         match write_firefox_history(valid_profile, items) {
-            Ok(_) => info!(
+            Ok(()) => info!(
                 "✅ Wrote {} history items to Waterfox (Default)",
                 items.len()
             ),
@@ -315,7 +315,7 @@ impl BrowserAdapter for WaterfoxAdapter {
         // Only read from default profile for performance
         let profiles = self.detect_all_profiles()?;
 
-        for profile_path in profiles.iter() {
+        for profile_path in &profiles {
             let cookies_path = profile_path
                 .parent()
                 .ok_or_else(|| anyhow::anyhow!("Invalid profile path"))?
@@ -340,7 +340,7 @@ impl BrowserAdapter for WaterfoxAdapter {
         // Only write to default profile
         let profiles = self.detect_all_profiles()?;
 
-        for profile_path in profiles.iter() {
+        for profile_path in &profiles {
             let cookies_path = profile_path
                 .parent()
                 .ok_or_else(|| anyhow::anyhow!("Invalid profile path"))?
@@ -348,7 +348,7 @@ impl BrowserAdapter for WaterfoxAdapter {
 
             if cookies_path.exists() {
                 match write_firefox_cookies(&cookies_path, cookies) {
-                    Ok(_) => {
+                    Ok(()) => {
                         info!("✅ Wrote {} cookies to Waterfox (Default)", cookies.len());
                         return Ok(());
                     }
@@ -366,8 +366,7 @@ impl WaterfoxAdapter {
         {
             let home = std::env::var("HOME")?;
             let profiles_dir = PathBuf::from(format!(
-                "{}/Library/Application Support/Waterfox/Profiles",
-                home
+                "{home}/Library/Application Support/Waterfox/Profiles"
             ));
 
             if !profiles_dir.exists() {
@@ -413,7 +412,7 @@ impl BrowserAdapter for SafariAdapter {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
-            let path = PathBuf::from(format!("{}/Library/Safari/Bookmarks.plist", home));
+            let path = PathBuf::from(format!("{home}/Library/Safari/Bookmarks.plist"));
 
             if !path.exists() {
                 anyhow::bail!("Safari bookmarks file not found");
@@ -499,7 +498,7 @@ impl BrowserAdapter for SafariAdapter {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
-            let path = PathBuf::from(format!("{}/Library/Safari/Bookmarks.plist", home));
+            let path = PathBuf::from(format!("{home}/Library/Safari/Bookmarks.plist"));
 
             if !path.exists() {
                 anyhow::bail!("Safari bookmarks file not found");
@@ -524,7 +523,7 @@ impl BrowserAdapter for SafariAdapter {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
-            let path = PathBuf::from(format!("{}/Library/Safari/Bookmarks.plist", home));
+            let path = PathBuf::from(format!("{home}/Library/Safari/Bookmarks.plist"));
 
             // Backup first
             self.backup_bookmarks()?;
@@ -559,7 +558,7 @@ impl BrowserAdapter for SafariAdapter {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
-            let history_path = PathBuf::from(format!("{}/Library/Safari/History.db", home));
+            let history_path = PathBuf::from(format!("{home}/Library/Safari/History.db"));
 
             if !history_path.exists() {
                 anyhow::bail!("Safari history database not found");
@@ -578,7 +577,7 @@ impl BrowserAdapter for SafariAdapter {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
-            let history_path = PathBuf::from(format!("{}/Library/Safari/History.db", home));
+            let history_path = PathBuf::from(format!("{home}/Library/Safari/History.db"));
 
             write_safari_history(&history_path, items)
         }
@@ -593,13 +592,10 @@ impl BrowserAdapter for SafariAdapter {
 // Helper function to detect all Chromium profiles
 fn detect_chromium_profiles(browser_dir: &str) -> Result<Vec<PathBuf>> {
     let home = std::env::var("HOME")?;
-    let base_dir = PathBuf::from(format!(
-        "{}/Library/Application Support/{}",
-        home, browser_dir
-    ));
+    let base_dir = PathBuf::from(format!("{home}/Library/Application Support/{browser_dir}"));
 
     if !base_dir.exists() {
-        anyhow::bail!("{} directory not found", browser_dir);
+        anyhow::bail!("{browser_dir} directory not found");
     }
 
     let mut profiles = Vec::new();
@@ -622,7 +618,7 @@ fn detect_chromium_profiles(browser_dir: &str) -> Result<Vec<PathBuf>> {
     }
 
     if profiles.is_empty() {
-        anyhow::bail!("No {} profiles found", browser_dir);
+        anyhow::bail!("No {browser_dir} profiles found");
     }
 
     info!("🔍 Found {} profile(s) in {}", profiles.len(), browser_dir);
@@ -727,12 +723,7 @@ impl BrowserAdapter for BraveAdapter {
             .ok_or_else(|| anyhow::anyhow!("No Brave profiles found"))?;
 
         let history_path = default_profile.join("History");
-        if history_path.exists()
-            && history_path
-                .metadata()
-                .map(|m| m.len() > 0)
-                .unwrap_or(false)
-        {
+        if history_path.exists() && history_path.metadata().is_ok_and(|m| m.len() > 0) {
             match read_chromium_history(&history_path, days) {
                 Ok(history) => {
                     info!("✅ Brave (Default): {} history items", history.len());
@@ -755,7 +746,7 @@ impl BrowserAdapter for BraveAdapter {
         let history_path = default_profile.join("History");
         if history_path.exists() {
             match write_chromium_history(&history_path, items) {
-                Ok(_) => info!("✅ Wrote {} history items to Brave (Default)", items.len()),
+                Ok(()) => info!("✅ Wrote {} history items to Brave (Default)", items.len()),
                 Err(e) => warn!("⚠️  Failed to write history to Brave: {}", e),
             }
         }
@@ -797,7 +788,7 @@ impl BrowserAdapter for BraveAdapter {
         let cookies_path = default_profile.join("Cookies");
         if cookies_path.exists() {
             match write_chromium_cookies(&cookies_path, cookies) {
-                Ok(_) => info!("✅ Wrote {} cookies to Brave (Default)", cookies.len()),
+                Ok(()) => info!("✅ Wrote {} cookies to Brave (Default)", cookies.len()),
                 Err(e) => warn!("⚠️  Failed to write cookies to Brave: {}", e),
             }
         }
@@ -903,12 +894,7 @@ impl BrowserAdapter for BraveNightlyAdapter {
             .ok_or_else(|| anyhow::anyhow!("No Brave Nightly profiles found"))?;
 
         let history_path = default_profile.join("History");
-        if history_path.exists()
-            && history_path
-                .metadata()
-                .map(|m| m.len() > 0)
-                .unwrap_or(false)
-        {
+        if history_path.exists() && history_path.metadata().is_ok_and(|m| m.len() > 0) {
             match read_chromium_history(&history_path, days) {
                 Ok(history) => {
                     info!(
@@ -934,7 +920,7 @@ impl BrowserAdapter for BraveNightlyAdapter {
         let history_path = default_profile.join("History");
         if history_path.exists() {
             match write_chromium_history(&history_path, items) {
-                Ok(_) => info!(
+                Ok(()) => info!(
                     "✅ Wrote {} history items to Brave Nightly (Default)",
                     items.len()
                 ),
@@ -979,7 +965,7 @@ impl BrowserAdapter for BraveNightlyAdapter {
         let cookies_path = default_profile.join("Cookies");
         if cookies_path.exists() {
             match write_chromium_cookies(&cookies_path, cookies) {
-                Ok(_) => info!(
+                Ok(()) => info!(
                     "✅ Wrote {} cookies to Brave Nightly (Default)",
                     cookies.len()
                 ),
@@ -1088,12 +1074,7 @@ impl BrowserAdapter for ChromeAdapter {
             .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
 
         let history_path = default_profile.join("History");
-        if history_path.exists()
-            && history_path
-                .metadata()
-                .map(|m| m.len() > 0)
-                .unwrap_or(false)
-        {
+        if history_path.exists() && history_path.metadata().is_ok_and(|m| m.len() > 0) {
             match read_chromium_history(&history_path, days) {
                 Ok(history) => {
                     info!("✅ Chrome (Default): {} history items", history.len());
@@ -1116,7 +1097,7 @@ impl BrowserAdapter for ChromeAdapter {
         let history_path = default_profile.join("History");
         if history_path.exists() {
             match write_chromium_history(&history_path, items) {
-                Ok(_) => info!("✅ Wrote {} history items to Chrome (Default)", items.len()),
+                Ok(()) => info!("✅ Wrote {} history items to Chrome (Default)", items.len()),
                 Err(e) => warn!("⚠️  Failed to write history to Chrome: {}", e),
             }
         }
@@ -1158,7 +1139,7 @@ impl BrowserAdapter for ChromeAdapter {
         let cookies_path = default_profile.join("Cookies");
         if cookies_path.exists() {
             match write_chromium_cookies(&cookies_path, cookies) {
-                Ok(_) => info!("✅ Wrote {} cookies to Chrome (Default)", cookies.len()),
+                Ok(()) => info!("✅ Wrote {} cookies to Chrome (Default)", cookies.len()),
                 Err(e) => warn!("⚠️  Failed to write cookies to Chrome: {}", e),
             }
         }
@@ -1230,8 +1211,7 @@ impl BrowserAdapter for FirefoxNightlyAdapter {
         {
             let home = std::env::var("HOME")?;
             let path = PathBuf::from(format!(
-                "{}/Library/Application Support/Firefox/Profiles",
-                home
+                "{home}/Library/Application Support/Firefox/Profiles"
             ));
 
             if !path.exists() {
@@ -1298,8 +1278,7 @@ impl FirefoxNightlyAdapter {
         {
             let home = std::env::var("HOME")?;
             let path = PathBuf::from(format!(
-                "{}/Library/Application Support/Firefox/Profiles",
-                home
+                "{home}/Library/Application Support/Firefox/Profiles"
             ));
 
             if !path.exists() {
@@ -1345,7 +1324,7 @@ impl BrowserAdapter for LibreWolfAdapter {
         let profiles = self.detect_all_profiles()?;
         let valid = profiles
             .iter()
-            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            .find(|p| p.exists() && p.metadata().is_ok_and(|m| m.len() > 0))
             .or_else(|| profiles.first());
         Ok(valid
             .ok_or_else(|| anyhow::anyhow!("No LibreWolf profiles found"))?
@@ -1355,7 +1334,7 @@ impl BrowserAdapter for LibreWolfAdapter {
     fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
         let profiles = self.detect_all_profiles()?;
 
-        for profile_path in profiles.iter() {
+        for profile_path in &profiles {
             match read_firefox_bookmarks(profile_path) {
                 Ok(bookmarks) if !bookmarks.is_empty() => {
                     let count = count_bookmarks(&bookmarks);
@@ -1384,11 +1363,11 @@ impl BrowserAdapter for LibreWolfAdapter {
         let profiles = self.detect_all_profiles()?;
         let valid_profile = profiles
             .iter()
-            .find(|p| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+            .find(|p| p.exists() && p.metadata().is_ok_and(|m| m.len() > 0))
             .ok_or_else(|| anyhow::anyhow!("No valid LibreWolf profile found"))?;
 
         match write_firefox_bookmarks(valid_profile, bookmarks) {
-            Ok(_) => info!("✅ Wrote {} bookmarks to LibreWolf", bookmarks.len()),
+            Ok(()) => info!("✅ Wrote {} bookmarks to LibreWolf", bookmarks.len()),
             Err(e) => warn!("⚠️  Failed to write to LibreWolf: {}", e),
         }
         Ok(())
@@ -1412,8 +1391,7 @@ impl LibreWolfAdapter {
         {
             let home = std::env::var("HOME")?;
             let path = PathBuf::from(format!(
-                "{}/Library/Application Support/LibreWolf/Profiles",
-                home
+                "{home}/Library/Application Support/LibreWolf/Profiles"
             ));
 
             if !path.exists() {
@@ -1575,7 +1553,7 @@ fn parse_safari_bookmark_node(node: &plist::Value) -> Option<Bookmark> {
             let url = dict
                 .get("URLString")
                 .and_then(|v| v.as_string())
-                .map(|s| s.to_string());
+                .map(ToString::to_string);
 
             Some(Bookmark {
                 id: uuid,
@@ -1647,7 +1625,7 @@ fn bookmarks_to_safari_plist(bookmarks: &[Bookmark]) -> Result<plist::Value> {
         "WebBookmarkType".to_string(),
         Value::String("WebBookmarkTypeList".to_string()),
     );
-    root.insert("Title".to_string(), Value::String("".to_string()));
+    root.insert("Title".to_string(), Value::String(String::new()));
     root.insert(
         "WebBookmarkUUID".to_string(),
         Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()),
@@ -1705,9 +1683,13 @@ fn parse_chromium_bookmarks(json: &serde_json::Value) -> Result<Vec<Bookmark>> {
     let mut bookmarks = Vec::new();
 
     if let Some(roots) = json.get("roots") {
-        // Parse all root folders
-        for (_key, root) in roots.as_object().unwrap_or(&serde_json::Map::new()) {
-            parse_chromium_node_recursive(root, &mut bookmarks)?;
+        if let Some(roots_map) = roots.as_object() {
+            // Parse all root folders
+            for (_key, root) in roots_map {
+                parse_chromium_node_recursive(root, &mut bookmarks)?;
+            }
+        } else {
+            tracing::warn!("Chromium 书签 JSON 中的 'roots' 字段不是一个合法 JSON 对象");
         }
     }
 
@@ -1736,17 +1718,37 @@ fn parse_chromium_node_recursive(
                 url: child
                     .get("url")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
+                    .map(ToString::to_string),
                 folder: is_folder,
                 children: vec![],
                 date_added: child
                     .get("date_added")
                     .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse().ok()),
+                    .and_then(|s| match s.parse::<i64>() {
+                        Ok(val) => Some(val),
+                        Err(e) => {
+                            tracing::warn!(
+                                "解析 Chromium 书签 date_added 时间戳 '{}' 失败: {}",
+                                s,
+                                e
+                            );
+                            None
+                        }
+                    }),
                 date_modified: child
                     .get("date_modified")
                     .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse().ok()),
+                    .and_then(|s| match s.parse::<i64>() {
+                        Ok(val) => Some(val),
+                        Err(e) => {
+                            tracing::warn!(
+                                "解析 Chromium 书签 date_modified 时间戳 '{}' 失败: {}",
+                                s,
+                                e
+                            );
+                            None
+                        }
+                    }),
             };
 
             // Recursively parse children if it's a folder
@@ -1849,15 +1851,36 @@ fn bookmarks_to_chromium_json(bookmarks: &[Bookmark]) -> Result<serde_json::Valu
 }
 
 // Firefox SQLite helper functions
-fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>> {
+pub fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>> {
     use rusqlite::{Connection, OpenFlags};
     use std::collections::HashMap;
 
-    // Use read-only mode to avoid locking issues
-    let conn = Connection::open_with_flags(
+    // Use read-only mode to avoid locking issues; fallback to temp WAL snapshot if busy
+    let conn = match Connection::open_with_flags(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("⚠️ 运行中的 Firefox/Waterfox 数据库被独占锁阻塞 ({})，自动建立临时 WAL 快照读取...", e);
+            let temp_dir = std::env::temp_dir().join(format!("bsync_ff_{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&temp_dir)?;
+            let temp_db = temp_dir.join("places.sqlite");
+            std::fs::copy(db_path, &temp_db)?;
+            let wal_path = db_path.with_file_name("places.sqlite-wal");
+            let shm_path = db_path.with_file_name("places.sqlite-shm");
+            if wal_path.exists() {
+                let _ = std::fs::copy(&wal_path, temp_dir.join("places.sqlite-wal"));
+            }
+            if shm_path.exists() {
+                let _ = std::fs::copy(&shm_path, temp_dir.join("places.sqlite-shm"));
+            }
+            Connection::open_with_flags(
+                &temp_db,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?
+        }
+    };
 
     // Read all bookmarks with parent info
     // type=1: bookmark, type=2: folder
@@ -1883,7 +1906,13 @@ fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>> {
             id,
             Bookmark {
                 id: id.to_string(),
-                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                title: match row.get::<_, Option<String>>(1)? {
+                    Some(t) => t,
+                    None => {
+                        tracing::debug!("Safari 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
+                        String::new()
+                    }
+                },
                 url: row.get::<_, Option<String>>(2)?,
                 folder: bookmark_type == 2,
                 children: vec![],
@@ -2009,7 +2038,7 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
                 // Generate a unique GUID for the folder
                 let guid = format!(
                     "folder_{}",
-                    &uuid::Uuid::new_v4().to_string().replace("-", "")[..12]
+                    &uuid::Uuid::new_v4().to_string().replace('-', "")[..12]
                 );
 
                 // Insert folder
@@ -2039,7 +2068,7 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
                 // Generate a unique GUID for the bookmark
                 let guid = format!(
                     "bkmk_{}",
-                    &uuid::Uuid::new_v4().to_string().replace("-", "")[..12]
+                    &uuid::Uuid::new_v4().to_string().replace('-', "")[..12]
                 );
 
                 // First, ensure the URL exists in moz_places
@@ -2105,7 +2134,7 @@ fn read_firefox_history(db_path: &std::path::Path, days: Option<i32>) -> Result<
     // Calculate timestamp for filtering (microseconds since epoch)
     let cutoff_timestamp = if let Some(days) = days {
         let now = chrono::Utc::now();
-        let cutoff = now - chrono::Duration::days(days as i64);
+        let cutoff = now - chrono::Duration::days(i64::from(days));
         Some(cutoff.timestamp_micros())
     } else {
         None
@@ -2116,10 +2145,9 @@ fn read_firefox_history(db_path: &std::path::Path, days: Option<i32>) -> Result<
             "SELECT p.url, p.title, p.visit_count, MAX(v.visit_date) as last_visit
              FROM moz_places p
              JOIN moz_historyvisits v ON p.id = v.place_id
-             WHERE v.visit_date > {}
+             WHERE v.visit_date > {cutoff}
              GROUP BY p.id
-             ORDER BY last_visit DESC",
-            cutoff
+             ORDER BY last_visit DESC"
         )
     } else {
         "SELECT p.url, p.title, p.visit_count, MAX(v.visit_date) as last_visit
@@ -2211,7 +2239,7 @@ pub(crate) fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<Read
 
                             let date_added = child_dict
                                 .get("ReadingListDateAdded")
-                                .and_then(|v| v.as_date())
+                                .and_then(plist::Value::as_date)
                                 .map(|d| {
                                     // Convert plist::Date to timestamp using chrono
                                     use chrono::{DateTime, Utc};
@@ -2247,6 +2275,27 @@ pub(crate) fn update_safari_reading_list(
     Ok(())
 }
 
+// Explicit, logged epoch calculations
+fn chromium_epoch() -> chrono::DateTime<chrono::Utc> {
+    chrono::NaiveDate::from_ymd_opt(1601, 1, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|dt| dt.and_utc())
+        .unwrap_or_else(|| {
+            warn!("无法构造 Chromium 纪元时间 (1601-01-01)，显式回退至 UNIX_EPOCH");
+            chrono::DateTime::UNIX_EPOCH
+        })
+}
+
+fn safari_epoch() -> chrono::DateTime<chrono::Utc> {
+    chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|dt| dt.and_utc())
+        .unwrap_or_else(|| {
+            warn!("无法构造 Safari 纪元时间 (2001-01-01)，显式回退至 UNIX_EPOCH");
+            chrono::DateTime::UNIX_EPOCH
+        })
+}
+
 // Chromium history helper functions
 fn read_chromium_history(db_path: &std::path::Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
     use rusqlite::{Connection, OpenFlags};
@@ -2261,13 +2310,9 @@ fn read_chromium_history(db_path: &std::path::Path, days: Option<i32>) -> Result
     // Calculate timestamp for filtering (microseconds since epoch for Chromium)
     let cutoff_timestamp = if let Some(days) = days {
         let now = chrono::Utc::now();
-        let cutoff = now - chrono::Duration::days(days as i64);
+        let cutoff = now - chrono::Duration::days(i64::from(days));
         // Chromium uses microseconds since 1601-01-01
-        let chromium_epoch = chrono::NaiveDate::from_ymd_opt(1601, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc();
+        let chromium_epoch = chromium_epoch();
         let duration = cutoff.signed_duration_since(chromium_epoch);
         Some(duration.num_microseconds().unwrap_or(0))
     } else {
@@ -2278,9 +2323,8 @@ fn read_chromium_history(db_path: &std::path::Path, days: Option<i32>) -> Result
         format!(
             "SELECT url, title, visit_count, last_visit_time
              FROM urls
-             WHERE last_visit_time > {}
-             ORDER BY last_visit_time DESC",
-            cutoff
+             WHERE last_visit_time > {cutoff}
+             ORDER BY last_visit_time DESC"
         )
     } else {
         "SELECT url, title, visit_count, last_visit_time
@@ -2368,13 +2412,9 @@ fn read_safari_history(db_path: &std::path::Path, days: Option<i32>) -> Result<V
     // Safari uses Core Data timestamp (seconds since 2001-01-01)
     let cutoff_timestamp = if let Some(days) = days {
         let now = chrono::Utc::now();
-        let cutoff = now - chrono::Duration::days(days as i64);
+        let cutoff = now - chrono::Duration::days(i64::from(days));
         // Convert to Safari timestamp (seconds since 2001-01-01 00:00:00 UTC)
-        let safari_epoch = chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc();
+        let safari_epoch = safari_epoch();
         let duration = cutoff.signed_duration_since(safari_epoch);
         Some(duration.num_seconds() as f64)
     } else {
@@ -2386,10 +2426,9 @@ fn read_safari_history(db_path: &std::path::Path, days: Option<i32>) -> Result<V
             "SELECT i.url, v.title, i.visit_count, MAX(v.visit_time) as last_visit
              FROM history_items i
              JOIN history_visits v ON i.id = v.history_item
-             WHERE v.visit_time > {}
+             WHERE v.visit_time > {cutoff}
              GROUP BY i.id
-             ORDER BY last_visit DESC",
-            cutoff
+             ORDER BY last_visit DESC"
         )
     } else {
         "SELECT i.url, v.title, i.visit_count, MAX(v.visit_time) as last_visit
@@ -2404,11 +2443,7 @@ fn read_safari_history(db_path: &std::path::Path, days: Option<i32>) -> Result<V
     let history_iter = stmt.query_map([], |row| {
         // Convert Safari timestamp to Unix timestamp (milliseconds)
         let safari_time: f64 = row.get(3)?;
-        let safari_epoch = chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc();
+        let safari_epoch = safari_epoch();
         let unix_time = safari_epoch.timestamp_millis() + (safari_time * 1000.0) as i64;
 
         Ok(HistoryItem {
@@ -2454,11 +2489,7 @@ fn write_safari_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Res
         // Insert visit record
         if let Some(last_visit) = item.last_visit {
             // Convert Unix timestamp to Safari timestamp
-            let safari_epoch = chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
-                .unwrap()
-                .and_hms_opt(0, 0, 0)
-                .unwrap()
-                .and_utc();
+            let safari_epoch = safari_epoch();
             let safari_time = (last_visit - safari_epoch.timestamp_millis()) as f64 / 1000.0;
 
             conn.execute(
@@ -2532,8 +2563,8 @@ pub(crate) fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie
                     cookie.expiry.unwrap_or(0),
                     now,
                     now,
-                    if cookie.is_secure { 1 } else { 0 },
-                    if cookie.is_http_only { 1 } else { 0 },
+                    i32::from(cookie.is_secure),
+                    i32::from(cookie.is_http_only),
                 ],
             )?;
         }
@@ -2602,8 +2633,8 @@ pub(crate) fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cooki
                 &cookie.value,
                 &cookie.path,
                 cookie.expiry.unwrap_or(0),
-                if cookie.is_secure { 1 } else { 0 },
-                if cookie.is_http_only { 1 } else { 0 },
+                i32::from(cookie.is_secure),
+                i32::from(cookie.is_http_only),
                 now,
                 now,
             ],
@@ -2656,7 +2687,9 @@ pub(crate) fn read_chromium_passwords(db_path: &std::path::Path) -> Result<Vec<S
     }
 
     // Cleanup temp file
-    let _ = std::fs::remove_file(&temp_db);
+    if let Err(e) = std::fs::remove_file(&temp_db) {
+        tracing::debug!("清理临时密码文件 '{}' 失败: {}", temp_db.display(), e);
+    }
 
     debug!(
         "Read {} password entries from Chromium database (ENCRYPTED)",
@@ -2728,19 +2761,19 @@ pub(crate) fn read_chromium_extensions(
                         let description = manifest
                             .get("description")
                             .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
+                            .map(ToString::to_string);
 
                         let homepage_url = manifest
                             .get("homepage_url")
                             .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
+                            .map(ToString::to_string);
 
                         let permissions: Vec<String> = manifest
                             .get("permissions")
                             .and_then(|v| v.as_array())
                             .map(|arr| {
                                 arr.iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .filter_map(|v| v.as_str().map(ToString::to_string))
                                     .collect()
                             })
                             .unwrap_or_default();

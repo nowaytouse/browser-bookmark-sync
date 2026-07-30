@@ -31,142 +31,133 @@ impl BookmarkCollector {
                 "Google Chrome",
                 BrowserKind::Chromium("Chrome".into()),
                 None,
-                format!("{}/Library/Application Support/Google/Chrome", home),
+                format!("{home}/Library/Application Support/Google/Chrome"),
             ),
             (
                 "Google Chrome Beta",
                 BrowserKind::Chromium("Chrome Beta".into()),
                 Some("Beta".into()),
-                format!("{}/Library/Application Support/Google/Chrome Beta", home),
+                format!("{home}/Library/Application Support/Google/Chrome Beta"),
             ),
             (
                 "Google Chrome Dev",
                 BrowserKind::Chromium("Chrome Dev".into()),
                 Some("Dev".into()),
-                format!("{}/Library/Application Support/Google/Chrome Dev", home),
+                format!("{home}/Library/Application Support/Google/Chrome Dev"),
             ),
             (
                 "Google Chrome Canary",
                 BrowserKind::Chromium("Chrome Canary".into()),
                 Some("Canary".into()),
-                format!("{}/Library/Application Support/Google/Chrome Canary", home),
+                format!("{home}/Library/Application Support/Google/Chrome Canary"),
             ),
             (
                 "Brave",
                 BrowserKind::Chromium("Brave".into()),
                 None,
-                format!(
-                    "{}/Library/Application Support/BraveSoftware/Brave-Browser",
-                    home
-                ),
+                format!("{home}/Library/Application Support/BraveSoftware/Brave-Browser"),
             ),
             (
                 "Brave Beta",
                 BrowserKind::Chromium("Brave Beta".into()),
                 Some("Beta".into()),
-                format!(
-                    "{}/Library/Application Support/BraveSoftware/Brave-Browser-Beta",
-                    home
-                ),
+                format!("{home}/Library/Application Support/BraveSoftware/Brave-Browser-Beta"),
             ),
             (
                 "Brave Nightly",
                 BrowserKind::Chromium("Brave Nightly".into()),
                 Some("Nightly".into()),
-                format!(
-                    "{}/Library/Application Support/BraveSoftware/Brave-Browser-Nightly",
-                    home
-                ),
+                format!("{home}/Library/Application Support/BraveSoftware/Brave-Browser-Nightly"),
             ),
             (
                 "Microsoft Edge",
                 BrowserKind::Chromium("Edge".into()),
                 None,
-                format!("{}/Library/Application Support/Microsoft Edge", home),
+                format!("{home}/Library/Application Support/Microsoft Edge"),
             ),
             (
                 "Microsoft Edge Beta",
                 BrowserKind::Chromium("Edge Beta".into()),
                 Some("Beta".into()),
-                format!("{}/Library/Application Support/Microsoft Edge Beta", home),
+                format!("{home}/Library/Application Support/Microsoft Edge Beta"),
             ),
             (
                 "Microsoft Edge Dev",
                 BrowserKind::Chromium("Edge Dev".into()),
                 Some("Dev".into()),
-                format!("{}/Library/Application Support/Microsoft Edge Dev", home),
+                format!("{home}/Library/Application Support/Microsoft Edge Dev"),
             ),
             (
                 "Microsoft Edge Canary",
                 BrowserKind::Chromium("Edge Canary".into()),
                 Some("Canary".into()),
-                format!("{}/Library/Application Support/Microsoft Edge Canary", home),
+                format!("{home}/Library/Application Support/Microsoft Edge Canary"),
             ),
             (
                 "Chromium",
                 BrowserKind::Chromium("Chromium".into()),
                 None,
-                format!("{}/Library/Application Support/Chromium", home),
+                format!("{home}/Library/Application Support/Chromium"),
             ),
             (
                 "Arc",
                 BrowserKind::Chromium("Arc".into()),
                 None,
-                format!("{}/Library/Application Support/Arc/User Data", home),
+                format!("{home}/Library/Application Support/Arc/User Data"),
             ),
             (
                 "Vivaldi",
                 BrowserKind::Chromium("Vivaldi".into()),
                 None,
-                format!("{}/Library/Application Support/Vivaldi", home),
+                format!("{home}/Library/Application Support/Vivaldi"),
             ),
             (
                 "Firefox",
                 BrowserKind::Firefox("Firefox".into()),
                 None,
-                format!("{}/Library/Application Support/Firefox", home),
+                format!("{home}/Library/Application Support/Firefox"),
             ),
             (
                 "Firefox Developer Edition",
                 BrowserKind::Firefox("Firefox Developer Edition".into()),
                 Some("Developer Edition".into()),
-                format!("{}/Library/Application Support/Firefox/Profiles", home),
+                format!("{home}/Library/Application Support/Firefox/Profiles"),
             ),
             (
                 "Firefox Nightly",
                 BrowserKind::Firefox("Firefox Nightly".into()),
                 Some("Nightly".into()),
-                format!("{}/Library/Application Support/Firefox Nightly", home),
+                format!("{home}/Library/Application Support/Firefox Nightly"),
             ),
             (
                 "Waterfox",
                 BrowserKind::Firefox("Waterfox".into()),
                 None,
-                format!("{}/Library/Application Support/Waterfox", home),
+                format!("{home}/Library/Application Support/Waterfox"),
             ),
             (
                 "LibreWolf",
                 BrowserKind::Firefox("LibreWolf".into()),
                 None,
-                format!("{}/Library/Application Support/LibreWolf", home),
+                format!("{home}/Library/Application Support/LibreWolf"),
             ),
             (
                 "Floorp",
                 BrowserKind::Firefox("Floorp".into()),
                 None,
-                format!("{}/Library/Application Support/Floorp", home),
+                format!("{home}/Library/Application Support/Floorp"),
             ),
             (
                 "Zen Browser",
                 BrowserKind::Firefox("Zen".into()),
                 None,
-                format!("{}/Library/Application Support/zen", home),
+                format!("{home}/Library/Application Support/zen"),
             ),
             (
                 "Safari",
                 BrowserKind::Safari,
                 None,
-                format!("{}/Library/Safari/Bookmarks.plist", home),
+                format!("{home}/Library/Safari/Bookmarks.plist"),
             ),
         ];
 
@@ -596,9 +587,25 @@ impl BookmarkCollector {
             Ok((id, btype, title, url, date_added, date_modified))
         })?;
 
+        let parse_ts = |t: i64| match DateTime::from_timestamp_micros(t) {
+            Some(dt) => dt,
+            None => {
+                tracing::warn!("Firefox Places 时间戳 '{}' 微秒超出范围，回退至纪元零点", t);
+                DateTime::UNIX_EPOCH
+            }
+        };
+
         for (idx, r) in rows.flatten().enumerate() {
             let (id, btype, title_opt, url_opt, d_add, d_mod) = r;
-            let title = title_opt.unwrap_or_default();
+            let title = match title_opt {
+                Some(t) => t,
+                None => {
+                    if btype == 1 {
+                        tracing::debug!("Firefox 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
+                    }
+                    String::new()
+                }
+            };
 
             if btype == 1 {
                 // URL Bookmark
@@ -612,10 +619,8 @@ impl BookmarkCollector {
                         root_kind: BookmarkRootKind::BookmarkMenu,
                         folder_path: vec!["Firefox Places".into()],
                         original_position: idx,
-                        date_added: d_add
-                            .map(|t| DateTime::from_timestamp_micros(t).unwrap_or_default()),
-                        date_modified: d_mod
-                            .map(|t| DateTime::from_timestamp_micros(t).unwrap_or_default()),
+                        date_added: d_add.map(parse_ts),
+                        date_modified: d_mod.map(parse_ts),
                         metadata: BTreeMap::new(),
                     }));
                 }
@@ -629,10 +634,8 @@ impl BookmarkCollector {
                     source: source.clone(),
                     root_kind: BookmarkRootKind::BookmarkMenu,
                     original_position: idx,
-                    date_added: d_add
-                        .map(|t| DateTime::from_timestamp_micros(t).unwrap_or_default()),
-                    date_modified: d_mod
-                        .map(|t| DateTime::from_timestamp_micros(t).unwrap_or_default()),
+                    date_added: d_add.map(parse_ts),
+                    date_modified: d_mod.map(parse_ts),
                 }));
             } else if btype == 3 {
                 // Separator

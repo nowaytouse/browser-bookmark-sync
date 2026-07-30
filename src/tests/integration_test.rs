@@ -1,6 +1,13 @@
 // Integration tests for browser-bookmark-sync
 // Run with: cargo test --test integration_test
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::pedantic,
+    clippy::nursery
+)]
+
 use std::process::Command;
 
 fn run_cli(args: &[&str]) -> (bool, String, String) {
@@ -58,7 +65,7 @@ fn test_validate_command() {
 fn test_history_dry_run() {
     let (_success, stdout, stderr) = run_cli(&["history", "--dry-run"]);
 
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
     assert!(
         combined.contains("history") || combined.contains("History"),
         "Should mention history synchronization"
@@ -71,7 +78,7 @@ fn test_history_dry_run() {
 fn test_analyze_command() {
     let (_success, stdout, stderr) = run_cli(&["analyze"]);
 
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
     assert!(
         combined.contains("Analyzing")
             || combined.contains("Analysis")
@@ -86,7 +93,7 @@ fn test_analyze_command() {
 fn test_rules_command() {
     let (success, stdout, stderr) = run_cli(&["rules"]);
 
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
     assert!(
         success
             || combined.contains("rule")
@@ -102,7 +109,7 @@ fn test_rules_command() {
 fn test_help_commands() {
     // Test main help
     let (_, stdout, stderr) = run_cli(&["--help"]);
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
     assert!(
         combined.contains("export") && combined.contains("validate"),
         "Help should list available commands"
@@ -110,7 +117,7 @@ fn test_help_commands() {
 
     // Test export help
     let (_, stdout, stderr) = run_cli(&["export", "--help"]);
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
     assert!(
         combined.contains("bookmarks") || combined.contains("output") || combined.contains("HTML"),
         "export help should describe export functionality"
@@ -123,7 +130,7 @@ fn test_help_commands() {
 fn test_export_dry_check() {
     // Test that export command parses arguments correctly
     let (_, stdout, stderr) = run_cli(&["export", "--help"]);
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
 
     // Should show various export options
     assert!(

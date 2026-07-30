@@ -119,7 +119,7 @@ impl SyncFlags {
         }
         if self.history {
             if let Some(days) = self.history_days {
-                types.push(format!("History ({} days)", days).leak());
+                types.push(format!("History ({days} days)").leak());
             } else {
                 types.push("History (all)");
             }

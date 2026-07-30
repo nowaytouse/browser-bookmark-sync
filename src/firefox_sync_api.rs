@@ -4,11 +4,12 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Firefox Accounts配置
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct FirefoxAccountData {
     email: String,
     session_token: String,
@@ -30,6 +31,7 @@ struct OAuthToken {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct SignedInUser {
     version: u32,
     account_data: FirefoxAccountData,
@@ -44,6 +46,12 @@ pub struct FirefoxSyncAPIClient {
 }
 
 impl FirefoxSyncAPIClient {
+    /// 获取当前绑定的 Firefox Account 邮箱
+    #[must_use]
+    pub fn email(&self) -> &str {
+        &self.email
+    }
+
     /// 从Waterfox profile加载认证信息
     pub fn from_profile(profile_path: &Path) -> Result<Self> {
         let signed_in_user_path = profile_path.join("signedInUser.json");
@@ -95,8 +103,17 @@ impl FirefoxSyncAPIClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            bail!("Failed to get sync endpoint: {} - {}", status, body);
+            let body = match response.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    warn!(
+                        "读取 Firefox Sync 端点错误响应内容失败: {}，将记录占位状态",
+                        e
+                    );
+                    format!("[无法读取响应内容: {}]", e)
+                }
+            };
+            bail!("Failed to get sync endpoint: {status} - {body}");
         }
 
         let endpoint: SyncEndpoint = response
@@ -204,15 +221,23 @@ impl FirefoxSyncAPIClient {
         for (i, chunk) in bookmarks.chunks(batch_size).enumerate() {
             let url = format!("{}/storage/bookmarks", endpoint.api_endpoint);
 
-            let payload: Vec<_> = chunk
-                .iter()
-                .map(|b| {
-                    serde_json::json!({
-                        "id": b.id,
-                        "payload": serde_json::to_string(b).unwrap(),
-                    })
-                })
-                .collect();
+            let mut payload = Vec::with_capacity(chunk.len());
+            for b in chunk {
+                match serde_json::to_string(b) {
+                    Ok(serialized) => {
+                        payload.push(serde_json::json!({
+                            "id": b.id,
+                            "payload": serialized,
+                        }));
+                    }
+                    Err(e) => {
+                        warn!(
+                            "序列化书签失败 (id={}, title='{}'): {}，已显式跳过此条目上传",
+                            b.id, b.title, e
+                        );
+                    }
+                }
+            }
 
             debug!(
                 "   Uploading batch {}/{}",
@@ -231,8 +256,17 @@ impl FirefoxSyncAPIClient {
 
             if !response.status().is_success() {
                 let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                bail!("Failed to upload bookmarks: {} - {}", status, body);
+                let body = match response.text().await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        warn!(
+                            "读取 Firefox Sync 上传错误响应内容失败: {}，将记录占位状态",
+                            e
+                        );
+                        format!("[无法读取响应内容: {}]", e)
+                    }
+                };
+                bail!("Failed to upload bookmarks: {status} - {body}");
             }
 
             info!(
@@ -248,6 +282,7 @@ impl FirefoxSyncAPIClient {
 
 /// Sync端点信息
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct SyncEndpoint {
     api_endpoint: String,
     uid: String,

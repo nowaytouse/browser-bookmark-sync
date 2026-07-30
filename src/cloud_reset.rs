@@ -21,7 +21,7 @@ pub fn clear_local_bookmarks(db_path: &Path) -> Result<()> {
             [],
             |row| row.get(0),
         )
-        .unwrap_or(0);
+        .context("查询清空前的书签数量失败")?;
 
     info!("   Current bookmarks: {}", before_count);
 
@@ -37,7 +37,7 @@ pub fn clear_local_bookmarks(db_path: &Path) -> Result<()> {
     let orphans = conn.execute(
         "DELETE FROM moz_places WHERE id NOT IN (SELECT DISTINCT fk FROM moz_bookmarks WHERE fk IS NOT NULL) AND id NOT IN (SELECT DISTINCT place_id FROM moz_historyvisits)",
         [],
-    ).unwrap_or(0);
+    ).context("清理 moz_places 孤立记录失败")?;
 
     info!("   Cleaned {} orphan places", orphans);
 
@@ -48,7 +48,7 @@ pub fn clear_local_bookmarks(db_path: &Path) -> Result<()> {
             [],
             |row| row.get(0),
         )
-        .unwrap_or(0);
+        .context("查询清空后的书签数量失败")?;
 
     info!("   After cleanup: {} bookmarks", after_count);
 
@@ -78,10 +78,14 @@ pub fn wait_for_cloud_sync() -> Result<()> {
 
     print!("Press Enter when done...");
     use std::io::{self, Write};
-    io::stdout().flush().ok();
+    if let Err(e) = io::stdout().flush() {
+        tracing::debug!("标准输出缓冲区刷新失败: {}", e);
+    }
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input).ok();
+    if let Err(e) = io::stdin().read_line(&mut input) {
+        tracing::warn!("读取用户终端输入失败: {}", e);
+    }
 
     info!("✅ Continuing...");
 
@@ -98,7 +102,7 @@ pub fn verify_cleared(db_path: &Path) -> Result<bool> {
             [],
             |row| row.get(0),
         )
-        .unwrap_or(0);
+        .context("查询验证本地书签数量失败")?;
 
     info!("📊 Current bookmark count: {}", count);
 

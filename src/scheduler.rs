@@ -12,7 +12,7 @@ pub struct SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    pub fn new(cron: String, daemon: bool) -> Self {
+    pub const fn new(cron: String, daemon: bool) -> Self {
         Self {
             cron_expression: cron,
             daemon,

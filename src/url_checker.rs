@@ -47,25 +47,22 @@ pub enum ValidationStatus {
 
 impl ValidationStatus {
     /// 绝不误删判断：仅确定性资源不存在 (Invalid/NotFound/Gone) 允许自动清除建议
-    pub fn should_auto_delete(&self) -> bool {
-        matches!(
-            self,
-            ValidationStatus::Invalid | ValidationStatus::NotFound | ValidationStatus::Gone
-        )
+    pub const fn should_auto_delete(&self) -> bool {
+        matches!(self, Self::Invalid | Self::NotFound | Self::Gone)
     }
 
     /// 根据 HTTP 状态码与结果分类
-    pub fn classify_http_code(code: u16) -> Self {
+    pub const fn classify_http_code(code: u16) -> Self {
         match code {
-            200..=299 => ValidationStatus::Valid,
-            300..=399 => ValidationStatus::Redirected,
-            401 => ValidationStatus::AuthenticationRequired,
-            403 => ValidationStatus::ForbiddenOrBotBlocked,
-            404 => ValidationStatus::NotFound,
-            410 => ValidationStatus::Gone,
-            429 => ValidationStatus::RateLimited,
-            500..=599 => ValidationStatus::ServerError,
-            _ => ValidationStatus::Uncertain,
+            200..=299 => Self::Valid,
+            300..=399 => Self::Redirected,
+            401 => Self::AuthenticationRequired,
+            403 => Self::ForbiddenOrBotBlocked,
+            404 => Self::NotFound,
+            410 => Self::Gone,
+            429 => Self::RateLimited,
+            500..=599 => Self::ServerError,
+            _ => Self::Uncertain,
         }
     }
 
@@ -74,28 +71,28 @@ impl ValidationStatus {
         proxy_result: Option<&HttpResult>,
         direct_result: Option<&HttpResult>,
     ) -> Self {
-        let proxy_success = proxy_result.map(|r| r.is_success()).unwrap_or(false);
-        let direct_success = direct_result.map(|r| r.is_success()).unwrap_or(false);
+        let proxy_success = proxy_result.is_some_and(HttpResult::is_success);
+        let direct_success = direct_result.is_some_and(HttpResult::is_success);
 
         if proxy_success || direct_success {
-            return ValidationStatus::Valid;
+            return Self::Valid;
         }
 
-        let proxy_blocked = proxy_result.map(|r| r.is_blocked()).unwrap_or(false);
-        let direct_blocked = direct_result.map(|r| r.is_blocked()).unwrap_or(false);
+        let proxy_blocked = proxy_result.is_some_and(HttpResult::is_blocked);
+        let direct_blocked = direct_result.is_some_and(HttpResult::is_blocked);
 
         if proxy_blocked || direct_blocked {
-            return ValidationStatus::Uncertain;
+            return Self::Uncertain;
         }
 
-        let proxy_failed = proxy_result.map(|r| r.is_failure()).unwrap_or(false);
-        let direct_failed = direct_result.map(|r| r.is_failure()).unwrap_or(false);
+        let proxy_failed = proxy_result.is_some_and(HttpResult::is_failure);
+        let direct_failed = direct_result.is_some_and(HttpResult::is_failure);
 
         if proxy_failed && direct_failed {
-            return ValidationStatus::Invalid;
+            return Self::Invalid;
         }
 
-        ValidationStatus::Uncertain
+        Self::Uncertain
     }
 }
 
@@ -114,7 +111,7 @@ pub struct HttpResult {
 
 impl HttpResult {
     /// 创建成功结果
-    pub fn success(status_code: u16, latency_ms: u64) -> Self {
+    pub const fn success(status_code: u16, latency_ms: u64) -> Self {
         Self {
             status_code: Some(status_code),
             error: None,
@@ -124,7 +121,7 @@ impl HttpResult {
     }
 
     /// 创建失败结果
-    pub fn failure(error: String, latency_ms: u64) -> Self {
+    pub const fn failure(error: String, latency_ms: u64) -> Self {
         Self {
             status_code: None,
             error: Some(error),
@@ -185,7 +182,7 @@ impl HttpResult {
 
     /// 判断是否是"可能有效但被拦截"的状态码
     /// 这些状态码通常是 CF 验证、WAF、限流等，浏览器可能可以正常访问
-    pub fn is_blocked(&self) -> bool {
+    pub const fn is_blocked(&self) -> bool {
         match self.status_code {
             Some(code) => {
                 // 403 Forbidden - 可能是 CF 验证、WAF
@@ -239,16 +236,16 @@ impl UrlCheckResult {
             let mut errors = Vec::new();
             if let Some(ref pr) = proxy_result {
                 if let Some(ref e) = pr.error {
-                    errors.push(format!("Proxy: {}", e));
+                    errors.push(format!("Proxy: {e}"));
                 } else if let Some(code) = pr.status_code {
-                    errors.push(format!("Proxy: HTTP {}", code));
+                    errors.push(format!("Proxy: HTTP {code}"));
                 }
             }
             if let Some(ref dr) = direct_result {
                 if let Some(ref e) = dr.error {
-                    errors.push(format!("Direct: {}", e));
+                    errors.push(format!("Direct: {e}"));
                 } else if let Some(code) = dr.status_code {
-                    errors.push(format!("Direct: HTTP {}", code));
+                    errors.push(format!("Direct: HTTP {code}"));
                 }
             }
             if errors.is_empty() {
@@ -273,7 +270,7 @@ impl UrlCheckResult {
 /// URL检查器配置
 #[derive(Debug, Clone)]
 pub struct CheckerConfig {
-    /// 代理服务器URL (如 http://127.0.0.1:7890)
+    /// 代理服务器URL (如 <http://127.0.0.1:7890>)
     pub proxy_url: Option<String>,
     /// 请求超时秒数
     pub timeout_secs: u64,
@@ -349,7 +346,7 @@ impl CheckReport {
     }
 
     /// 验证数量一致性 (属性8)
-    pub fn is_consistent(&self) -> bool {
+    pub const fn is_consistent(&self) -> bool {
         self.valid_count + self.invalid_count + self.uncertain_count + self.skipped_count
             == self.total_checked
     }
@@ -658,12 +655,12 @@ impl UrlChecker {
     }
 
     /// 获取配置
-    pub fn config(&self) -> &CheckerConfig {
+    pub const fn config(&self) -> &CheckerConfig {
         &self.config
     }
 
     /// 是否配置了代理
-    pub fn has_proxy(&self) -> bool {
+    pub const fn has_proxy(&self) -> bool {
         self.proxy_client.is_some()
     }
 }
@@ -964,7 +961,7 @@ pub struct DeleteResult {
 
 impl DeleteResult {
     /// 创建dry-run结果
-    pub fn dry_run(urls_to_delete: Vec<String>, preserved_count: usize) -> Self {
+    pub const fn dry_run(urls_to_delete: Vec<String>, preserved_count: usize) -> Self {
         Self {
             deleted_count: urls_to_delete.len(),
             preserved_count,
@@ -975,7 +972,7 @@ impl DeleteResult {
     }
 
     /// 创建实际删除结果
-    pub fn actual(deleted_count: usize, preserved_count: usize, backup_path: String) -> Self {
+    pub const fn actual(deleted_count: usize, preserved_count: usize, backup_path: String) -> Self {
         Self {
             deleted_count,
             preserved_count,
@@ -1074,7 +1071,7 @@ pub fn extract_invalid_bookmarks(
     extract_bookmarks_by_status(bookmarks, invalid_urls)
 }
 
-fn extract_invalid_recursive(
+pub fn extract_invalid_recursive(
     bookmarks: &[crate::browsers::Bookmark],
     invalid_urls: &std::collections::HashSet<String>,
     result: &mut Vec<crate::browsers::Bookmark>,
@@ -1221,8 +1218,8 @@ mod property_tests_3 {
 
             // 生成有效收藏夹
             for i in 0..valid_count {
-                let url = format!("http://valid{}.com", i);
-                bookmarks.push(make_bookmark(&format!("Valid{}", i), &url));
+                let url = format!("http://valid{i}.com");
+                bookmarks.push(make_bookmark(&format!("Valid{i}"), &url));
                 results.push(UrlCheckResult::from_results(
                     url,
                     Some(HttpResult::success(200, 100)),
@@ -1232,8 +1229,8 @@ mod property_tests_3 {
 
             // 生成无效收藏夹
             for i in 0..invalid_count {
-                let url = format!("http://invalid{}.com", i);
-                bookmarks.push(make_bookmark(&format!("Invalid{}", i), &url));
+                let url = format!("http://invalid{i}.com");
+                bookmarks.push(make_bookmark(&format!("Invalid{i}"), &url));
                 results.push(UrlCheckResult::from_results(
                     url.clone(),
                     Some(HttpResult::success(404, 100)),
@@ -1244,8 +1241,8 @@ mod property_tests_3 {
 
             // 生成不确定收藏夹
             for i in 0..uncertain_count {
-                let url = format!("http://uncertain{}.com", i);
-                bookmarks.push(make_bookmark(&format!("Uncertain{}", i), &url));
+                let url = format!("http://uncertain{i}.com");
+                bookmarks.push(make_bookmark(&format!("Uncertain{i}"), &url));
                 results.push(UrlCheckResult::from_results(
                     url,
                     None,
@@ -1276,8 +1273,8 @@ mod property_tests_3 {
             let mut invalid_urls = HashSet::new();
 
             for i in 0..bookmark_count {
-                let url = format!("http://test{}.com", i);
-                bookmarks.push(make_bookmark(&format!("Test{}", i), &url));
+                let url = format!("http://test{i}.com");
+                bookmarks.push(make_bookmark(&format!("Test{i}"), &url));
                 if i % 2 == 0 {
                     invalid_urls.insert(url);
                 }
@@ -1354,11 +1351,11 @@ pub fn remove_invalid_bookmarks_preserve_structure(
     remove_bookmarks_only(bookmarks, invalid_urls, &mut stats);
 
     // 阶段2: 如果不保留空文件夹，则清理
-    if !config.keep_empty_folders {
-        cleanup_empty_folders_recursive(bookmarks, &mut stats);
-    } else {
+    if config.keep_empty_folders {
         // 统计保留的文件夹数量
         count_folders_recursive(bookmarks, &mut stats.folders_preserved);
+    } else {
+        cleanup_empty_folders_recursive(bookmarks, &mut stats);
     }
 
     stats
@@ -1782,14 +1779,14 @@ mod property_tests_structure {
             let mut invalid_urls = HashSet::new();
 
             for i in 0..valid_count {
-                let url = format!("http://valid{}.com", i);
-                bookmarks_in_folder.push(make_bookmark(&format!("Valid{}", i), &url));
+                let url = format!("http://valid{i}.com");
+                bookmarks_in_folder.push(make_bookmark(&format!("Valid{i}"), &url));
                 all_urls.push(url);
             }
 
             for i in 0..invalid_count {
-                let url = format!("http://invalid{}.com", i);
-                bookmarks_in_folder.push(make_bookmark(&format!("Invalid{}", i), &url));
+                let url = format!("http://invalid{i}.com");
+                bookmarks_in_folder.push(make_bookmark(&format!("Invalid{i}"), &url));
                 invalid_urls.insert(url);
             }
 
@@ -1826,14 +1823,14 @@ mod property_tests_structure {
             let mut valid_urls = HashSet::new();
 
             for i in 0..valid_count {
-                let url = format!("http://valid{}.com", i);
-                bookmarks.push(make_bookmark(&format!("Valid{}", i), &url));
+                let url = format!("http://valid{i}.com");
+                bookmarks.push(make_bookmark(&format!("Valid{i}"), &url));
                 valid_urls.insert(url);
             }
 
             for i in 0..invalid_count {
-                let url = format!("http://invalid{}.com", i);
-                bookmarks.push(make_bookmark(&format!("Invalid{}", i), &url));
+                let url = format!("http://invalid{i}.com");
+                bookmarks.push(make_bookmark(&format!("Invalid{i}"), &url));
                 invalid_urls.insert(url);
             }
 
@@ -1868,12 +1865,12 @@ mod property_tests_structure {
             for f in 0..folder_count {
                 let mut children = Vec::new();
                 for b in 0..bookmarks_per_folder {
-                    let url = format!("http://folder{}_bookmark{}.com", f, b);
-                    children.push(make_bookmark(&format!("B{}_{}", f, b), &url));
+                    let url = format!("http://folder{f}_bookmark{b}.com");
+                    children.push(make_bookmark(&format!("B{f}_{b}"), &url));
                     // 标记所有书签为死链
                     invalid_urls.insert(url);
                 }
-                bookmarks.push(make_folder(&format!("Folder{}", f), children));
+                bookmarks.push(make_folder(&format!("Folder{f}"), children));
             }
 
             let config = RemoveConfig::default(); // keep_empty_folders = false
@@ -1895,9 +1892,9 @@ mod property_tests_structure {
             let mut invalid_urls = HashSet::new();
 
             for f in 0..folder_count {
-                let url = format!("http://dead{}.com", f);
-                let children = vec![make_bookmark(&format!("Dead{}", f), &url)];
-                bookmarks.push(make_folder(&format!("Folder{}", f), children));
+                let url = format!("http://dead{f}.com");
+                let children = vec![make_bookmark(&format!("Dead{f}"), &url)];
+                bookmarks.push(make_folder(&format!("Folder{f}"), children));
                 invalid_urls.insert(url);
             }
 
@@ -1925,13 +1922,13 @@ mod property_tests_structure {
             let mut invalid_urls = HashSet::new();
 
             for i in 0..valid_count {
-                let url = format!("http://valid{}.com", i);
-                bookmarks.push(make_bookmark(&format!("Valid{}", i), &url));
+                let url = format!("http://valid{i}.com");
+                bookmarks.push(make_bookmark(&format!("Valid{i}"), &url));
             }
 
             for i in 0..invalid_count {
-                let url = format!("http://invalid{}.com", i);
-                bookmarks.push(make_bookmark(&format!("Invalid{}", i), &url));
+                let url = format!("http://invalid{i}.com");
+                bookmarks.push(make_bookmark(&format!("Invalid{i}"), &url));
                 invalid_urls.insert(url);
             }
 
@@ -2093,8 +2090,8 @@ mod property_tests_extract {
             let mut all_urls = Vec::new();
 
             for i in 0..bookmark_count {
-                let url = format!("http://test{}.com", i);
-                children.push(make_bookmark(&format!("Test{}", i), &url));
+                let url = format!("http://test{i}.com");
+                children.push(make_bookmark(&format!("Test{i}"), &url));
                 all_urls.push(url);
             }
 
@@ -2135,8 +2132,8 @@ mod property_tests_extract {
             let mut target_urls = HashSet::new();
 
             for i in 0..bookmark_count {
-                let url = format!("http://test{}.com", i);
-                children.push(make_bookmark(&format!("Test{}", i), &url));
+                let url = format!("http://test{i}.com");
+                children.push(make_bookmark(&format!("Test{i}"), &url));
                 target_urls.insert(url);
             }
 

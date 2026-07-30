@@ -1,4 +1,4 @@
-//! HackBrowserData integration module
+//! `HackBrowserData` integration module
 //!
 //! Uses the compiled Go binary for complete browser data extraction.
 //! Supports: passwords, cookies, history, bookmarks, downloads, localStorage, extensions
@@ -12,9 +12,13 @@ use std::process::Command;
 /// Get the path to hack-browser-data binary
 fn get_binary_path() -> Result<PathBuf> {
     // Try relative path first (in bin/ directory)
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let exe_dir = match std::env::current_exe() {
+        Ok(p) => p.parent().map(Path::to_path_buf),
+        Err(e) => {
+            tracing::debug!("无法获取当前执行程序文件所在目录: {}", e);
+            None
+        }
+    };
 
     if let Some(dir) = exe_dir {
         let binary = dir.join("hack-browser-data");
@@ -44,7 +48,7 @@ fn get_binary_path() -> Result<PathBuf> {
     ))
 }
 
-/// Browser type for HackBrowserData
+/// Browser type for `HackBrowserData`
 #[derive(Debug, Clone, Copy)]
 pub enum HackBrowser {
     All,
@@ -60,33 +64,33 @@ pub enum HackBrowser {
 }
 
 impl HackBrowser {
-    fn as_arg(self) -> &'static str {
+    const fn as_arg(self) -> &'static str {
         match self {
-            HackBrowser::All => "all",
-            HackBrowser::Chrome => "chrome",
-            HackBrowser::ChromeBeta => "chrome-beta",
-            HackBrowser::Edge => "edge",
-            HackBrowser::Brave => "brave",
-            HackBrowser::Opera => "opera",
-            HackBrowser::OperaGX => "opera-gx",
-            HackBrowser::Vivaldi => "vivaldi",
-            HackBrowser::Firefox => "firefox",
-            HackBrowser::Arc => "arc",
+            Self::All => "all",
+            Self::Chrome => "chrome",
+            Self::ChromeBeta => "chrome-beta",
+            Self::Edge => "edge",
+            Self::Brave => "brave",
+            Self::Opera => "opera",
+            Self::OperaGX => "opera-gx",
+            Self::Vivaldi => "vivaldi",
+            Self::Firefox => "firefox",
+            Self::Arc => "arc",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "chrome" => HackBrowser::Chrome,
-            "chrome-beta" => HackBrowser::ChromeBeta,
-            "edge" => HackBrowser::Edge,
-            "brave" => HackBrowser::Brave,
-            "opera" => HackBrowser::Opera,
-            "opera-gx" => HackBrowser::OperaGX,
-            "vivaldi" => HackBrowser::Vivaldi,
-            "firefox" => HackBrowser::Firefox,
-            "arc" => HackBrowser::Arc,
-            _ => HackBrowser::All,
+            "chrome" => Self::Chrome,
+            "chrome-beta" => Self::ChromeBeta,
+            "edge" => Self::Edge,
+            "brave" => Self::Brave,
+            "opera" => Self::Opera,
+            "opera-gx" => Self::OperaGX,
+            "vivaldi" => Self::Vivaldi,
+            "firefox" => Self::Firefox,
+            "arc" => Self::Arc,
+            _ => Self::All,
         }
     }
 }
@@ -99,10 +103,10 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
-    fn as_arg(self) -> &'static str {
+    const fn as_arg(self) -> &'static str {
         match self {
-            ExportFormat::Csv => "csv",
-            ExportFormat::Json => "json",
+            Self::Csv => "csv",
+            Self::Json => "json",
         }
     }
 }
@@ -142,7 +146,7 @@ pub fn export_browser_data(
     Ok(output_dir.to_path_buf())
 }
 
-/// Password entry from HackBrowserData JSON
+/// Password entry from `HackBrowserData` JSON
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HackPassword {
     #[serde(rename = "URL")]
@@ -155,7 +159,7 @@ pub struct HackPassword {
     pub create_date: String,
 }
 
-/// Cookie entry from HackBrowserData JSON
+/// Cookie entry from `HackBrowserData` JSON
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HackCookie {
     #[serde(rename = "Host")]
@@ -197,7 +201,7 @@ pub fn get_passwords(browser: HackBrowser) -> Result<Vec<HackPassword>> {
 
     // Find password file
     let password_file = std::fs::read_dir(&temp_dir)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .find(|e| e.file_name().to_string_lossy().contains("password"))
         .map(|e| e.path());
 
@@ -217,7 +221,7 @@ pub fn get_cookies(browser: HackBrowser) -> Result<Vec<HackCookie>> {
 
     // Find cookie file
     let cookie_file = std::fs::read_dir(&temp_dir)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .find(|e| e.file_name().to_string_lossy().contains("cookie"))
         .map(|e| e.path());
 

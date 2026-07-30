@@ -37,7 +37,7 @@ impl FirefoxSyncConfig {
                 .find(|line| line.contains("services.sync.username"))
                 .and_then(|line| {
                     // 提取 "username" 部分
-                    line.split('"').nth(3).map(|s| s.to_string())
+                    line.split('"').nth(3).map(ToString::to_string)
                 })
         } else {
             None
@@ -80,7 +80,7 @@ impl FirefoxSyncConfig {
                 .join("\n")
         } else {
             // 添加新配置
-            format!("{}\nuser_pref(\"services.sync.nextSync\", 0);\n", content)
+            format!("{content}\nuser_pref(\"services.sync.nextSync\", 0);\n")
         };
 
         // 写回文件
@@ -241,7 +241,9 @@ impl FirefoxSyncHandler {
 
                 // 等待用户启动浏览器
                 let mut input = String::new();
-                std::io::stdin().read_line(&mut input).ok();
+                if let Err(e) = std::io::stdin().read_line(&mut input) {
+                    tracing::warn!("读取用户终端确认输入失败: {}", e);
+                }
 
                 // 等待同步完成
                 let completed = self.config.wait_for_sync_complete(timeout_secs)?;
@@ -262,7 +264,7 @@ impl FirefoxSyncHandler {
     }
 
     /// 检查是否启用了Sync
-    pub fn is_sync_enabled(&self) -> bool {
+    pub const fn is_sync_enabled(&self) -> bool {
         self.config.sync_enabled
     }
 }

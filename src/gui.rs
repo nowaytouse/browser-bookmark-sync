@@ -17,6 +17,7 @@ use std::{
 };
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use tracing::warn;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -96,7 +97,7 @@ async fn api_list(State(state): State<AppState>) -> Json<Vec<BrowserInfo>> {
         match adapter.read_bookmarks() {
             Ok(bms) => {
                 let count = count_deep(&bms);
-                state.log(&format!("  ✅ {}: {} bookmarks", name, count));
+                state.log(&format!("  ✅ {name}: {count} bookmarks"));
                 infos.push(BrowserInfo {
                     name,
                     available: true,
@@ -122,7 +123,7 @@ async fn api_export(
     Json(req): Json<ExportRequest>,
 ) -> Json<ApiResult> {
     let output = crate::expand_path(&req.output);
-    state.log(&format!("📤 Starting export → {}", output));
+    state.log(&format!("📤 Starting export → {output}"));
 
     let cfg = crate::sync::ExportConfig {
         merge: req.merge,
@@ -143,7 +144,7 @@ async fn api_export(
                 .await
             {
                 Ok(count) => {
-                    let msg = format!("✅ Exported {} bookmarks → {}", count, output);
+                    let msg = format!("✅ Exported {count} bookmarks → {output}");
                     state.log(&msg);
                     Json(ApiResult {
                         ok: true,
@@ -151,7 +152,7 @@ async fn api_export(
                     })
                 }
                 Err(e) => {
-                    let msg = format!("❌ Export failed: {}", e);
+                    let msg = format!("❌ Export failed: {e}");
                     state.log(&msg);
                     Json(ApiResult {
                         ok: false,
@@ -161,7 +162,7 @@ async fn api_export(
             }
         }
         Err(e) => {
-            let msg = format!("❌ Engine init failed: {}", e);
+            let msg = format!("❌ Engine init failed: {e}");
             state.log(&msg);
             Json(ApiResult {
                 ok: false,
@@ -177,10 +178,10 @@ async fn api_merge(
 ) -> Json<ApiResult> {
     let dir = crate::expand_path(&req.dir);
     let output = crate::expand_path(&req.output);
-    state.log(&format!("📦 Merging check results from: {}", dir));
+    state.log(&format!("📦 Merging check results from: {dir}"));
     match crate::sync::merge_check_result_files(&dir, &output) {
         Ok(count) => {
-            let msg = format!("✅ Merged {} bookmarks → {}", count, output);
+            let msg = format!("✅ Merged {count} bookmarks → {output}");
             state.log(&msg);
             Json(ApiResult {
                 ok: true,
@@ -188,7 +189,7 @@ async fn api_merge(
             })
         }
         Err(e) => {
-            let msg = format!("❌ Merge failed: {}", e);
+            let msg = format!("❌ Merge failed: {e}");
             state.log(&msg);
             Json(ApiResult {
                 ok: false,
@@ -199,15 +200,27 @@ async fn api_merge(
 }
 
 async fn api_logs(State(state): State<AppState>) -> Json<Vec<String>> {
-    Json(state.log_lines.lock().unwrap().clone())
+    let logs = match state.log_lines.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => {
+            warn!("互斥锁 state.log_lines 已中毒，正在显式恢复内部日志数据");
+            poisoned.into_inner().clone()
+        }
+    };
+    Json(logs)
 }
 
 async fn api_events(
     State(state): State<AppState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let rx = state.tx.subscribe();
-    let stream = BroadcastStream::new(rx)
-        .filter_map(|msg| msg.ok().map(|data| Ok(Event::default().data(data))));
+    let stream = BroadcastStream::new(rx).filter_map(|msg| match msg {
+        Ok(data) => Some(Ok(Event::default().data(data))),
+        Err(e) => {
+            tracing::warn!("GUI SSE 事件广播通道出现消息延迟或溢出丢弃: {}", e);
+            None
+        }
+    });
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
@@ -219,7 +232,7 @@ async fn api_events(
 
 fn count_deep(bms: &[crate::browsers::Bookmark]) -> usize {
     bms.iter()
-        .map(|b| (if b.url.is_some() { 1 } else { 0 }) + count_deep(&b.children))
+        .map(|b| usize::from(b.url.is_some()) + count_deep(&b.children))
         .sum()
 }
 
@@ -252,11 +265,11 @@ pub async fn start_gui(port: u16) -> Result<()> {
         .route("/api/events", get(api_events))
         .with_state(state);
 
-    let addr = format!("127.0.0.1:{}", port);
-    let url = format!("http://{}", addr);
+    let addr = format!("127.0.0.1:{port}");
+    let url = format!("http://{addr}");
 
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("🌐 bsync GUI  →  {}", url);
+    println!("🌐 bsync GUI  →  {url}");
     println!("   Ctrl+C to stop");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 

@@ -24,7 +24,7 @@ pub fn create_profile_snapshot(
     );
     let snapshot_dir = dest_dir.join(&snapshot_folder_name);
     fs::create_dir_all(&snapshot_dir)
-        .with_context(|| format!("Failed to create snapshot directory {:?}", snapshot_dir))?;
+        .with_context(|| format!("Failed to create snapshot directory {snapshot_dir:?}"))?;
 
     let mut hashes = BTreeMap::new();
 
@@ -108,7 +108,7 @@ fn close_browser(browser: &BrowserType, force: bool) -> Result<()> {
     };
 
     if !force {
-        let script = format!("tell application \"{}\" to quit", app_name);
+        let script = format!("tell application \"{app_name}\" to quit");
         let output = Command::new("osascript").arg("-e").arg(&script).output();
 
         if output.is_ok() {

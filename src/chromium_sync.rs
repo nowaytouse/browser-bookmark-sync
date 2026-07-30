@@ -36,7 +36,7 @@ impl ChromiumSyncStatus {
             .as_array()
             .and_then(|arr| arr.first())
             .and_then(|acc| acc["email"].as_str())
-            .map(|s| s.to_string());
+            .map(ToString::to_string);
 
         // Check if sync is enabled
         let sync_enabled = json["sync"]["has_setup_completed"]
@@ -76,14 +76,20 @@ impl ChromiumSyncStatus {
     }
 
     /// Check if it's safe to write to database
-    pub fn is_safe_to_write(&self) -> bool {
+    pub const fn is_safe_to_write(&self) -> bool {
         !self.sync_enabled
     }
 }
 
 /// Detect sync status for all major Chromium browsers
 pub fn detect_all_chromium_sync() -> Vec<ChromiumSyncStatus> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!("未能获取 HOME 环境变量: {}，无法检测 Chromium 同步状态", e);
+            return Vec::new();
+        }
+    };
     let mut results = Vec::new();
 
     let browsers = [
@@ -96,7 +102,7 @@ pub fn detect_all_chromium_sync() -> Vec<ChromiumSyncStatus> {
     ];
 
     for (path, name) in browsers {
-        let profile_path = format!("{}/Library/Application Support/{}/Default", home, path);
+        let profile_path = format!("{home}/Library/Application Support/{path}/Default");
         let path = Path::new(&profile_path);
 
         if path.exists() {

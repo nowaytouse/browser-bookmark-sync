@@ -222,9 +222,9 @@ impl ReportExporter {
             );
         } else {
             for warn in &manifest.warnings {
-                report.push_str(&format!("- ⚠️ {}\n", warn));
+                report.push_str(&format!("- ⚠️ {warn}\n"));
             }
-            report.push_str("\n");
+            report.push('\n');
         }
 
         report.push_str("---\n*Generated automatically by browser-bookmark-sync (bsync v1.4.1)*\n");
@@ -242,11 +242,11 @@ impl ReportExporter {
                     indent_str,
                     Self::html_escape(&f.title)
                 )?;
-                writeln!(file, "{}<DL><p>", indent_str)?;
+                writeln!(file, "{indent_str}<DL><p>")?;
                 for child in &f.children {
                     Self::write_node_html(file, child, indent + 1)?;
                 }
-                writeln!(file, "{}</DL><p>", indent_str)?;
+                writeln!(file, "{indent_str}</DL><p>")?;
             }
             BookmarkNode::Bookmark(b) => {
                 writeln!(
@@ -258,7 +258,7 @@ impl ReportExporter {
                 )?;
             }
             BookmarkNode::Separator(_) => {
-                writeln!(file, "{}<HR>", indent_str)?;
+                writeln!(file, "{indent_str}<HR>")?;
             }
         }
         Ok(())

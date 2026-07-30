@@ -2,27 +2,12 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
 
-mod browser_utils;
-mod browsers;
-mod chromium_sync;
-mod cleanup;
-mod cloud_reset;
-mod crypto;
-mod data_types;
-mod db_safety;
-mod enhanced_rules;
-mod firefox_sync;
-mod firefox_sync_api;
-mod gui;
-mod hackbrowserdata;
-mod scheduler;
-mod sync;
-mod sync_flags;
-mod url_checker;
-mod validator;
-
-use sync::SyncEngine;
-use sync_flags::SyncFlags;
+use browser_bookmark_sync::{
+    browsers, data_types, expand_path, gui,
+    sync::{self, SyncEngine},
+    sync_flags::SyncFlags,
+    url_checker,
+};
 
 #[derive(Parser)]
 #[command(name = "bsync")]
@@ -129,15 +114,15 @@ enum Commands {
         #[arg(long, default_value = "true")]
         clean: bool,
 
-        /// Import from existing HTML file
-        #[arg(long)]
-        include: Option<String>,
+        /// Import from existing HTML files, SQLite databases, or external profile directories
+        #[arg(long, num_args = 0..)]
+        include: Vec<String>,
 
         /// Clear source browsers after export (⚠️  DANGEROUS!)
         #[arg(long)]
         clear_after: bool,
 
-        /// Enable unsafe database writes (required for clear_after)
+        /// Enable unsafe database writes (required for `clear_after`)
         #[arg(long)]
         unsafe_write: bool,
 
@@ -276,7 +261,7 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
 
-        /// Proxy server URL (e.g., http://127.0.0.1:7890)
+        /// Proxy server URL (e.g., <http://127.0.0.1:7890>)
         #[arg(short, long)]
         proxy: Option<String>,
 
@@ -371,9 +356,9 @@ enum Commands {
         #[arg(short, long, default_value = "all")]
         browsers: String,
 
-        /// Include extra HTML file to merge
-        #[arg(short, long)]
-        include: Option<String>,
+        /// Include extra HTML files, SQLite databases, or external profile directories
+        #[arg(short, long, num_args = 0..)]
+        include: Vec<String>,
 
         /// Proxy URL for dead link checking
         #[arg(short, long)]
@@ -412,7 +397,7 @@ enum Commands {
         output: String,
     },
 
-    /// Launch local web GUI in browser (default: http://127.0.0.1:7890)
+    /// Launch local web GUI in browser (default: <http://127.0.0.1:7890>)
     #[command(alias = "ui", alias = "dashboard")]
     Gui {
         /// Port number for the local web server
@@ -588,18 +573,21 @@ async fn main() -> Result<()> {
 
             let mut engine = SyncEngine::new()?;
 
-            // Import from existing HTML if specified
-            let mut extra_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
-            if let Some(html_path) = &include {
-                let expanded = expand_path(html_path);
-                info!("📥 Importing: {}", expanded);
-                match sync::import_bookmarks_from_html(&expanded) {
+            // Import from existing HTML files, SQLite files, or external profile directories
+            let mut extra_bookmarks: Vec<browsers::Bookmark> = Vec::new();
+            for source_path in &include {
+                let expanded = expand_path(source_path);
+                info!("📥 导入外部数据源: {}", expanded);
+                match sync::import_bookmarks_from_source(&expanded) {
                     Ok(bookmarks) => {
                         let count: usize = bookmarks.iter().map(count_tree).sum();
-                        info!("   {} bookmarks imported", count);
-                        extra_bookmarks = bookmarks;
+                        info!("   ✅ 成功从 '{}' 导入 {} 条书签节点", expanded, count);
+                        extra_bookmarks.extend(bookmarks);
                     }
-                    Err(e) => warn!("   Import failed: {}", e),
+                    Err(e) => {
+                        error!("❌ 无法从外部数据源 '{}' 导入书签: {}", expanded, e);
+                        return Err(e.context(format!("从源 '{expanded}' 导入书签失败")));
+                    }
                 }
             }
 
@@ -609,14 +597,14 @@ async fn main() -> Result<()> {
                 match engine.get_safari_reading_list() {
                     Ok(items) if !items.is_empty() => {
                         info!("   {} items found", items.len());
-                        let reading_folder = crate::browsers::Bookmark {
+                        let reading_folder = browsers::Bookmark {
                             id: "reading-list".to_string(),
                             title: "Reading List".to_string(),
                             url: None,
                             folder: true,
                             children: items
                                 .into_iter()
-                                .map(|item| crate::browsers::Bookmark {
+                                .map(|item| browsers::Bookmark {
                                     id: format!("rl-{}", item.url.len()),
                                     title: item.title,
                                     url: Some(item.url),
@@ -642,7 +630,7 @@ async fn main() -> Result<()> {
                 match engine.get_all_history(sync_flags.history_days) {
                     Ok(items) if !items.is_empty() => {
                         info!("   {} history items found", items.len());
-                        let history_folder = crate::browsers::Bookmark {
+                        let history_folder = browsers::Bookmark {
                             id: "history".to_string(),
                             title: "History".to_string(),
                             url: None,
@@ -650,8 +638,8 @@ async fn main() -> Result<()> {
                             children: items
                                 .into_iter()
                                 .enumerate()
-                                .map(|(i, item)| crate::browsers::Bookmark {
-                                    id: format!("hist-{}", i),
+                                .map(|(i, item)| browsers::Bookmark {
+                                    id: format!("hist-{i}"),
                                     title: item.title.unwrap_or_default(),
                                     url: Some(item.url),
                                     folder: false,
@@ -676,7 +664,7 @@ async fn main() -> Result<()> {
                 match engine.get_all_cookies() {
                     Ok(items) if !items.is_empty() => {
                         info!("   {} cookies found", items.len());
-                        let cookies_folder = crate::browsers::Bookmark {
+                        let cookies_folder = browsers::Bookmark {
                             id: "cookies".to_string(),
                             title: "Cookies".to_string(),
                             url: None,
@@ -684,8 +672,8 @@ async fn main() -> Result<()> {
                             children: items
                                 .into_iter()
                                 .enumerate()
-                                .map(|(i, item)| crate::browsers::Bookmark {
-                                    id: format!("cookie-{}", i),
+                                .map(|(i, item)| browsers::Bookmark {
+                                    id: format!("cookie-{i}"),
                                     title: format!("{} ({})", item.name, item.host),
                                     url: Some(format!("http://{}/{}", item.host, item.path)), // Fake URL for visualization
                                     folder: false,
@@ -852,7 +840,7 @@ async fn main() -> Result<()> {
                 info!("   📤 Output: {}", output_path);
                 // 文件模式不需要初始化浏览器引擎
                 sync::smart_organize_files(
-                    &input_files.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &input_files.iter().map(String::as_str).collect::<Vec<_>>(),
                     &output_path,
                     rules.as_deref(),
                     &classifier,
@@ -898,7 +886,7 @@ async fn main() -> Result<()> {
             info!("🔍 Validating bookmarks...");
             let engine = SyncEngine::new()?;
             let report = engine.validate(detailed)?;
-            println!("{}", report);
+            println!("{report}");
         }
 
         Commands::History {
@@ -948,9 +936,11 @@ async fn main() -> Result<()> {
             info!("🔍 检查收藏夹URL有效性");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             if from_file {
-                info!("输入文件: {}", file.as_ref().unwrap());
+                if let Some(ref file_path) = file {
+                    info!("输入文件: {file_path}");
+                }
                 if let Some(ref out) = output {
-                    info!("输出文件: {}", out);
+                    info!("输出文件: {out}");
                 }
             }
             if let Some(ref p) = proxy {
@@ -991,12 +981,10 @@ async fn main() -> Result<()> {
             };
 
             // 读取收藏夹 - 支持从文件或浏览器读取
-            let mut all_bookmarks: Vec<(
-                crate::browsers::BrowserType,
-                Vec<crate::browsers::Bookmark>,
-            )> = Vec::new();
+            let mut all_bookmarks: Vec<(browsers::BrowserType, Vec<browsers::Bookmark>)> =
+                Vec::new();
             let mut all_urls = Vec::new();
-            let mut file_bookmarks: Option<Vec<crate::browsers::Bookmark>> = None;
+            let mut file_bookmarks: Option<Vec<browsers::Bookmark>> = None;
 
             if let Some(ref input_file) = file {
                 // 从文件读取
@@ -1037,7 +1025,7 @@ async fn main() -> Result<()> {
                     name_lower.contains(&filter_lower) || name_normalized.contains(&filter_lower)
                 };
 
-                for adapter in crate::browsers::get_all_adapters() {
+                for adapter in browsers::get_all_adapters() {
                     let name = adapter.browser_type().name();
                     if browsers == "all" || browser_list.iter().any(|b| matches_browser(name, b)) {
                         match adapter.read_bookmarks() {
@@ -1087,7 +1075,7 @@ async fn main() -> Result<()> {
             let pb = ProgressBar::new(unique_urls.len() as u64);
             pb.set_style(ProgressStyle::default_bar()
                 .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-                .unwrap()
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
                 .progress_chars("#>-"));
 
             // 执行检查
@@ -1122,10 +1110,10 @@ async fn main() -> Result<()> {
                 for invalid in &report.invalid_urls {
                     println!("  • {}", invalid.url);
                     if let Some(ref pe) = invalid.proxy_error {
-                        println!("    代理: {}", pe);
+                        println!("    代理: {pe}");
                     }
                     if let Some(ref de) = invalid.direct_error {
-                        println!("    直连: {}", de);
+                        println!("    直连: {de}");
                     }
                 }
             }
@@ -1158,7 +1146,7 @@ async fn main() -> Result<()> {
             if from_file {
                 if let Some(ref out_path) = output {
                     let out_expanded = expand_path(out_path);
-                    println!("\n📤 导出有效书签到: {}", out_expanded);
+                    println!("\n📤 导出有效书签到: {out_expanded}");
 
                     if let Some(ref bookmarks) = file_bookmarks {
                         // 移除无效和不确定的书签，保留有效和跳过的
@@ -1168,7 +1156,7 @@ async fn main() -> Result<()> {
                             extract_by_status_preserve_structure(bookmarks, &keep_urls);
 
                         match sync::export_bookmarks_to_html(&valid_bookmarks, &out_expanded) {
-                            Ok(_) => {
+                            Ok(()) => {
                                 let count: usize = valid_bookmarks.iter().map(count_tree).sum();
                                 info!("✅ 导出了 {} 个有效书签到 {}", count, out_expanded);
                             }
@@ -1183,28 +1171,40 @@ async fn main() -> Result<()> {
             // 导出所有分类到目录
             if let Some(ref dir) = export_dir {
                 let dir_path = expand_path(dir);
-                std::fs::create_dir_all(&dir_path).ok();
-                println!("\n📤 导出检查结果到: {}", dir_path);
+                if let Err(e) = std::fs::create_dir_all(&dir_path) {
+                    tracing::error!(
+                        "无法创建导出目录 '{}': {}，后续导出文件可能会失败",
+                        dir_path,
+                        e
+                    );
+                }
+                println!("\n📤 导出检查结果到: {dir_path}");
 
                 // 根据模式选择书签源
-                let source_bookmarks: Vec<&Vec<crate::browsers::Bookmark>> = if from_file {
-                    file_bookmarks.as_ref().map(|b| vec![b]).unwrap_or_default()
+                let source_bookmarks: Vec<&Vec<browsers::Bookmark>> = if from_file {
+                    match file_bookmarks.as_ref() {
+                        Some(b) => vec![b],
+                        None => {
+                            tracing::warn!("指定了 --from-file 模式，但书签文件加载为空");
+                            Vec::new()
+                        }
+                    }
                 } else {
                     all_bookmarks.iter().map(|(_, b)| b).collect()
                 };
 
                 // 导出有效书签 (保持文件夹结构)
                 if !valid_urls.is_empty() {
-                    let mut valid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    let mut valid_bookmarks: Vec<browsers::Bookmark> = Vec::new();
                     for bookmarks in &source_bookmarks {
                         let extracted =
                             extract_by_status_preserve_structure(bookmarks, &valid_urls);
                         valid_bookmarks.extend(extracted);
                     }
-                    let path = format!("{}/valid.html", dir_path);
+                    let path = format!("{dir_path}/valid.html");
                     let actual_count: usize = valid_bookmarks.iter().map(count_tree).sum();
                     match sync::export_bookmarks_to_html(&valid_bookmarks, &path) {
-                        Ok(_) => info!(
+                        Ok(()) => info!(
                             "  ✅ valid.html: {} 个有效书签 (保持文件夹结构)",
                             actual_count
                         ),
@@ -1214,16 +1214,16 @@ async fn main() -> Result<()> {
 
                 // 导出无效书签 (保持文件夹结构)
                 if !invalid_urls.is_empty() {
-                    let mut invalid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    let mut invalid_bookmarks: Vec<browsers::Bookmark> = Vec::new();
                     for bookmarks in &source_bookmarks {
                         let extracted =
                             extract_by_status_preserve_structure(bookmarks, &invalid_urls);
                         invalid_bookmarks.extend(extracted);
                     }
-                    let path = format!("{}/invalid.html", dir_path);
+                    let path = format!("{dir_path}/invalid.html");
                     let actual_count: usize = invalid_bookmarks.iter().map(count_tree).sum();
                     match sync::export_bookmarks_to_html(&invalid_bookmarks, &path) {
-                        Ok(_) => info!(
+                        Ok(()) => info!(
                             "  ❌ invalid.html: {} 个无效书签 (保持文件夹结构)",
                             actual_count
                         ),
@@ -1233,16 +1233,16 @@ async fn main() -> Result<()> {
 
                 // 导出不确定书签 (保持文件夹结构)
                 if !uncertain_urls.is_empty() {
-                    let mut uncertain_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    let mut uncertain_bookmarks: Vec<browsers::Bookmark> = Vec::new();
                     for bookmarks in &source_bookmarks {
                         let extracted =
                             extract_by_status_preserve_structure(bookmarks, &uncertain_urls);
                         uncertain_bookmarks.extend(extracted);
                     }
-                    let path = format!("{}/uncertain.html", dir_path);
+                    let path = format!("{dir_path}/uncertain.html");
                     let actual_count: usize = uncertain_bookmarks.iter().map(count_tree).sum();
                     match sync::export_bookmarks_to_html(&uncertain_bookmarks, &path) {
-                        Ok(_) => info!(
+                        Ok(()) => info!(
                             "  ❓ uncertain.html: {} 个不确定书签 (保持文件夹结构)",
                             actual_count
                         ),
@@ -1252,16 +1252,16 @@ async fn main() -> Result<()> {
 
                 // 导出跳过书签 (保持文件夹结构)
                 if !skipped_urls.is_empty() {
-                    let mut skipped_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    let mut skipped_bookmarks: Vec<browsers::Bookmark> = Vec::new();
                     for bookmarks in &source_bookmarks {
                         let extracted =
                             extract_by_status_preserve_structure(bookmarks, &skipped_urls);
                         skipped_bookmarks.extend(extracted);
                     }
-                    let path = format!("{}/skipped.html", dir_path);
+                    let path = format!("{dir_path}/skipped.html");
                     let actual_count: usize = skipped_bookmarks.iter().map(count_tree).sum();
                     match sync::export_bookmarks_to_html(&skipped_bookmarks, &path) {
-                        Ok(_) => info!(
+                        Ok(()) => info!(
                             "  ⏭️  skipped.html: {} 个跳过书签 (保持文件夹结构)",
                             actual_count
                         ),
@@ -1276,9 +1276,9 @@ async fn main() -> Result<()> {
             if let Some(ref export_path) = export_invalid {
                 if !invalid_urls.is_empty() {
                     let export_path = expand_path(export_path);
-                    println!("\n📤 导出无效收藏夹到: {} (保持文件夹结构)", export_path);
+                    println!("\n📤 导出无效收藏夹到: {export_path} (保持文件夹结构)");
 
-                    let mut invalid_bookmarks: Vec<crate::browsers::Bookmark> = Vec::new();
+                    let mut invalid_bookmarks: Vec<browsers::Bookmark> = Vec::new();
                     if from_file {
                         if let Some(ref bookmarks) = file_bookmarks {
                             let extracted =
@@ -1294,7 +1294,7 @@ async fn main() -> Result<()> {
                     }
 
                     match sync::export_bookmarks_to_html(&invalid_bookmarks, &export_path) {
-                        Ok(_) => info!(
+                        Ok(()) => info!(
                             "✅ 导出了 {} 个无效收藏夹到 {} (保持文件夹结构)",
                             invalid_bookmarks.len(),
                             export_path
@@ -1309,7 +1309,7 @@ async fn main() -> Result<()> {
                 if dry_run {
                     println!("\n🏃 Dry-run模式 - 以下URL将被删除:");
                     for url in &invalid_urls {
-                        println!("  • {}", url);
+                        println!("  • {url}");
                     }
                     println!("\n共 {} 个URL将被删除 (实际未删除)", invalid_urls.len());
                     if keep_empty {
@@ -1326,11 +1326,11 @@ async fn main() -> Result<()> {
 
                     for (browser_type, mut bookmarks) in all_bookmarks {
                         // 备份
-                        for adapter in crate::browsers::get_all_adapters() {
+                        for adapter in browsers::get_all_adapters() {
                             if adapter.browser_type() == browser_type {
                                 match adapter.backup_bookmarks() {
                                     Ok(path) => {
-                                        info!("💾 {} 备份: {:?}", browser_type.name(), path)
+                                        info!("💾 {} 备份: {:?}", browser_type.name(), path);
                                     }
                                     Err(e) => warn!("⚠️  {} 备份失败: {}", browser_type.name(), e),
                                 }
@@ -1343,7 +1343,7 @@ async fn main() -> Result<()> {
 
                                 if stats.bookmarks_removed > 0 || stats.empty_folders_removed > 0 {
                                     match adapter.write_bookmarks(&bookmarks) {
-                                        Ok(_) => {
+                                        Ok(()) => {
                                             info!(
                                                 "✅ {} 删除了 {} 个无效书签",
                                                 browser_type.name(),
@@ -1358,7 +1358,7 @@ async fn main() -> Result<()> {
                                             info!("   保留了 {} 个文件夹", stats.folders_preserved);
                                         }
                                         Err(e) => {
-                                            error!("❌ {} 写入失败: {}", browser_type.name(), e)
+                                            error!("❌ {} 写入失败: {}", browser_type.name(), e);
                                         }
                                     }
                                 }
@@ -1400,20 +1400,19 @@ async fn main() -> Result<()> {
             let export_downloads = downloads || all;
 
             // Get browser database paths
-            let home = std::env::var("HOME").unwrap_or_default();
+            let home = std::env::var("HOME")
+                .map_err(|e| anyhow::anyhow!("获取 HOME 环境变量失败: {e}"))?;
             let db_base = match browser.to_lowercase().as_str() {
                 "chrome" | "google chrome" => {
-                    format!("{}/Library/Application Support/Google/Chrome/Default", home)
+                    format!("{home}/Library/Application Support/Google/Chrome/Default")
                 }
-                "edge" | "microsoft edge" => format!(
-                    "{}/Library/Application Support/Microsoft Edge/Default",
-                    home
-                ),
+                "edge" | "microsoft edge" => {
+                    format!("{home}/Library/Application Support/Microsoft Edge/Default")
+                }
                 "brave" => format!(
-                    "{}/Library/Application Support/BraveSoftware/Brave-Browser/Default",
-                    home
+                    "{home}/Library/Application Support/BraveSoftware/Brave-Browser/Default"
                 ),
-                "arc" => format!("{}/Library/Application Support/Arc/User Data/Default", home),
+                "arc" => format!("{home}/Library/Application Support/Arc/User Data/Default"),
                 _ => {
                     error!("❌ Unsupported browser: {}", browser);
                     return Ok(());
@@ -1426,7 +1425,7 @@ async fn main() -> Result<()> {
 
             if export_passwords {
                 info!("🔑 Exporting passwords...");
-                let login_db = format!("{}/Login Data", db_base);
+                let login_db = format!("{db_base}/Login Data");
                 let temp_db = temp_dir.join("LoginData");
 
                 if std::path::Path::new(&login_db).exists() {
@@ -1435,11 +1434,11 @@ async fn main() -> Result<()> {
                     match data_types::extract_chromium_passwords(&temp_db, &browser) {
                         Ok(passwords) => {
                             let output_file = std::path::Path::new(&output_dir)
-                                .join(format!("passwords_{}.{}", browser, format));
+                                .join(format!("passwords_{browser}.{format}"));
 
                             match format.as_str() {
                                 "json" => {
-                                    data_types::password::export_to_json(&passwords, &output_file)?
+                                    data_types::password::export_to_json(&passwords, &output_file)?;
                                 }
                                 _ => data_types::password::export_to_csv(&passwords, &output_file)?,
                             }
@@ -1453,7 +1452,9 @@ async fn main() -> Result<()> {
                         Err(e) => warn!("   ⚠️ Failed to export passwords: {}", e),
                     }
 
-                    let _ = std::fs::remove_file(&temp_db);
+                    if let Err(e) = std::fs::remove_file(&temp_db) {
+                        tracing::debug!("清理临时数据库拷贝 '{}' 失败: {}", temp_db.display(), e);
+                    }
                 } else {
                     warn!("   ⚠️ Login Data not found");
                 }
@@ -1461,7 +1462,7 @@ async fn main() -> Result<()> {
 
             if export_cookies {
                 info!("🍪 Exporting cookies...");
-                let cookies_db = format!("{}/Cookies", db_base);
+                let cookies_db = format!("{db_base}/Cookies");
                 let temp_db = temp_dir.join("Cookies");
 
                 if std::path::Path::new(&cookies_db).exists() {
@@ -1477,10 +1478,10 @@ async fn main() -> Result<()> {
 
                             match format.as_str() {
                                 "netscape" => {
-                                    data_types::cookie::export_to_netscape(&cookies, &output_file)?
+                                    data_types::cookie::export_to_netscape(&cookies, &output_file)?;
                                 }
                                 "json" => {
-                                    data_types::cookie::export_to_json(&cookies, &output_file)?
+                                    data_types::cookie::export_to_json(&cookies, &output_file)?;
                                 }
                                 _ => {
                                     // Simple CSV for cookies
@@ -1515,7 +1516,9 @@ async fn main() -> Result<()> {
                         Err(e) => warn!("   ⚠️ Failed to export cookies: {}", e),
                     }
 
-                    let _ = std::fs::remove_file(&temp_db);
+                    if let Err(e) = std::fs::remove_file(&temp_db) {
+                        tracing::debug!("清理临时数据库拷贝 '{}' 失败: {}", temp_db.display(), e);
+                    }
                 } else {
                     warn!("   ⚠️ Cookies database not found");
                 }
@@ -1523,7 +1526,7 @@ async fn main() -> Result<()> {
 
             if export_downloads {
                 info!("📥 Exporting download history...");
-                let history_db = format!("{}/History", db_base);
+                let history_db = format!("{db_base}/History");
                 let temp_db = temp_dir.join("History");
 
                 if std::path::Path::new(&history_db).exists() {
@@ -1532,7 +1535,7 @@ async fn main() -> Result<()> {
                     match data_types::extract_chromium_downloads(&temp_db, &browser) {
                         Ok(downloads) => {
                             let output_file = std::path::Path::new(&output_dir)
-                                .join(format!("downloads_{}.{}", browser, format));
+                                .join(format!("downloads_{browser}.{format}"));
 
                             data_types::download::export_to_csv(&downloads, &output_file)?;
 
@@ -1545,7 +1548,9 @@ async fn main() -> Result<()> {
                         Err(e) => warn!("   ⚠️ Failed to export downloads: {}", e),
                     }
 
-                    let _ = std::fs::remove_file(&temp_db);
+                    if let Err(e) = std::fs::remove_file(&temp_db) {
+                        tracing::debug!("清理临时数据库拷贝 '{}' 失败: {}", temp_db.display(), e);
+                    }
                 } else {
                     warn!("   ⚠️ History database not found");
                 }
@@ -1571,17 +1576,28 @@ async fn main() -> Result<()> {
             info!("   Output Directory: {}", expanded_out_dir);
 
             // Step 1: Export
-            let export_file = format!("{}/01_exported.html", expanded_out_dir);
+            let export_file = format!("{expanded_out_dir}/01_exported.html");
             let mut extra_bookmarks = Vec::new();
-            if let Some(ref inc_path) = include {
+            for inc_path in &include {
                 let expanded_inc = expand_path(inc_path);
-                if let Ok(imported) = sync::import_bookmarks_from_html(&expanded_inc) {
-                    info!(
-                        "   📥 Included {} bookmarks from {}",
-                        imported.len(),
-                        expanded_inc
-                    );
-                    extra_bookmarks = imported;
+                match sync::import_bookmarks_from_source(&expanded_inc) {
+                    Ok(imported) => {
+                        info!(
+                            "   📥 Included {} bookmarks from {}",
+                            imported.len(),
+                            expanded_inc
+                        );
+                        extra_bookmarks.extend(imported);
+                    }
+                    Err(e) => {
+                        error!(
+                            "❌ Pipeline: 无法从外部数据源 '{}' 导入书签: {}",
+                            expanded_inc, e
+                        );
+                        return Err(
+                            e.context(format!("Pipeline 从数据源 '{expanded_inc}' 导入书签失败"))
+                        );
+                    }
                 }
             }
 
@@ -1609,8 +1625,8 @@ async fn main() -> Result<()> {
             info!("   ✅ Step 1: Exported {} bookmarks", exported_count);
 
             // Step 2: Organize
-            let organized_file = format!("{}/02_organized.html", expanded_out_dir);
-            let _ = sync::smart_organize_files(
+            let organized_file = format!("{expanded_out_dir}/02_organized.html");
+            if let Err(e) = sync::smart_organize_files(
                 &[&export_file],
                 &organized_file,
                 None,
@@ -1624,14 +1640,20 @@ async fn main() -> Result<()> {
                 false,
                 true,
             )
-            .await;
+            .await
+            {
+                tracing::error!(
+                    "智能书签组织 (Step 2: smart_organize_files) 执行失败: {}",
+                    e
+                );
+            }
             info!("   ✅ Step 2: Organized bookmarks");
 
             // Step 3: Check
-            let results_dir = format!("{}/03_check_results", expanded_out_dir);
+            let results_dir = format!("{expanded_out_dir}/03_check_results");
             std::fs::create_dir_all(&results_dir)?;
 
-            let checker = crate::url_checker::UrlChecker::new(crate::url_checker::CheckerConfig {
+            let checker = url_checker::UrlChecker::new(url_checker::CheckerConfig {
                 proxy_url: proxy,
                 timeout_secs: timeout,
                 concurrency,
@@ -1683,26 +1705,33 @@ async fn main() -> Result<()> {
                 let skipped_bms =
                     url_checker::extract_by_status_preserve_structure(&imported_org, &skipped_urls);
 
-                let _ = sync::export_bookmarks_to_html(
-                    &valid_bms,
-                    &format!("{}/valid.html", results_dir),
-                );
-                let _ = sync::export_bookmarks_to_html(
+                if let Err(e) =
+                    sync::export_bookmarks_to_html(&valid_bms, &format!("{results_dir}/valid.html"))
+                {
+                    tracing::error!("导出有效书签结果 (valid.html) 失败: {}", e);
+                }
+                if let Err(e) = sync::export_bookmarks_to_html(
                     &invalid_bms,
-                    &format!("{}/invalid.html", results_dir),
-                );
-                let _ = sync::export_bookmarks_to_html(
+                    &format!("{results_dir}/invalid.html"),
+                ) {
+                    tracing::error!("导出无效书签结果 (invalid.html) 失败: {}", e);
+                }
+                if let Err(e) = sync::export_bookmarks_to_html(
                     &uncertain_bms,
-                    &format!("{}/uncertain.html", results_dir),
-                );
-                let _ = sync::export_bookmarks_to_html(
+                    &format!("{results_dir}/uncertain.html"),
+                ) {
+                    tracing::error!("导出不确定状态书签结果 (uncertain.html) 失败: {}", e);
+                }
+                if let Err(e) = sync::export_bookmarks_to_html(
                     &skipped_bms,
-                    &format!("{}/skipped.html", results_dir),
-                );
+                    &format!("{results_dir}/skipped.html"),
+                ) {
+                    tracing::error!("导出跳过校验书签结果 (skipped.html) 失败: {}", e);
+                }
             }
 
             // Step 4: Merge check results
-            let final_file = format!("{}/FINAL_VALID.html", expanded_out_dir);
+            let final_file = format!("{expanded_out_dir}/FINAL_VALID.html");
             sync::merge_check_result_files(&results_dir, &final_file)?;
             info!("   ✅ Step 4: Final results saved to {}", final_file);
         }
@@ -1741,16 +1770,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-pub fn expand_path(path: &str) -> String {
-    if path.starts_with("~/") {
-        path.replacen("~", &std::env::var("HOME").unwrap_or_default(), 1)
-    } else {
-        path.to_string()
-    }
-}
-
-fn count_tree(bookmark: &crate::browsers::Bookmark) -> usize {
-    let mut count = if bookmark.url.is_some() { 1 } else { 0 };
+fn count_tree(bookmark: &browsers::Bookmark) -> usize {
+    let mut count = usize::from(bookmark.url.is_some());
     for child in &bookmark.children {
         count += count_tree(child);
     }

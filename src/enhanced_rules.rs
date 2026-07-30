@@ -45,7 +45,7 @@ pub struct TitleMatcher {
 }
 
 /// 条件组合逻辑
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub enum MatchLogic {
     #[default]
     And, // URL和Title条件都必须满足
@@ -181,12 +181,8 @@ impl TitleMatcher {
 impl MatchCondition {
     /// 检查是否匹配
     pub fn matches(&self, url: &str, title: &str) -> bool {
-        let url_matched = self.url.as_ref().map(|m| m.matches(url)).unwrap_or(true);
-        let title_matched = self
-            .title
-            .as_ref()
-            .map(|m| m.matches(title))
-            .unwrap_or(true);
+        let url_matched = self.url.as_ref().is_none_or(|m| m.matches(url));
+        let title_matched = self.title.as_ref().is_none_or(|m| m.matches(title));
 
         match self.logic {
             MatchLogic::And => url_matched && title_matched,
@@ -361,12 +357,12 @@ mod property_tests {
             prefix in "/[a-z]{1,5}/",
             suffix in "[a-z]{1,10}",
         ) {
-            let full_path = format!("{}{}", prefix, suffix);
-            let url = format!("https://example.com{}", full_path);
+            let full_path = format!("{prefix}{suffix}");
+            let url = format!("https://example.com{full_path}");
 
             let matcher = UrlMatcher {
                 domain_patterns: vec!["example.com".to_string()],
-                path_prefixes: vec![prefix.clone()],
+                path_prefixes: vec![prefix],
                 ..Default::default()
             };
 
@@ -379,7 +375,7 @@ mod property_tests {
             prefix in "/[a-z]{1,5}/",
             other_prefix in "/[0-9]{1,5}/",
         ) {
-            let url = format!("https://example.com{}", other_prefix);
+            let url = format!("https://example.com{other_prefix}");
 
             let matcher = UrlMatcher {
                 domain_patterns: vec!["example.com".to_string()],
@@ -401,10 +397,10 @@ mod property_tests {
             prefix in "[A-Z]{1,5} ",
             suffix in " [a-z]{1,5}",
         ) {
-            let title = format!("{}{}{}", prefix, keyword, suffix);
+            let title = format!("{prefix}{keyword}{suffix}");
 
             let matcher = TitleMatcher {
-                keywords: vec![keyword.clone()],
+                keywords: vec![keyword],
                 ..Default::default()
             };
 
@@ -420,7 +416,7 @@ mod property_tests {
             // 确保keyword和exclude不同
             prop_assume!(keyword != exclude);
 
-            let title = format!("Title with {} and {}", keyword, exclude);
+            let title = format!("Title with {keyword} and {exclude}");
 
             let matcher = TitleMatcher {
                 keywords: vec![keyword],
@@ -441,8 +437,8 @@ mod property_tests {
             domain in "[a-z]{3,8}\\.com",
             keyword in "[a-z]{3,8}",
         ) {
-            let url = format!("https://{}/path", domain);
-            let title = format!("Title with {}", keyword);
+            let url = format!("https://{domain}/path");
+            let title = format!("Title with {keyword}");
 
             let condition = MatchCondition {
                 url: Some(UrlMatcher {
@@ -466,8 +462,8 @@ mod property_tests {
             other_domain in "[0-9]{3,8}\\.com",
             keyword in "[a-z]{3,8}",
         ) {
-            let url = format!("https://{}/path", other_domain);
-            let title = format!("Title with {}", keyword);
+            let url = format!("https://{other_domain}/path");
+            let title = format!("Title with {keyword}");
 
             let condition = MatchCondition {
                 url: Some(UrlMatcher {
@@ -491,8 +487,8 @@ mod property_tests {
             other_domain in "[0-9]{3,8}\\.com",
             keyword in "[a-z]{3,8}",
         ) {
-            let url = format!("https://{}/path", other_domain);
-            let title = format!("Title with {}", keyword);
+            let url = format!("https://{other_domain}/path");
+            let title = format!("Title with {keyword}");
 
             let condition = MatchCondition {
                 url: Some(UrlMatcher {

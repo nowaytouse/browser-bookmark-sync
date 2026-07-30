@@ -105,12 +105,12 @@ pub fn decrypt_chromium_data(key: &[u8], encrypted: &[u8]) -> Result<String> {
             let clean: Vec<u8> = decrypted
                 .iter()
                 .take_while(|&&b| b >= 0x20 || b == 0x09 || b == 0x0A || b == 0x0D)
-                .cloned()
+                .copied()
                 .collect();
 
             String::from_utf8(clean)
                 .or_else(|_| String::from_utf8(decrypted.to_vec()))
-                .map_err(|e| anyhow!("UTF-8 conversion failed: {}", e))
+                .map_err(|e| anyhow!("UTF-8 conversion failed: {e}"))
         }
         Err(e) => {
             // Decryption failed - might be corrupted or different encryption

@@ -80,3 +80,38 @@ proptest = "1.9.0"
 [[test]]
 name = "integration_test"
 path = "src/tests/integration_test.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+elided_lifetimes_in_paths = "warn"
+explicit_outlives_requirements = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+as_conversions = "warn"
+implicit_clone = "warn"
+clone_on_ref_ptr = "warn"
+format_push_string = "warn"
+uninlined_format_args = "warn"
+unnecessary_wraps = "warn"
+map_unwrap_or = "warn"
+module_name_repetitions = { level = "allow", priority = 1 }
+too_many_arguments = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+str_to_string = { level = "allow", priority = 1 }
+similar_names = { level = "allow", priority = 1 }
+unreadable_literal = { level = "allow", priority = 1 }
+

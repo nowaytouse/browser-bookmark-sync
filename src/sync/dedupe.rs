@@ -9,7 +9,7 @@ use std::collections::HashMap;
 pub struct DedupeEngine;
 
 impl DedupeEngine {
-    /// Perform deterministic exact deduplication over a harvested BookmarkTree
+    /// Perform deterministic exact deduplication over a harvested `BookmarkTree`
     pub fn deduplicate_tree(
         tree: &BookmarkTree,
         source_priority: &[String],
@@ -46,12 +46,18 @@ impl DedupeEngine {
         sorted_keys.sort();
 
         for key in sorted_keys {
-            let mut group_occurrences = url_groups.remove(&key).unwrap();
+            let Some(mut group_occurrences) = url_groups.remove(&key) else {
+                tracing::warn!("去重过程中未找到预排序的 URL 键 '{}'，已跳过", key);
+                continue;
+            };
             group_counter += 1;
-            let group_id = format!("GRP-{:06}", group_counter);
+            let group_id = format!("GRP-{group_counter:06}");
 
             if group_occurrences.len() == 1 {
-                let single = group_occurrences.pop().unwrap();
+                let Some(single) = group_occurrences.pop() else {
+                    tracing::warn!("去重分组 '{}' 长度为 1 但无法弹出元素，已跳过", group_id);
+                    continue;
+                };
                 let canonical = CanonicalBookmark {
                     canonical_id: group_id.clone(),
                     exact_url: key.clone(),
@@ -72,12 +78,10 @@ impl DedupeEngine {
                     title: single.title.clone(),
                     date_added: single
                         .date_added
-                        .map(|d| d.to_rfc3339())
-                        .unwrap_or_default(),
+                        .map_or_else(|| "N/A".to_string(), |d| d.to_rfc3339()),
                     date_modified: single
                         .date_modified
-                        .map(|d| d.to_rfc3339())
-                        .unwrap_or_default(),
+                        .map_or_else(|| "N/A".to_string(), |d| d.to_rfc3339()),
                     original_position: single.original_position,
                     selection_reason: "sole_occurrence".into(),
                 });
@@ -99,7 +103,7 @@ impl DedupeEngine {
                     selection_reason: reasons.clone(),
                 };
 
-                let reason_strs: Vec<String> = reasons.iter().map(|r| r.to_string()).collect();
+                let reason_strs: Vec<String> = reasons.iter().map(ToString::to_string).collect();
 
                 group_reports.push(DuplicateGroupReport {
                     group_id: group_id.clone(),
@@ -124,12 +128,10 @@ impl DedupeEngine {
                     title: primary.title.clone(),
                     date_added: primary
                         .date_added
-                        .map(|d| d.to_rfc3339())
-                        .unwrap_or_default(),
+                        .map_or_else(|| "N/A".to_string(), |d| d.to_rfc3339()),
                     date_modified: primary
                         .date_modified
-                        .map(|d| d.to_rfc3339())
-                        .unwrap_or_default(),
+                        .map_or_else(|| "N/A".to_string(), |d| d.to_rfc3339()),
                     original_position: primary.original_position,
                     selection_reason: reason_strs.join(";"),
                 });
@@ -145,11 +147,12 @@ impl DedupeEngine {
                         root: dup.root_kind.to_string(),
                         folder_path: dup.folder_path.join("/"),
                         title: dup.title.clone(),
-                        date_added: dup.date_added.map(|d| d.to_rfc3339()).unwrap_or_default(),
+                        date_added: dup
+                            .date_added
+                            .map_or_else(|| "N/A".to_string(), |d| d.to_rfc3339()),
                         date_modified: dup
                             .date_modified
-                            .map(|d| d.to_rfc3339())
-                            .unwrap_or_default(),
+                            .map_or_else(|| "N/A".to_string(), |d| d.to_rfc3339()),
                         original_position: dup.original_position,
                         selection_reason: format!("duplicate_of_{}", primary.id),
                     });
