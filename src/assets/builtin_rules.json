@@ -30,12 +30,7 @@
       "/oauth",
       "/account/login"
     ],
-    "title_patterns": [
-      "登录",
-      "登入",
-      "sign in",
-      "log in"
-    ],
+    "title_patterns": ["登录", "登入", "sign in", "log in"],
     "priority": 100,
     "description": "Login and authentication pages",
     "specificity": 160
@@ -106,11 +101,7 @@
       "douyu.com",
       "huya.com"
     ],
-    "path_patterns": [
-      "/video",
-      "/watch",
-      "/play"
-    ],
+    "path_patterns": ["/video", "/watch", "/play"],
     "title_patterns": [],
     "priority": 85,
     "description": "Video and streaming platforms",
@@ -182,12 +173,7 @@
       "/developer",
       "/sdk"
     ],
-    "title_patterns": [
-      "api 文档",
-      "api doc",
-      "developer",
-      "开发者"
-    ],
+    "title_patterns": ["api 文档", "api doc", "developer", "开发者"],
     "priority": 80,
     "description": "Development and programming tools",
     "specificity": 160
@@ -196,12 +182,7 @@
     "name": "shopping",
     "folder_name": "购物网站",
     "folder_name_en": "Shopping",
-    "url_patterns": [
-      "cart",
-      "checkout",
-      "shop.",
-      "store."
-    ],
+    "url_patterns": ["cart", "checkout", "shop.", "store."],
     "domain_patterns": [
       "amazon.",
       "ebay.com",
@@ -217,20 +198,8 @@
       "bestbuy.com",
       "newegg.com"
     ],
-    "path_patterns": [
-      "/cart",
-      "/checkout",
-      "/shop",
-      "/product",
-      "/item"
-    ],
-    "title_patterns": [
-      "购物",
-      "商城",
-      "店铺",
-      "shop",
-      "store"
-    ],
+    "path_patterns": ["/cart", "/checkout", "/shop", "/product", "/item"],
+    "title_patterns": ["购物", "商城", "店铺", "shop", "store"],
     "priority": 75,
     "description": "E-commerce and shopping sites",
     "specificity": 160
@@ -259,17 +228,8 @@
       "36kr.com",
       "huxiu.com"
     ],
-    "path_patterns": [
-      "/news",
-      "/article",
-      "/story"
-    ],
-    "title_patterns": [
-      "新闻",
-      "资讯",
-      "news",
-      "breaking"
-    ],
+    "path_patterns": ["/news", "/article", "/story"],
+    "title_patterns": ["新闻", "资讯", "news", "breaking"],
     "priority": 70,
     "description": "News and media sites",
     "specificity": 160
@@ -278,12 +238,7 @@
     "name": "docs",
     "folder_name": "文档参考",
     "folder_name_en": "Documentation",
-    "url_patterns": [
-      "docs.",
-      "documentation.",
-      "wiki.",
-      "manual."
-    ],
+    "url_patterns": ["docs.", "documentation.", "wiki.", "manual."],
     "domain_patterns": [
       "wikipedia.org",
       "wikimedia.org",
@@ -331,16 +286,8 @@
       "115.com",
       "mega.nz"
     ],
-    "path_patterns": [
-      "/drive",
-      "/files",
-      "/storage"
-    ],
-    "title_patterns": [
-      "云盘",
-      "网盘",
-      "cloud drive"
-    ],
+    "path_patterns": ["/drive", "/files", "/storage"],
+    "title_patterns": ["云盘", "网盘", "cloud drive"],
     "priority": 60,
     "description": "Cloud storage services",
     "specificity": 160
@@ -349,10 +296,7 @@
     "name": "email",
     "folder_name": "邮箱通讯",
     "folder_name_en": "Email & Communication",
-    "url_patterns": [
-      "mail.",
-      "webmail."
-    ],
+    "url_patterns": ["mail.", "webmail."],
     "domain_patterns": [
       "mail.google.com",
       "outlook.live.com",
@@ -364,17 +308,8 @@
       "tutanota.com",
       "zoho.com/mail"
     ],
-    "path_patterns": [
-      "/mail",
-      "/inbox",
-      "/email"
-    ],
-    "title_patterns": [
-      "邮箱",
-      "邮件",
-      "email",
-      "inbox"
-    ],
+    "path_patterns": ["/mail", "/inbox", "/email"],
+    "title_patterns": ["邮箱", "邮件", "email", "inbox"],
     "priority": 55,
     "description": "Email and communication services",
     "specificity": 160
@@ -383,12 +318,7 @@
     "name": "finance",
     "folder_name": "金融理财",
     "folder_name_en": "Finance & Banking",
-    "url_patterns": [
-      "bank.",
-      "banking.",
-      "invest.",
-      "trade."
-    ],
+    "url_patterns": ["bank.", "banking.", "invest.", "trade."],
     "domain_patterns": [
       "paypal.com",
       "stripe.com",
@@ -404,21 +334,8 @@
       "alipay.com",
       "pay.weixin.qq.com"
     ],
-    "path_patterns": [
-      "/banking",
-      "/account",
-      "/finance",
-      "/invest",
-      "/trade"
-    ],
-    "title_patterns": [
-      "银行",
-      "理财",
-      "投资",
-      "支付",
-      "banking",
-      "payment"
-    ],
+    "path_patterns": ["/banking", "/account", "/finance", "/invest", "/trade"],
+    "title_patterns": ["银行", "理财", "投资", "支付", "banking", "payment"],
     "priority": 50,
     "description": "Finance and banking services",
     "specificity": 160
@@ -427,12 +344,7 @@
     "name": "ai",
     "folder_name": "AI工具",
     "folder_name_en": "AI Tools",
-    "url_patterns": [
-      "ai.",
-      "gpt",
-      "llm",
-      "chat."
-    ],
+    "url_patterns": ["ai.", "gpt", "llm", "chat."],
     "domain_patterns": [
       "chat.openai.com",
       "openai.com",
@@ -452,17 +364,8 @@
       "coze.com",
       "v0.dev"
     ],
-    "path_patterns": [
-      "/chat",
-      "/ai",
-      "/generate"
-    ],
-    "title_patterns": [
-      "chatgpt",
-      "ai助手",
-      "人工智能",
-      "机器学习"
-    ],
+    "path_patterns": ["/chat", "/ai", "/generate"],
+    "title_patterns": ["chatgpt", "ai助手", "人工智能", "机器学习"],
     "priority": 45,
     "description": "AI and machine learning tools",
     "specificity": 160
@@ -485,20 +388,8 @@
       "freepik.com",
       "icons8.com"
     ],
-    "path_patterns": [
-      "/design",
-      "/creative",
-      "/art",
-      "/photo"
-    ],
-    "title_patterns": [
-      "设计",
-      "创意",
-      "素材",
-      "图片",
-      "design",
-      "creative"
-    ],
+    "path_patterns": ["/design", "/creative", "/art", "/photo"],
+    "title_patterns": ["设计", "创意", "素材", "图片", "design", "creative"],
     "priority": 40,
     "description": "Design and creative tools",
     "specificity": 160
@@ -507,12 +398,7 @@
     "name": "education",
     "folder_name": "教育学习",
     "folder_name_en": "Education & Learning",
-    "url_patterns": [
-      "learn.",
-      "course.",
-      "edu.",
-      "study."
-    ],
+    "url_patterns": ["learn.", "course.", "edu.", "study."],
     "domain_patterns": [
       "coursera.org",
       "udemy.com",
@@ -525,12 +411,7 @@
       "xuetangx.com",
       "icourse163.org"
     ],
-    "path_patterns": [
-      "/course",
-      "/learn",
-      "/tutorial",
-      "/lesson"
-    ],
+    "path_patterns": ["/course", "/learn", "/tutorial", "/lesson"],
     "title_patterns": [
       "课程",
       "学习",
@@ -560,19 +441,8 @@
       "podcasts.apple.com",
       "podcasts.google.com"
     ],
-    "path_patterns": [
-      "/music",
-      "/audio",
-      "/podcast",
-      "/playlist"
-    ],
-    "title_patterns": [
-      "音乐",
-      "播客",
-      "music",
-      "podcast",
-      "playlist"
-    ],
+    "path_patterns": ["/music", "/audio", "/podcast", "/playlist"],
+    "title_patterns": ["音乐", "播客", "music", "podcast", "playlist"],
     "priority": 30,
     "description": "Music and audio platforms",
     "specificity": 160
@@ -581,10 +451,7 @@
     "name": "gaming",
     "folder_name": "游戏娱乐",
     "folder_name_en": "Gaming",
-    "url_patterns": [
-      "game.",
-      "games."
-    ],
+    "url_patterns": ["game.", "games."],
     "domain_patterns": [
       "store.steampowered.com",
       "epicgames.com",
@@ -596,17 +463,8 @@
       "roblox.com",
       "minecraft.net"
     ],
-    "path_patterns": [
-      "/game",
-      "/games",
-      "/play"
-    ],
-    "title_patterns": [
-      "游戏",
-      "game",
-      "gaming",
-      "play"
-    ],
+    "path_patterns": ["/game", "/games", "/play"],
+    "title_patterns": ["游戏", "game", "gaming", "play"],
     "priority": 25,
     "description": "Gaming platforms and game-related sites",
     "specificity": 160
@@ -615,12 +473,7 @@
     "name": "forum",
     "folder_name": "论坛社区",
     "folder_name_en": "Forums & Communities",
-    "url_patterns": [
-      "forum.",
-      "bbs.",
-      "community.",
-      "forums."
-    ],
+    "url_patterns": ["forum.", "bbs.", "community.", "forums."],
     "domain_patterns": [
       "reddit.com",
       "quora.com",
@@ -632,20 +485,8 @@
       "forums.mydigitallife.net",
       "bbs.pcbeta.com"
     ],
-    "path_patterns": [
-      "/forum",
-      "/community",
-      "/discuss",
-      "/topic"
-    ],
-    "title_patterns": [
-      "论坛",
-      "社区",
-      "讨论",
-      "forum",
-      "community",
-      "discuss"
-    ],
+    "path_patterns": ["/forum", "/community", "/discuss", "/topic"],
+    "title_patterns": ["论坛", "社区", "讨论", "forum", "community", "discuss"],
     "priority": 20,
     "description": "Forums and online communities",
     "specificity": 160
@@ -654,13 +495,7 @@
     "name": "admin",
     "folder_name": "管理后台",
     "folder_name_en": "Admin & Dashboard",
-    "url_patterns": [
-      "admin.",
-      "dashboard.",
-      "console.",
-      "manage.",
-      "panel."
-    ],
+    "url_patterns": ["admin.", "dashboard.", "console.", "manage.", "panel."],
     "domain_patterns": [],
     "path_patterns": [
       "/admin",
@@ -686,24 +521,10 @@
     "name": "api",
     "folder_name": "API服务",
     "folder_name_en": "API & Services",
-    "url_patterns": [
-      "api.",
-      "gateway.",
-      "service."
-    ],
+    "url_patterns": ["api.", "gateway.", "service."],
     "domain_patterns": [],
-    "path_patterns": [
-      "/api/",
-      "/v1/",
-      "/v2/",
-      "/graphql",
-      "/rest"
-    ],
-    "title_patterns": [
-      "api",
-      "接口",
-      "服务"
-    ],
+    "path_patterns": ["/api/", "/v1/", "/v2/", "/graphql", "/rest"],
+    "title_patterns": ["api", "接口", "服务"],
     "priority": 10,
     "description": "API endpoints and web services",
     "specificity": 110
@@ -733,18 +554,8 @@
       "softonic.com",
       "cnet.com/download"
     ],
-    "path_patterns": [
-      "/app/",
-      "/apps/",
-      "/store/",
-      "/download/"
-    ],
-    "title_patterns": [
-      "app store",
-      "应用商店",
-      "下载",
-      "software"
-    ],
+    "path_patterns": ["/app/", "/apps/", "/store/", "/download/"],
+    "title_patterns": ["app store", "应用商店", "下载", "software"],
     "priority": 55,
     "description": "App stores and software distribution",
     "specificity": 160
@@ -774,18 +585,8 @@
       "docs.google.com",
       "sheets.google.com"
     ],
-    "path_patterns": [
-      "/archive",
-      "/paste",
-      "/doc/",
-      "/document/"
-    ],
-    "title_patterns": [
-      "archive",
-      "存档",
-      "备份",
-      "文档"
-    ],
+    "path_patterns": ["/archive", "/paste", "/doc/", "/document/"],
+    "title_patterns": ["archive", "存档", "备份", "文档"],
     "priority": 45,
     "description": "Web archives and paste services",
     "specificity": 160
@@ -794,9 +595,7 @@
     "name": "wiki",
     "folder_name": "百科知识",
     "folder_name_en": "Wiki & Knowledge",
-    "url_patterns": [
-      "wiki."
-    ],
+    "url_patterns": ["wiki."],
     "domain_patterns": [
       "wikipedia.org",
       "wikimedia.org",
@@ -808,14 +607,8 @@
       "bulbapedia.bulbagarden.net",
       "minecraft.wiki"
     ],
-    "path_patterns": [
-      "/wiki/"
-    ],
-    "title_patterns": [
-      "wiki",
-      "百科",
-      "encyclopedia"
-    ],
+    "path_patterns": ["/wiki/"],
+    "title_patterns": ["wiki", "百科", "encyclopedia"],
     "priority": 50,
     "description": "Wikis and knowledge bases",
     "specificity": 160
@@ -841,16 +634,8 @@
       "imgbb.com",
       "postimg.cc"
     ],
-    "path_patterns": [
-      "/file/",
-      "/download/",
-      "/d/"
-    ],
-    "title_patterns": [
-      "download",
-      "下载",
-      "文件"
-    ],
+    "path_patterns": ["/file/", "/download/", "/d/"],
+    "title_patterns": ["download", "下载", "文件"],
     "priority": 40,
     "description": "File hosting and cloud storage",
     "specificity": 160
@@ -859,9 +644,7 @@
     "name": "search",
     "folder_name": "搜索引擎",
     "folder_name_en": "Search Engines",
-    "url_patterns": [
-      "search."
-    ],
+    "url_patterns": ["search."],
     "domain_patterns": [
       "google.com",
       "bing.com",
@@ -873,13 +656,8 @@
       "searx.",
       "cse.google.com"
     ],
-    "path_patterns": [
-      "/search"
-    ],
-    "title_patterns": [
-      "search",
-      "搜索"
-    ],
+    "path_patterns": ["/search"],
+    "title_patterns": ["search", "搜索"],
     "priority": 35,
     "description": "Search engines",
     "specificity": 160
@@ -979,14 +757,8 @@
       "top.gg",
       "discordapp.com"
     ],
-    "path_patterns": [
-      "/invite/"
-    ],
-    "title_patterns": [
-      "discord",
-      "server",
-      "invite"
-    ],
+    "path_patterns": ["/invite/"],
+    "title_patterns": ["discord", "server", "invite"],
     "priority": 88,
     "description": "Discord server invites and communities",
     "specificity": 160
@@ -995,10 +767,7 @@
     "name": "anime",
     "folder_name": "动漫二次元",
     "folder_name_en": "Anime & Manga",
-    "url_patterns": [
-      "anime",
-      "manga"
-    ],
+    "url_patterns": ["anime", "manga"],
     "domain_patterns": [
       "myanimelist.net",
       "anilist.co",
@@ -1024,17 +793,8 @@
       "deviantart.com",
       "artstation.com"
     ],
-    "path_patterns": [
-      "/anime/",
-      "/manga/"
-    ],
-    "title_patterns": [
-      "anime",
-      "manga",
-      "动漫",
-      "漫画",
-      "番剧"
-    ],
+    "path_patterns": ["/anime/", "/manga/"],
+    "title_patterns": ["anime", "manga", "动漫", "漫画", "番剧"],
     "priority": 72,
     "description": "Anime and manga resources",
     "specificity": 160
@@ -1043,10 +803,7 @@
     "name": "torrents",
     "folder_name": "下载资源",
     "folder_name_en": "Downloads & Torrents",
-    "url_patterns": [
-      "torrent",
-      "magnet"
-    ],
+    "url_patterns": ["torrent", "magnet"],
     "domain_patterns": [
       "1337x.to",
       "nyaa.si",
@@ -1063,17 +820,8 @@
       "androidfilehost.com",
       "apkmirror.com"
     ],
-    "path_patterns": [
-      "/torrent",
-      "/download",
-      "/magnet"
-    ],
-    "title_patterns": [
-      "torrent",
-      "download",
-      "magnet",
-      "repack"
-    ],
+    "path_patterns": ["/torrent", "/download", "/magnet"],
+    "title_patterns": ["torrent", "download", "magnet", "repack"],
     "priority": 28,
     "description": "Torrent and download sites",
     "specificity": 160
@@ -1082,11 +830,7 @@
     "name": "security",
     "folder_name": "安全隐私",
     "folder_name_en": "Security & Privacy",
-    "url_patterns": [
-      "vpn",
-      "proxy",
-      "privacy"
-    ],
+    "url_patterns": ["vpn", "proxy", "privacy"],
     "domain_patterns": [
       "mullvad.net",
       "protonvpn.com",
@@ -1105,19 +849,8 @@
       "haveibeenpwned.com",
       "objective-see.org"
     ],
-    "path_patterns": [
-      "/security",
-      "/privacy",
-      "/vpn"
-    ],
-    "title_patterns": [
-      "vpn",
-      "proxy",
-      "privacy",
-      "security",
-      "安全",
-      "隐私"
-    ],
+    "path_patterns": ["/security", "/privacy", "/vpn"],
+    "title_patterns": ["vpn", "proxy", "privacy", "security", "安全", "隐私"],
     "priority": 42,
     "description": "Security and privacy tools",
     "specificity": 160
@@ -1154,16 +887,8 @@
       "krita-artists.org",
       "0xacab.org"
     ],
-    "path_patterns": [
-      "/linux",
-      "/gnu"
-    ],
-    "title_patterns": [
-      "linux",
-      "gnu",
-      "开源",
-      "open source"
-    ],
+    "path_patterns": ["/linux", "/gnu"],
+    "title_patterns": ["linux", "gnu", "开源", "open source"],
     "priority": 38,
     "description": "Linux distributions and open source",
     "specificity": 160
@@ -1188,12 +913,7 @@
       "xbox.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "microsoft",
-      "windows",
-      "office",
-      "azure"
-    ],
+    "title_patterns": ["microsoft", "windows", "office", "azure"],
     "priority": 36,
     "description": "Microsoft products and services",
     "specificity": 60
@@ -1214,13 +934,7 @@
       "appledb.dev"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "apple",
-      "iphone",
-      "ipad",
-      "mac",
-      "ios"
-    ],
+    "title_patterns": ["apple", "iphone", "ipad", "mac", "ios"],
     "priority": 34,
     "description": "Apple products and services",
     "specificity": 60
@@ -1242,10 +956,7 @@
       "meet.google.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "google",
-      "谷歌"
-    ],
+    "title_patterns": ["google", "谷歌"],
     "priority": 32,
     "description": "Google products and services",
     "specificity": 60
@@ -1254,10 +965,7 @@
     "name": "fediverse",
     "folder_name": "联邦宇宙",
     "folder_name_en": "Fediverse & Decentralized",
-    "url_patterns": [
-      "mastodon",
-      "fediverse"
-    ],
+    "url_patterns": ["mastodon", "fediverse"],
     "domain_patterns": [
       "mastodon.social",
       "mastodon.online",
@@ -1272,11 +980,7 @@
       "fediverse.party"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "fediverse",
-      "mastodon",
-      "activitypub"
-    ],
+    "title_patterns": ["fediverse", "mastodon", "activitypub"],
     "priority": 30,
     "description": "Fediverse and decentralized social networks",
     "specificity": 60
@@ -1295,16 +999,8 @@
       "pdalife.com",
       "apt.izzysoft.de"
     ],
-    "path_patterns": [
-      "/forum",
-      "/thread"
-    ],
-    "title_patterns": [
-      "android",
-      "rom",
-      "root",
-      "mod"
-    ],
+    "path_patterns": ["/forum", "/thread"],
+    "title_patterns": ["android", "rom", "root", "mod"],
     "priority": 26,
     "description": "Mobile development and modding",
     "specificity": 160
@@ -1327,17 +1023,8 @@
       "loc.gov",
       "ncatlab.org"
     ],
-    "path_patterns": [
-      "/research",
-      "/paper",
-      "/article"
-    ],
-    "title_patterns": [
-      "research",
-      "science",
-      "paper",
-      "study"
-    ],
+    "path_patterns": ["/research", "/paper", "/article"],
+    "title_patterns": ["research", "science", "paper", "study"],
     "priority": 24,
     "description": "Science and research resources",
     "specificity": 160
@@ -1346,10 +1033,7 @@
     "name": "streaming",
     "folder_name": "直播平台",
     "folder_name_en": "Streaming & Live",
-    "url_patterns": [
-      "stream",
-      "live"
-    ],
+    "url_patterns": ["stream", "live"],
     "domain_patterns": [
       "twitch.tv",
       "kick.com",
@@ -1360,15 +1044,8 @@
       "pluto.tv",
       "tubi.tv"
     ],
-    "path_patterns": [
-      "/live",
-      "/stream"
-    ],
-    "title_patterns": [
-      "live",
-      "stream",
-      "直播"
-    ],
+    "path_patterns": ["/live", "/stream"],
+    "title_patterns": ["live", "stream", "直播"],
     "priority": 68,
     "description": "Live streaming platforms",
     "specificity": 160
@@ -1388,18 +1065,8 @@
       "sindresorhus.com",
       "openuserjs.org"
     ],
-    "path_patterns": [
-      "/extension",
-      "/addon",
-      "/theme"
-    ],
-    "title_patterns": [
-      "extension",
-      "addon",
-      "theme",
-      "扩展",
-      "插件"
-    ],
+    "path_patterns": ["/extension", "/addon", "/theme"],
+    "title_patterns": ["extension", "addon", "theme", "扩展", "插件"],
     "priority": 22,
     "description": "Browser extensions and themes",
     "specificity": 160
@@ -1408,11 +1075,7 @@
     "name": "tools",
     "folder_name": "在线工具",
     "folder_name_en": "Online Tools",
-    "url_patterns": [
-      "tool",
-      "converter",
-      "generator"
-    ],
+    "url_patterns": ["tool", "converter", "generator"],
     "domain_patterns": [
       "url-decode.com",
       "caniuse.com",
@@ -1437,18 +1100,8 @@
       "perchance.org",
       "pudding.cool"
     ],
-    "path_patterns": [
-      "/tool",
-      "/convert",
-      "/generate",
-      "/tools"
-    ],
-    "title_patterns": [
-      "tool",
-      "converter",
-      "generator",
-      "工具"
-    ],
+    "path_patterns": ["/tool", "/convert", "/generate", "/tools"],
+    "title_patterns": ["tool", "converter", "generator", "工具"],
     "priority": 18,
     "description": "Online tools and utilities",
     "specificity": 160
@@ -1469,13 +1122,7 @@
       "evernote.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "note",
-      "todo",
-      "task",
-      "笔记",
-      "待办"
-    ],
+    "title_patterns": ["note", "todo", "task", "笔记", "待办"],
     "priority": 16,
     "description": "Productivity and note-taking tools",
     "specificity": 60
@@ -1503,17 +1150,8 @@
       "modlist.in",
       "geode-sdk.org"
     ],
-    "path_patterns": [
-      "/community",
-      "/mod",
-      "/guide"
-    ],
-    "title_patterns": [
-      "mod",
-      "guide",
-      "wiki",
-      "攻略"
-    ],
+    "path_patterns": ["/community", "/mod", "/guide"],
+    "title_patterns": ["mod", "guide", "wiki", "攻略"],
     "priority": 14,
     "description": "Gaming communities and resources",
     "specificity": 160
@@ -1556,11 +1194,7 @@
       "alternativeto.net"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "directory",
-      "list",
-      "collection"
-    ],
+    "title_patterns": ["directory", "list", "collection"],
     "priority": 48,
     "description": "Link directories and aggregators",
     "specificity": 60
@@ -1601,17 +1235,8 @@
       "krita-artists.org",
       "blender.org"
     ],
-    "path_patterns": [
-      "/design",
-      "/icon",
-      "/font"
-    ],
-    "title_patterns": [
-      "design",
-      "icon",
-      "font",
-      "素材"
-    ],
+    "path_patterns": ["/design", "/icon", "/font"],
+    "title_patterns": ["design", "icon", "font", "素材"],
     "priority": 44,
     "description": "Design resources and creative tools",
     "specificity": 160
@@ -1631,11 +1256,7 @@
       "notebookcheck.net"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "gpu",
-      "cpu",
-      "hardware"
-    ],
+    "title_patterns": ["gpu", "cpu", "hardware"],
     "priority": 40,
     "description": "Hardware and technology resources",
     "specificity": 60
@@ -1672,9 +1293,7 @@
     "name": "blogs",
     "folder_name": "博客站点",
     "folder_name_en": "Blogs & Personal",
-    "url_patterns": [
-      "blog"
-    ],
+    "url_patterns": ["blog"],
     "domain_patterns": [
       "blogspot.com",
       "wordpress.com",
@@ -1685,14 +1304,8 @@
       "carrd.co",
       "tumblr.com"
     ],
-    "path_patterns": [
-      "/blog",
-      "/post"
-    ],
-    "title_patterns": [
-      "blog",
-      "博客"
-    ],
+    "path_patterns": ["/blog", "/post"],
+    "title_patterns": ["blog", "博客"],
     "priority": 10,
     "description": "Blogs and personal websites",
     "specificity": 160
@@ -1713,11 +1326,7 @@
       "stackblitz.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "ide",
-      "editor",
-      "编辑器"
-    ],
+    "title_patterns": ["ide", "editor", "编辑器"],
     "priority": 56,
     "description": "Developer tools and IDEs",
     "specificity": 60
@@ -1726,13 +1335,7 @@
     "name": "devops",
     "folder_name": "DevOps运维",
     "folder_name_en": "DevOps & CI/CD",
-    "url_patterns": [
-      "jenkins",
-      "gitlab-ci",
-      "circleci",
-      "travis",
-      "actions"
-    ],
+    "url_patterns": ["jenkins", "gitlab-ci", "circleci", "travis", "actions"],
     "domain_patterns": [
       "jenkins.io",
       "circleci.com",
@@ -1747,20 +1350,8 @@
       "buildkite.com",
       "concourse-ci.org"
     ],
-    "path_patterns": [
-      "/pipeline",
-      "/ci",
-      "/cd",
-      "/deploy",
-      "/builds"
-    ],
-    "title_patterns": [
-      "ci/cd",
-      "devops",
-      "持续集成",
-      "自动化部署",
-      "pipeline"
-    ],
+    "path_patterns": ["/pipeline", "/ci", "/cd", "/deploy", "/builds"],
+    "title_patterns": ["ci/cd", "devops", "持续集成", "自动化部署", "pipeline"],
     "priority": 76,
     "description": "DevOps and CI/CD platforms",
     "specificity": 160
@@ -1769,12 +1360,7 @@
     "name": "database",
     "folder_name": "数据库服务",
     "folder_name_en": "Database Services",
-    "url_patterns": [
-      "database",
-      "db",
-      "sql",
-      "nosql"
-    ],
+    "url_patterns": ["database", "db", "sql", "nosql"],
     "domain_patterns": [
       "postgresql.org",
       "mysql.com",
@@ -1793,19 +1379,8 @@
       "influxdata.com",
       "timescale.com"
     ],
-    "path_patterns": [
-      "/database",
-      "/db",
-      "/sql",
-      "/query"
-    ],
-    "title_patterns": [
-      "database",
-      "数据库",
-      "sql",
-      "nosql",
-      "查询"
-    ],
+    "path_patterns": ["/database", "/db", "/sql", "/query"],
+    "title_patterns": ["database", "数据库", "sql", "nosql", "查询"],
     "priority": 74,
     "description": "Database services and tools",
     "specificity": 160
@@ -1840,13 +1415,7 @@
       "etherscan.io",
       "blockchain.com"
     ],
-    "path_patterns": [
-      "/crypto",
-      "/blockchain",
-      "/nft",
-      "/defi",
-      "/wallet"
-    ],
+    "path_patterns": ["/crypto", "/blockchain", "/nft", "/defi", "/wallet"],
     "title_patterns": [
       "加密货币",
       "区块链",
@@ -1864,12 +1433,7 @@
     "name": "monitoring",
     "folder_name": "服务器监控",
     "folder_name_en": "Server Monitoring",
-    "url_patterns": [
-      "monitor",
-      "metrics",
-      "observability",
-      "apm"
-    ],
+    "url_patterns": ["monitor", "metrics", "observability", "apm"],
     "domain_patterns": [
       "grafana.com",
       "prometheus.io",
@@ -1884,18 +1448,8 @@
       "dynatrace.com",
       "appdynamics.com"
     ],
-    "path_patterns": [
-      "/monitor",
-      "/metrics",
-      "/dashboard",
-      "/analytics"
-    ],
-    "title_patterns": [
-      "监控",
-      "性能",
-      "metrics",
-      "observability"
-    ],
+    "path_patterns": ["/monitor", "/metrics", "/dashboard", "/analytics"],
+    "title_patterns": ["监控", "性能", "metrics", "observability"],
     "priority": 58,
     "description": "Server monitoring and observability",
     "specificity": 160
@@ -1904,12 +1458,7 @@
     "name": "apitools",
     "folder_name": "API工具",
     "folder_name_en": "API Tools",
-    "url_patterns": [
-      "postman",
-      "insomnia",
-      "swagger",
-      "openapi"
-    ],
+    "url_patterns": ["postman", "insomnia", "swagger", "openapi"],
     "domain_patterns": [
       "postman.com",
       "insomnia.rest",
@@ -1920,18 +1469,8 @@
       "readme.com",
       "apidog.com"
     ],
-    "path_patterns": [
-      "/api/docs",
-      "/swagger",
-      "/openapi",
-      "/api-docs"
-    ],
-    "title_patterns": [
-      "api测试",
-      "postman",
-      "swagger",
-      "api文档"
-    ],
+    "path_patterns": ["/api/docs", "/swagger", "/openapi", "/api-docs"],
+    "title_patterns": ["api测试", "postman", "swagger", "api文档"],
     "priority": 62,
     "description": "API documentation and testing tools",
     "specificity": 160
@@ -1940,12 +1479,7 @@
     "name": "containers",
     "folder_name": "容器云原生",
     "folder_name_en": "Containers & Cloud Native",
-    "url_patterns": [
-      "docker",
-      "kubernetes",
-      "k8s",
-      "container"
-    ],
+    "url_patterns": ["docker", "kubernetes", "k8s", "container"],
     "domain_patterns": [
       "docker.com",
       "kubernetes.io",
@@ -1958,19 +1492,8 @@
       "cloud.docker.com",
       "docker.io"
     ],
-    "path_patterns": [
-      "/docker",
-      "/kubernetes",
-      "/k8s",
-      "/container"
-    ],
-    "title_patterns": [
-      "容器",
-      "docker",
-      "kubernetes",
-      "k8s",
-      "云原生"
-    ],
+    "path_patterns": ["/docker", "/kubernetes", "/k8s", "/container"],
+    "title_patterns": ["容器", "docker", "kubernetes", "k8s", "云原生"],
     "priority": 66,
     "description": "Container and cloud-native technologies",
     "specificity": 160
@@ -1979,11 +1502,7 @@
     "name": "licensing",
     "folder_name": "开源许可",
     "folder_name_en": "Open Source Licensing",
-    "url_patterns": [
-      "license",
-      "licensing",
-      "opensource"
-    ],
+    "url_patterns": ["license", "licensing", "opensource"],
     "domain_patterns": [
       "choosealicense.com",
       "opensource.org",
@@ -1992,17 +1511,8 @@
       "spdx.org",
       "gnu.org/licenses"
     ],
-    "path_patterns": [
-      "/license",
-      "/licensing"
-    ],
-    "title_patterns": [
-      "开源许可",
-      "license",
-      "gpl",
-      "mit",
-      "apache"
-    ],
+    "path_patterns": ["/license", "/licensing"],
+    "title_patterns": ["开源许可", "license", "gpl", "mit", "apache"],
     "priority": 33,
     "description": "Open source licenses and legal",
     "specificity": 160
@@ -2011,13 +1521,7 @@
     "name": "travel",
     "folder_name": "旅游出行",
     "folder_name_en": "Travel & Tourism",
-    "url_patterns": [
-      "travel",
-      "trip",
-      "hotel",
-      "flight",
-      "vacation"
-    ],
+    "url_patterns": ["travel", "trip", "hotel", "flight", "vacation"],
     "domain_patterns": [
       "booking.com",
       "airbnb.com",
@@ -2034,21 +1538,8 @@
       "mafengwo.cn",
       "qyer.com"
     ],
-    "path_patterns": [
-      "/travel",
-      "/trip",
-      "/hotel",
-      "/flight",
-      "/vacation"
-    ],
-    "title_patterns": [
-      "旅游",
-      "酒店",
-      "机票",
-      "travel",
-      "hotel",
-      "flight"
-    ],
+    "path_patterns": ["/travel", "/trip", "/hotel", "/flight", "/vacation"],
+    "title_patterns": ["旅游", "酒店", "机票", "travel", "hotel", "flight"],
     "priority": 41,
     "description": "Travel and tourism platforms",
     "specificity": 160
@@ -2057,12 +1548,7 @@
     "name": "food",
     "folder_name": "外卖美食",
     "folder_name_en": "Food Delivery",
-    "url_patterns": [
-      "food",
-      "delivery",
-      "restaurant",
-      "menu"
-    ],
+    "url_patterns": ["food", "delivery", "restaurant", "menu"],
     "domain_patterns": [
       "doordash.com",
       "ubereats.com",
@@ -2076,20 +1562,8 @@
       "opentable.com",
       "seamless.com"
     ],
-    "path_patterns": [
-      "/food",
-      "/delivery",
-      "/restaurant",
-      "/menu",
-      "/order"
-    ],
-    "title_patterns": [
-      "外卖",
-      "美食",
-      "restaurant",
-      "food delivery",
-      "订餐"
-    ],
+    "path_patterns": ["/food", "/delivery", "/restaurant", "/menu", "/order"],
+    "title_patterns": ["外卖", "美食", "restaurant", "food delivery", "订餐"],
     "priority": 39,
     "description": "Food delivery and restaurant services",
     "specificity": 160
@@ -2098,11 +1572,7 @@
     "name": "maps",
     "folder_name": "地图导航",
     "folder_name_en": "Maps & Navigation",
-    "url_patterns": [
-      "maps",
-      "navigation",
-      "directions"
-    ],
+    "url_patterns": ["maps", "navigation", "directions"],
     "domain_patterns": [
       "maps.google.com",
       "maps.apple.com",
@@ -2115,19 +1585,8 @@
       "mapy.cz",
       "yandex.ru/maps"
     ],
-    "path_patterns": [
-      "/maps",
-      "/navigation",
-      "/directions",
-      "/route"
-    ],
-    "title_patterns": [
-      "地图",
-      "导航",
-      "navigation",
-      "directions",
-      "maps"
-    ],
+    "path_patterns": ["/maps", "/navigation", "/directions", "/route"],
+    "title_patterns": ["地图", "导航", "navigation", "directions", "maps"],
     "priority": 53,
     "description": "Maps and navigation services",
     "specificity": 160
@@ -2136,12 +1595,7 @@
     "name": "health",
     "folder_name": "健康医疗",
     "folder_name_en": "Health & Medical",
-    "url_patterns": [
-      "health",
-      "medical",
-      "medicine",
-      "doctor"
-    ],
+    "url_patterns": ["health", "medical", "medicine", "doctor"],
     "domain_patterns": [
       "webmd.com",
       "healthline.com",
@@ -2161,14 +1615,7 @@
       "/doctor",
       "/symptom"
     ],
-    "title_patterns": [
-      "健康",
-      "医疗",
-      "health",
-      "medical",
-      "医生",
-      "疾病"
-    ],
+    "title_patterns": ["健康", "医疗", "health", "medical", "医生", "疾病"],
     "priority": 47,
     "description": "Health and medical information",
     "specificity": 160
@@ -2177,11 +1624,7 @@
     "name": "weather",
     "folder_name": "天气服务",
     "folder_name_en": "Weather Services",
-    "url_patterns": [
-      "weather",
-      "forecast",
-      "meteo"
-    ],
+    "url_patterns": ["weather", "forecast", "meteo"],
     "domain_patterns": [
       "weather.com",
       "accuweather.com",
@@ -2193,16 +1636,8 @@
       "weather.yahoo.com",
       "yr.no"
     ],
-    "path_patterns": [
-      "/weather",
-      "/forecast"
-    ],
-    "title_patterns": [
-      "天气",
-      "weather",
-      "forecast",
-      "气象"
-    ],
+    "path_patterns": ["/weather", "/forecast"],
+    "title_patterns": ["天气", "weather", "forecast", "气象"],
     "priority": 31,
     "description": "Weather forecast services",
     "specificity": 160
@@ -2211,12 +1646,7 @@
     "name": "jobs",
     "folder_name": "求职招聘",
     "folder_name_en": "Jobs & Careers",
-    "url_patterns": [
-      "jobs",
-      "career",
-      "hiring",
-      "recruit"
-    ],
+    "url_patterns": ["jobs", "career", "hiring", "recruit"],
     "domain_patterns": [
       "linkedin.com/jobs",
       "indeed.com",
@@ -2230,20 +1660,8 @@
       "greenhouse.io",
       "lever.co"
     ],
-    "path_patterns": [
-      "/jobs",
-      "/career",
-      "/careers",
-      "/hiring",
-      "/job"
-    ],
-    "title_patterns": [
-      "招聘",
-      "求职",
-      "career",
-      "hiring",
-      "工作"
-    ],
+    "path_patterns": ["/jobs", "/career", "/careers", "/hiring", "/job"],
+    "title_patterns": ["招聘", "求职", "career", "hiring", "工作"],
     "priority": 43,
     "description": "Job search and career platforms",
     "specificity": 160
@@ -2252,10 +1670,7 @@
     "name": "podcast",
     "folder_name": "播客节目",
     "folder_name_en": "Podcasts",
-    "url_patterns": [
-      "podcast",
-      "podcasts"
-    ],
+    "url_patterns": ["podcast", "podcasts"],
     "domain_patterns": [
       "podcasts.apple.com",
       "podcasts.google.com",
@@ -2268,18 +1683,8 @@
       "overcast.fm",
       "pocketcasts.com"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/podcasts",
-      "/episode",
-      "/show"
-    ],
-    "title_patterns": [
-      "podcast",
-      "播客",
-      "节目",
-      "episode"
-    ],
+    "path_patterns": ["/podcast", "/podcasts", "/episode", "/show"],
+    "title_patterns": ["podcast", "播客", "节目", "episode"],
     "priority": 37,
     "description": "Podcast platforms and directories",
     "specificity": 160
@@ -2288,12 +1693,7 @@
     "name": "ebooks",
     "folder_name": "电子书阅读",
     "folder_name_en": "E-books & Reading",
-    "url_patterns": [
-      "ebook",
-      "books",
-      "reading",
-      "library"
-    ],
+    "url_patterns": ["ebook", "books", "reading", "library"],
     "domain_patterns": [
       "kindle.amazon.com",
       "goodreads.com",
@@ -2309,20 +1709,8 @@
       "scribd.com",
       "bookwalker.jp"
     ],
-    "path_patterns": [
-      "/book",
-      "/books",
-      "/ebook",
-      "/read",
-      "/library"
-    ],
-    "title_patterns": [
-      "电子书",
-      "ebook",
-      "books",
-      "阅读",
-      "reading"
-    ],
+    "path_patterns": ["/book", "/books", "/ebook", "/read", "/library"],
+    "title_patterns": ["电子书", "ebook", "books", "阅读", "reading"],
     "priority": 29,
     "description": "E-book platforms and digital libraries",
     "specificity": 160
@@ -2331,12 +1719,7 @@
     "name": "comics",
     "folder_name": "漫画在线",
     "folder_name_en": "Comics & Webcomics",
-    "url_patterns": [
-      "comic",
-      "webtoon",
-      "webcomic",
-      "manga"
-    ],
+    "url_patterns": ["comic", "webtoon", "webcomic", "manga"],
     "domain_patterns": [
       "webtoons.com",
       "comixology.com",
@@ -2348,19 +1731,8 @@
       "comic-walker.com",
       "mangaplus.shueisha.co.jp"
     ],
-    "path_patterns": [
-      "/comic",
-      "/comics",
-      "/webtoon",
-      "/manga",
-      "/chapter"
-    ],
-    "title_patterns": [
-      "漫画",
-      "comic",
-      "webtoon",
-      "webcomic"
-    ],
+    "path_patterns": ["/comic", "/comics", "/webtoon", "/manga", "/chapter"],
+    "title_patterns": ["漫画", "comic", "webtoon", "webcomic"],
     "priority": 27,
     "description": "Comics and webcomics platforms",
     "specificity": 160
@@ -2369,11 +1741,7 @@
     "name": "photography",
     "folder_name": "摄影图片",
     "folder_name_en": "Photography",
-    "url_patterns": [
-      "photo",
-      "photography",
-      "photographer"
-    ],
+    "url_patterns": ["photo", "photography", "photographer"],
     "domain_patterns": [
       "500px.com",
       "flickr.com",
@@ -2393,12 +1761,7 @@
       "/photography",
       "/gallery"
     ],
-    "title_patterns": [
-      "摄影",
-      "photography",
-      "photo",
-      "图片"
-    ],
+    "title_patterns": ["摄影", "photography", "photo", "图片"],
     "priority": 23,
     "description": "Photography and image platforms",
     "specificity": 160
@@ -2407,12 +1770,7 @@
     "name": "sports",
     "folder_name": "体育运动",
     "folder_name_en": "Sports",
-    "url_patterns": [
-      "sport",
-      "sports",
-      "football",
-      "basketball"
-    ],
+    "url_patterns": ["sport", "sports", "football", "basketball"],
     "domain_patterns": [
       "espn.com",
       "nba.com",
@@ -2429,20 +1787,8 @@
       "thescore.com",
       "livescore.com"
     ],
-    "path_patterns": [
-      "/sports",
-      "/sport",
-      "/game",
-      "/match",
-      "/scores"
-    ],
-    "title_patterns": [
-      "体育",
-      "sports",
-      "运动",
-      "足球",
-      "篮球"
-    ],
+    "path_patterns": ["/sports", "/sport", "/game", "/match", "/scores"],
+    "title_patterns": ["体育", "sports", "运动", "足球", "篮球"],
     "priority": 21,
     "description": "Sports and athletics",
     "specificity": 160
@@ -2451,12 +1797,7 @@
     "name": "secondhand",
     "folder_name": "二手交易",
     "folder_name_en": "Secondhand & Marketplace",
-    "url_patterns": [
-      "secondhand",
-      "used",
-      "marketplace",
-      "resale"
-    ],
+    "url_patterns": ["secondhand", "used", "marketplace", "resale"],
     "domain_patterns": [
       "ebay.com",
       "mercari.com",
@@ -2469,19 +1810,8 @@
       "letgo.com",
       "facebook.com/marketplace"
     ],
-    "path_patterns": [
-      "/marketplace",
-      "/sell",
-      "/buy",
-      "/listing"
-    ],
-    "title_patterns": [
-      "二手",
-      "闲置",
-      "secondhand",
-      "marketplace",
-      "转卖"
-    ],
+    "path_patterns": ["/marketplace", "/sell", "/buy", "/listing"],
+    "title_patterns": ["二手", "闲置", "secondhand", "marketplace", "转卖"],
     "priority": 19,
     "description": "Secondhand and marketplace platforms",
     "specificity": 160
@@ -2490,13 +1820,7 @@
     "name": "deals",
     "folder_name": "团购优惠",
     "folder_name_en": "Deals & Coupons",
-    "url_patterns": [
-      "deal",
-      "deals",
-      "coupon",
-      "discount",
-      "promo"
-    ],
+    "url_patterns": ["deal", "deals", "coupon", "discount", "promo"],
     "domain_patterns": [
       "groupon.com",
       "slickdeals.net",
@@ -2510,21 +1834,8 @@
       "bensbargains.com",
       "dealsplus.com"
     ],
-    "path_patterns": [
-      "/deal",
-      "/deals",
-      "/coupon",
-      "/discount",
-      "/promo"
-    ],
-    "title_patterns": [
-      "优惠",
-      "折扣",
-      "deals",
-      "coupon",
-      "促销",
-      "团购"
-    ],
+    "path_patterns": ["/deal", "/deals", "/coupon", "/discount", "/promo"],
+    "title_patterns": ["优惠", "折扣", "deals", "coupon", "促销", "团购"],
     "priority": 17,
     "description": "Deals and coupon platforms",
     "specificity": 160
@@ -2533,12 +1844,7 @@
     "name": "pricetracking",
     "folder_name": "价格比较",
     "folder_name_en": "Price Tracking",
-    "url_patterns": [
-      "price",
-      "compare",
-      "tracking",
-      "comparison"
-    ],
+    "url_patterns": ["price", "compare", "tracking", "comparison"],
     "domain_patterns": [
       "camelcamelcamel.com",
       "keepa.com",
@@ -2549,18 +1855,8 @@
       "idealo.de",
       "geizhals.de"
     ],
-    "path_patterns": [
-      "/price",
-      "/compare",
-      "/tracking",
-      "/history"
-    ],
-    "title_patterns": [
-      "价格",
-      "比价",
-      "price tracking",
-      "comparison"
-    ],
+    "path_patterns": ["/price", "/compare", "/tracking", "/history"],
+    "title_patterns": ["价格", "比价", "price tracking", "comparison"],
     "priority": 13,
     "description": "Price comparison and tracking",
     "specificity": 160
@@ -2569,11 +1865,7 @@
     "name": "shorturl",
     "folder_name": "短链接服务",
     "folder_name_en": "URL Shorteners",
-    "url_patterns": [
-      "shorten",
-      "short",
-      "tiny"
-    ],
+    "url_patterns": ["shorten", "short", "tiny"],
     "domain_patterns": [
       "bit.ly",
       "tinyurl.com",
@@ -2590,11 +1882,7 @@
       "soo.gd"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "短链接",
-      "short url",
-      "缩短"
-    ],
+    "title_patterns": ["短链接", "short url", "缩短"],
     "priority": 12,
     "description": "URL shortening services",
     "specificity": 60
@@ -2613,18 +1901,9 @@
       ":5000",
       ":4200"
     ],
-    "domain_patterns": [
-      "localhost",
-      "127.0.0.1",
-      "0.0.0.0"
-    ],
+    "domain_patterns": ["localhost", "127.0.0.1", "0.0.0.0"],
     "path_patterns": [],
-    "title_patterns": [
-      "本地",
-      "local",
-      "dev",
-      "development"
-    ],
+    "title_patterns": ["本地", "local", "dev", "development"],
     "priority": 11,
     "description": "Local development servers",
     "specificity": 60
@@ -2633,11 +1912,7 @@
     "name": "translation",
     "folder_name": "翻译服务",
     "folder_name_en": "Translation Services",
-    "url_patterns": [
-      "translate",
-      "translation",
-      "translator"
-    ],
+    "url_patterns": ["translate", "translation", "translator"],
     "domain_patterns": [
       "translate.google.com",
       "deepl.com",
@@ -2649,17 +1924,8 @@
       "translate.yandex.com",
       "papago.naver.com"
     ],
-    "path_patterns": [
-      "/translate",
-      "/translation",
-      "/translator"
-    ],
-    "title_patterns": [
-      "翻译",
-      "translate",
-      "translation",
-      "翻译器"
-    ],
+    "path_patterns": ["/translate", "/translation", "/translator"],
+    "title_patterns": ["翻译", "translate", "translation", "翻译器"],
     "priority": 49,
     "description": "Translation and language services",
     "specificity": 160
@@ -2668,12 +1934,7 @@
     "name": "fonts",
     "folder_name": "字体资源",
     "folder_name_en": "Fonts & Typography",
-    "url_patterns": [
-      "font",
-      "fonts",
-      "typeface",
-      "typography"
-    ],
+    "url_patterns": ["font", "fonts", "typeface", "typography"],
     "domain_patterns": [
       "fonts.google.com",
       "fontsquirrel.com",
@@ -2686,17 +1947,8 @@
       "typography.com",
       "fonts.adobe.com"
     ],
-    "path_patterns": [
-      "/font",
-      "/fonts",
-      "/typeface"
-    ],
-    "title_patterns": [
-      "字体",
-      "font",
-      "typography",
-      "typeface"
-    ],
+    "path_patterns": ["/font", "/fonts", "/typeface"],
+    "title_patterns": ["字体", "font", "typography", "typeface"],
     "priority": 25,
     "description": "Font and typography resources",
     "specificity": 160
@@ -2705,11 +1957,7 @@
     "name": "japanese_shopping",
     "folder_name": "日本购物",
     "folder_name_en": "Japanese Shopping",
-    "url_patterns": [
-      "rakuten",
-      "amazon.co.jp",
-      ".co.jp"
-    ],
+    "url_patterns": ["rakuten", "amazon.co.jp", ".co.jp"],
     "domain_patterns": [
       "rakuten.co.jp",
       "amazon.co.jp",
@@ -2721,16 +1969,8 @@
       "biccamera.com",
       "kakaku.com"
     ],
-    "path_patterns": [
-      "/shop",
-      "/cart",
-      "/product"
-    ],
-    "title_patterns": [
-      "楽天",
-      "購入",
-      "ショッピング"
-    ],
+    "path_patterns": ["/shop", "/cart", "/product"],
+    "title_patterns": ["楽天", "購入", "ショッピング"],
     "priority": 53,
     "description": "Japanese e-commerce and shopping sites",
     "specificity": 160
@@ -2739,12 +1979,7 @@
     "name": "japanese_news",
     "folder_name": "日本新闻",
     "folder_name_en": "Japanese News",
-    "url_patterns": [
-      "asahi",
-      "yomiuri",
-      "mainichi",
-      "nikkei"
-    ],
+    "url_patterns": ["asahi", "yomiuri", "mainichi", "nikkei"],
     "domain_patterns": [
       "asahi.com",
       "yomiuri.co.jp",
@@ -2757,15 +1992,8 @@
       "47news.jp",
       "itmedia.co.jp"
     ],
-    "path_patterns": [
-      "/news",
-      "/article"
-    ],
-    "title_patterns": [
-      "ニュース",
-      "新聞",
-      "記事"
-    ],
+    "path_patterns": ["/news", "/article"],
+    "title_patterns": ["ニュース", "新聞", "記事"],
     "priority": 52,
     "description": "Japanese news and media sites",
     "specificity": 160
@@ -2774,11 +2002,7 @@
     "name": "japanese_entertainment",
     "folder_name": "日本娱乐",
     "folder_name_en": "Japanese Entertainment",
-    "url_patterns": [
-      "niconico",
-      "abema",
-      "tver"
-    ],
+    "url_patterns": ["niconico", "abema", "tver"],
     "domain_patterns": [
       "nicovideo.jp",
       "abema.tv",
@@ -2790,17 +2014,8 @@
       "amazon.co.jp/prime",
       "dazn.com"
     ],
-    "path_patterns": [
-      "/watch",
-      "/video",
-      "/anime"
-    ],
-    "title_patterns": [
-      "ニコニコ",
-      "動画",
-      "アニメ",
-      "番組"
-    ],
+    "path_patterns": ["/watch", "/video", "/anime"],
+    "title_patterns": ["ニコニコ", "動画", "アニメ", "番組"],
     "priority": 51,
     "description": "Japanese video streaming and entertainment",
     "specificity": 160
@@ -2809,11 +2024,7 @@
     "name": "japanese_social",
     "folder_name": "日本社交",
     "folder_name_en": "Japanese Social",
-    "url_patterns": [
-      "line",
-      "mixi",
-      "twitter.com/ja"
-    ],
+    "url_patterns": ["line", "mixi", "twitter.com/ja"],
     "domain_patterns": [
       "line.me",
       "mixi.jp",
@@ -2823,16 +2034,8 @@
       "note.com",
       "livedoor.blog"
     ],
-    "path_patterns": [
-      "/profile",
-      "/user",
-      "/blog"
-    ],
-    "title_patterns": [
-      "友達",
-      "メッセージ",
-      "ブログ"
-    ],
+    "path_patterns": ["/profile", "/user", "/blog"],
+    "title_patterns": ["友達", "メッセージ", "ブログ"],
     "priority": 50,
     "description": "Japanese social media platforms",
     "specificity": 160
@@ -2841,11 +2044,7 @@
     "name": "japanese_tech",
     "folder_name": "日本科技",
     "folder_name_en": "Japanese Tech",
-    "url_patterns": [
-      "qiita",
-      "zenn",
-      "teratail"
-    ],
+    "url_patterns": ["qiita", "zenn", "teratail"],
     "domain_patterns": [
       "qiita.com",
       "zenn.dev",
@@ -2855,16 +2054,8 @@
       "github.com",
       "stackoverflow.com"
     ],
-    "path_patterns": [
-      "/tech",
-      "/dev",
-      "/code"
-    ],
-    "title_patterns": [
-      "技術",
-      "プログラミング",
-      "開発"
-    ],
+    "path_patterns": ["/tech", "/dev", "/code"],
+    "title_patterns": ["技術", "プログラミング", "開発"],
     "priority": 49,
     "description": "Japanese tech and developer communities",
     "specificity": 160
@@ -2873,11 +2064,7 @@
     "name": "japanese_gaming",
     "folder_name": "日本游戏",
     "folder_name_en": "Japanese Gaming",
-    "url_patterns": [
-      "dmm",
-      "gree",
-      "mobage"
-    ],
+    "url_patterns": ["dmm", "gree", "mobage"],
     "domain_patterns": [
       "dmm.co.jp",
       "dmm.com",
@@ -2889,15 +2076,8 @@
       "nintendo.co.jp",
       "playstation.com/ja-jp"
     ],
-    "path_patterns": [
-      "/game",
-      "/play"
-    ],
-    "title_patterns": [
-      "ゲーム",
-      "プレイ",
-      "攻略"
-    ],
+    "path_patterns": ["/game", "/play"],
+    "title_patterns": ["ゲーム", "プレイ", "攻略"],
     "priority": 48,
     "description": "Japanese gaming platforms and sites",
     "specificity": 160
@@ -2906,11 +2086,7 @@
     "name": "japanese_manga",
     "folder_name": "日本漫画",
     "folder_name_en": "Japanese Manga",
-    "url_patterns": [
-      "pixiv",
-      "booth",
-      "fanbox"
-    ],
+    "url_patterns": ["pixiv", "booth", "fanbox"],
     "domain_patterns": [
       "pixiv.net",
       "booth.pm",
@@ -2921,16 +2097,8 @@
       "comico.jp",
       "piccoma.com"
     ],
-    "path_patterns": [
-      "/manga",
-      "/comic",
-      "/novel"
-    ],
-    "title_patterns": [
-      "漫画",
-      "イラスト",
-      "小説"
-    ],
+    "path_patterns": ["/manga", "/comic", "/novel"],
+    "title_patterns": ["漫画", "イラスト", "小説"],
     "priority": 47,
     "description": "Japanese manga and illustration sites",
     "specificity": 160
@@ -2939,10 +2107,7 @@
     "name": "japanese_music",
     "folder_name": "日本音乐",
     "folder_name_en": "Japanese Music",
-    "url_patterns": [
-      "spotify.com/ja",
-      "apple.com/jp/music"
-    ],
+    "url_patterns": ["spotify.com/ja", "apple.com/jp/music"],
     "domain_patterns": [
       "music.apple.com",
       "spotify.com",
@@ -2953,16 +2118,8 @@
       "mora.jp",
       "ototoy.jp"
     ],
-    "path_patterns": [
-      "/music",
-      "/song",
-      "/artist"
-    ],
-    "title_patterns": [
-      "音楽",
-      "歌詞",
-      "アーティスト"
-    ],
+    "path_patterns": ["/music", "/song", "/artist"],
+    "title_patterns": ["音楽", "歌詞", "アーティスト"],
     "priority": 46,
     "description": "Japanese music streaming and lyrics",
     "specificity": 160
@@ -2971,11 +2128,7 @@
     "name": "japanese_tools",
     "folder_name": "日本工具",
     "folder_name_en": "Japanese Tools",
-    "url_patterns": [
-      "yahoo.co.jp",
-      "cookpad",
-      "tabelog"
-    ],
+    "url_patterns": ["yahoo.co.jp", "cookpad", "tabelog"],
     "domain_patterns": [
       "yahoo.co.jp",
       "cookpad.com",
@@ -2987,16 +2140,8 @@
       "ekitan.com",
       "jorudan.co.jp"
     ],
-    "path_patterns": [
-      "/search",
-      "/map",
-      "/tool"
-    ],
-    "title_patterns": [
-      "検索",
-      "レシピ",
-      "地図"
-    ],
+    "path_patterns": ["/search", "/map", "/tool"],
+    "title_patterns": ["検索", "レシピ", "地図"],
     "priority": 45,
     "description": "Japanese utility and service sites",
     "specificity": 160
@@ -3005,10 +2150,7 @@
     "name": "japanese_education",
     "folder_name": "日本教育",
     "folder_name_en": "Japanese Education",
-    "url_patterns": [
-      "studyplus",
-      "benesse"
-    ],
+    "url_patterns": ["studyplus", "benesse"],
     "domain_patterns": [
       "studyplus.jp",
       "benesse.jp",
@@ -3019,16 +2161,8 @@
       "tangorin.com",
       "takoboto.jp"
     ],
-    "path_patterns": [
-      "/study",
-      "/learn",
-      "/course"
-    ],
-    "title_patterns": [
-      "勉強",
-      "学習",
-      "教育"
-    ],
+    "path_patterns": ["/study", "/learn", "/course"],
+    "title_patterns": ["勉強", "学習", "教育"],
     "priority": 44,
     "description": "Japanese education and learning platforms",
     "specificity": 160
@@ -3037,10 +2171,7 @@
     "name": "japanese_secondhand",
     "folder_name": "日本二手",
     "folder_name_en": "Japanese Secondhand",
-    "url_patterns": [
-      "mercari",
-      "yahoo.auction"
-    ],
+    "url_patterns": ["mercari", "yahoo.auction"],
     "domain_patterns": [
       "mercari.com",
       "auctions.yahoo.co.jp",
@@ -3051,16 +2182,8 @@
       "hardoff.co.jp",
       "treasure-f.com"
     ],
-    "path_patterns": [
-      "/auction",
-      "/sell",
-      "/buy"
-    ],
-    "title_patterns": [
-      "中古",
-      "オークション",
-      "フリマ"
-    ],
+    "path_patterns": ["/auction", "/sell", "/buy"],
+    "title_patterns": ["中古", "オークション", "フリマ"],
     "priority": 43,
     "description": "Japanese secondhand and auction sites",
     "specificity": 160
@@ -3069,11 +2192,7 @@
     "name": "japanese_travel",
     "folder_name": "日本旅游",
     "folder_name_en": "Japanese Travel",
-    "url_patterns": [
-      "jalan",
-      "rakuten.travel",
-      "booking.com/ja"
-    ],
+    "url_patterns": ["jalan", "rakuten.travel", "booking.com/ja"],
     "domain_patterns": [
       "jalan.net",
       "travel.rakuten.co.jp",
@@ -3086,16 +2205,8 @@
       "ana.co.jp",
       "jal.co.jp"
     ],
-    "path_patterns": [
-      "/hotel",
-      "/travel",
-      "/flight"
-    ],
-    "title_patterns": [
-      "旅行",
-      "ホテル",
-      "予約"
-    ],
+    "path_patterns": ["/hotel", "/travel", "/flight"],
+    "title_patterns": ["旅行", "ホテル", "予約"],
     "priority": 42,
     "description": "Japanese travel and booking sites",
     "specificity": 160
@@ -3104,11 +2215,7 @@
     "name": "japanese_finance",
     "folder_name": "日本金融",
     "folder_name_en": "Japanese Finance",
-    "url_patterns": [
-      "rakuten-sec",
-      "sbi",
-      "moneyforward"
-    ],
+    "url_patterns": ["rakuten-sec", "sbi", "moneyforward"],
     "domain_patterns": [
       "rakuten-sec.co.jp",
       "sbisec.co.jp",
@@ -3120,16 +2227,8 @@
       "paypay.ne.jp",
       "line-pay.com"
     ],
-    "path_patterns": [
-      "/bank",
-      "/pay",
-      "/finance"
-    ],
-    "title_patterns": [
-      "金融",
-      "銀行",
-      "支払い"
-    ],
+    "path_patterns": ["/bank", "/pay", "/finance"],
+    "title_patterns": ["金融", "銀行", "支払い"],
     "priority": 41,
     "description": "Japanese banking and finance services",
     "specificity": 160
@@ -3138,11 +2237,7 @@
     "name": "japanese_jobs",
     "folder_name": "日本求职",
     "folder_name_en": "Japanese Jobs",
-    "url_patterns": [
-      "rikunabi",
-      "mynavi",
-      "doda"
-    ],
+    "url_patterns": ["rikunabi", "mynavi", "doda"],
     "domain_patterns": [
       "rikunabi.com",
       "mynavi.jp",
@@ -3153,16 +2248,8 @@
       "green-japan.com",
       "indeed.com/jp"
     ],
-    "path_patterns": [
-      "/job",
-      "/career",
-      "/recruit"
-    ],
-    "title_patterns": [
-      "求人",
-      "転職",
-      "採用"
-    ],
+    "path_patterns": ["/job", "/career", "/recruit"],
+    "title_patterns": ["求人", "転職", "採用"],
     "priority": 40,
     "description": "Japanese job hunting and recruitment",
     "specificity": 160
@@ -3171,10 +2258,7 @@
     "name": "japanese_health",
     "folder_name": "日本健康",
     "folder_name_en": "Japanese Health",
-    "url_patterns": [
-      "medicalnote",
-      "caloo"
-    ],
+    "url_patterns": ["medicalnote", "caloo"],
     "domain_patterns": [
       "medicalnote.jp",
       "caloo.jp",
@@ -3185,16 +2269,8 @@
       "minnakenko.jp",
       "healthcare.omron.co.jp"
     ],
-    "path_patterns": [
-      "/health",
-      "/clinic",
-      "/medical"
-    ],
-    "title_patterns": [
-      "健康",
-      "病院",
-      "医療"
-    ],
+    "path_patterns": ["/health", "/clinic", "/medical"],
+    "title_patterns": ["健康", "病院", "医療"],
     "priority": 39,
     "description": "Japanese healthcare and medical sites",
     "specificity": 160
@@ -3203,10 +2279,7 @@
     "name": "japanese_general",
     "folder_name": "日本综合",
     "folder_name_en": "Japanese General",
-    "url_patterns": [
-      ".co.jp",
-      ".jp"
-    ],
+    "url_patterns": [".co.jp", ".jp"],
     "domain_patterns": [
       "fc2.com",
       "livedoor.com",
@@ -3225,11 +2298,7 @@
     "name": "korean",
     "folder_name": "韩国服务",
     "folder_name_en": "Korean Services",
-    "url_patterns": [
-      ".co.kr",
-      "naver",
-      "kakao"
-    ],
+    "url_patterns": [".co.kr", "naver", "kakao"],
     "domain_patterns": [
       "naver.com",
       "kakao.com",
@@ -3278,13 +2347,7 @@
       "privateinternetaccess.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "vpn",
-      "proxy",
-      "翻墙",
-      "科学上网",
-      "机场"
-    ],
+    "title_patterns": ["vpn", "proxy", "翻墙", "科学上网", "机场"],
     "priority": 75,
     "description": "VPN and proxy tools",
     "specificity": 60
@@ -3293,12 +2356,7 @@
     "name": "crypto",
     "folder_name": "加密货币与Web3",
     "folder_name_en": "Crypto & Web3",
-    "url_patterns": [
-      "crypto",
-      "web3",
-      "nft",
-      "blockchain"
-    ],
+    "url_patterns": ["crypto", "web3", "nft", "blockchain"],
     "domain_patterns": [
       "coinbase.com",
       "binance.com",
@@ -3309,14 +2367,7 @@
       "kraken.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "crypto",
-      "nft",
-      "区块链",
-      "比特币",
-      "以太坊",
-      "web3"
-    ],
+    "title_patterns": ["crypto", "nft", "区块链", "比特币", "以太坊", "web3"],
     "priority": 48,
     "description": "Cryptocurrency, NFTs, and Web3 resources",
     "specificity": 60
@@ -3325,11 +2376,7 @@
     "name": "travel",
     "folder_name": "旅行机酒",
     "folder_name_en": "Travel & Booking",
-    "url_patterns": [
-      "flight",
-      "hotel",
-      "booking"
-    ],
+    "url_patterns": ["flight", "hotel", "booking"],
     "domain_patterns": [
       "booking.com",
       "agoda.com",
@@ -3342,11 +2389,7 @@
       "qunar.com",
       "fliggy.com"
     ],
-    "path_patterns": [
-      "/hotel",
-      "/flight",
-      "/travel"
-    ],
+    "path_patterns": ["/hotel", "/flight", "/travel"],
     "title_patterns": [
       "旅行",
       "旅游",
@@ -3364,11 +2407,7 @@
     "name": "health",
     "folder_name": "医疗健康",
     "folder_name_en": "Health & Fitness",
-    "url_patterns": [
-      "health",
-      "fitness",
-      "medical"
-    ],
+    "url_patterns": ["health", "fitness", "medical"],
     "domain_patterns": [
       "webmd.com",
       "mayoclinic.org",
@@ -3380,14 +2419,7 @@
       "111.com.cn"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "health",
-      "medical",
-      "健康",
-      "医疗",
-      "健身",
-      "寻医问药"
-    ],
+    "title_patterns": ["health", "medical", "健康", "医疗", "健身", "寻医问药"],
     "priority": 58,
     "description": "Healthcare, medicine, and fitness",
     "specificity": 60
@@ -3396,11 +2428,7 @@
     "name": "real_estate",
     "folder_name": "房产交易",
     "folder_name_en": "Real Estate",
-    "url_patterns": [
-      "real-estate",
-      "property",
-      "housing"
-    ],
+    "url_patterns": ["real-estate", "property", "housing"],
     "domain_patterns": [
       "zillow.com",
       "realtor.com",
@@ -3428,11 +2456,7 @@
     "name": "reading",
     "folder_name": "阅读与文学",
     "folder_name_en": "Reading & Literature",
-    "url_patterns": [
-      "novel",
-      "reading",
-      "book"
-    ],
+    "url_patterns": ["novel", "reading", "book"],
     "domain_patterns": [
       "goodreads.com",
       "wattpad.com",
@@ -3444,19 +2468,8 @@
       "fanfiction.net",
       "archiveofourown.org"
     ],
-    "path_patterns": [
-      "/book",
-      "/novel",
-      "/read"
-    ],
-    "title_patterns": [
-      "小说",
-      "阅读",
-      "文学",
-      "图书",
-      "novel",
-      "book"
-    ],
+    "path_patterns": ["/book", "/novel", "/read"],
+    "title_patterns": ["小说", "阅读", "文学", "图书", "novel", "book"],
     "priority": 38,
     "description": "Reading, novels, and literature platforms",
     "specificity": 160
@@ -3465,11 +2478,7 @@
     "name": "jobs",
     "folder_name": "职场招聘",
     "folder_name_en": "Jobs & Career",
-    "url_patterns": [
-      "job",
-      "career",
-      "hiring"
-    ],
+    "url_patterns": ["job", "career", "hiring"],
     "domain_patterns": [
       "indeed.com",
       "glassdoor.com",
@@ -3481,17 +2490,8 @@
       "monster.com",
       "levels.fyi"
     ],
-    "path_patterns": [
-      "/jobs",
-      "/career"
-    ],
-    "title_patterns": [
-      "job",
-      "招聘",
-      "求职",
-      "面试",
-      "职场"
-    ],
+    "path_patterns": ["/jobs", "/career"],
+    "title_patterns": ["job", "招聘", "求职", "面试", "职场"],
     "priority": 68,
     "description": "Job hunting and professional networks",
     "specificity": 160
@@ -3500,9 +2500,7 @@
     "name": "gov",
     "folder_name": "政府服务",
     "folder_name_en": "Government & Public Services",
-    "url_patterns": [
-      ".gov"
-    ],
+    "url_patterns": [".gov"],
     "domain_patterns": [
       "gov.cn",
       "europa.eu",
@@ -3514,13 +2512,7 @@
       "tax.gov.cn"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "政府",
-      "政务",
-      "税务",
-      "government",
-      "public service"
-    ],
+    "title_patterns": ["政府", "政务", "税务", "government", "public service"],
     "priority": 72,
     "description": "Government portals and public services",
     "specificity": 60
@@ -3529,11 +2521,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -3541,16 +2529,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -3559,12 +2539,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -3573,15 +2548,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -3590,11 +2557,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -3602,16 +2565,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -3620,12 +2575,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -3634,15 +2584,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -3651,11 +2593,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -3663,16 +2601,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -3681,12 +2611,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -3695,15 +2620,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -3712,11 +2629,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -3724,16 +2637,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -3742,12 +2647,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -3756,15 +2656,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -3773,11 +2665,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -3785,16 +2673,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -3803,12 +2683,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -3817,15 +2692,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -3834,11 +2701,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -3846,16 +2709,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -3864,12 +2719,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -3878,15 +2728,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -3895,11 +2737,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -3907,16 +2745,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -3925,12 +2755,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -3939,15 +2764,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -3956,11 +2773,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -3968,16 +2781,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -3986,12 +2791,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4000,15 +2800,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4017,11 +2809,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4029,16 +2817,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4047,12 +2827,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4061,15 +2836,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4078,11 +2845,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4090,16 +2853,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4108,12 +2863,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4122,15 +2872,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4139,11 +2881,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4151,16 +2889,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4169,12 +2899,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4183,15 +2908,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4200,11 +2917,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4212,16 +2925,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4230,12 +2935,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4244,15 +2944,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4261,11 +2953,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4273,16 +2961,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4291,12 +2971,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4305,15 +2980,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4322,11 +2989,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4334,16 +2997,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4352,12 +3007,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4366,15 +3016,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4383,11 +3025,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4395,16 +3033,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4413,12 +3043,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4427,15 +3052,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4444,11 +3061,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4456,16 +3069,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4474,12 +3079,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4488,15 +3088,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4505,11 +3097,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4517,16 +3105,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4535,12 +3115,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4549,15 +3124,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4566,11 +3133,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4578,16 +3141,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4596,12 +3151,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4610,15 +3160,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4627,11 +3169,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4639,16 +3177,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4657,12 +3187,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4671,15 +3196,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4688,11 +3205,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4700,16 +3213,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4718,12 +3223,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4732,15 +3232,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4749,11 +3241,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4761,16 +3249,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4779,12 +3259,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4793,15 +3268,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4810,11 +3277,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4822,16 +3285,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4840,12 +3295,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4854,15 +3304,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4871,11 +3313,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4883,16 +3321,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4901,12 +3331,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4915,15 +3340,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4932,11 +3349,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -4944,16 +3357,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -4962,12 +3367,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -4976,15 +3376,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -4993,11 +3385,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5005,16 +3393,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5023,12 +3403,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5037,15 +3412,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5054,11 +3421,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5066,16 +3429,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5084,12 +3439,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5098,15 +3448,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5115,11 +3457,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5127,16 +3465,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5145,12 +3475,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5159,15 +3484,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5176,11 +3493,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5188,16 +3501,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5206,12 +3511,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5220,15 +3520,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5237,11 +3529,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5249,16 +3537,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5267,12 +3547,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5281,15 +3556,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5298,11 +3565,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5310,16 +3573,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5328,12 +3583,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5342,15 +3592,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5359,11 +3601,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5371,16 +3609,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5389,12 +3619,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5403,15 +3628,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5420,11 +3637,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5432,16 +3645,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5450,12 +3655,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5464,15 +3664,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5481,11 +3673,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5493,16 +3681,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5511,12 +3691,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5525,15 +3700,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5542,11 +3709,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5554,16 +3717,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5572,12 +3727,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5586,15 +3736,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5603,11 +3745,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5615,16 +3753,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5633,12 +3763,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5647,15 +3772,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60
@@ -5664,11 +3781,7 @@
     "name": "podcast",
     "folder_name": "播客电台",
     "folder_name_en": "Podcast & Radio",
-    "url_patterns": [
-      "podcast",
-      "radio",
-      "fm"
-    ],
+    "url_patterns": ["podcast", "radio", "fm"],
     "domain_patterns": [
       "overcast.fm",
       "pocketcasts.com",
@@ -5676,16 +3789,8 @@
       "ximalaya.com",
       "qingting.fm"
     ],
-    "path_patterns": [
-      "/podcast",
-      "/listen"
-    ],
-    "title_patterns": [
-      "播客",
-      "电台",
-      "podcast",
-      "radio"
-    ],
+    "path_patterns": ["/podcast", "/listen"],
+    "title_patterns": ["播客", "电台", "podcast", "radio"],
     "priority": 32,
     "description": "Podcasts, internet radio, and audio shows",
     "specificity": 160
@@ -5694,12 +3799,7 @@
     "name": "legal",
     "folder_name": "法律产权",
     "folder_name_en": "Legal & Copyright",
-    "url_patterns": [
-      "law",
-      "legal",
-      "copyright",
-      "patent"
-    ],
+    "url_patterns": ["law", "legal", "copyright", "patent"],
     "domain_patterns": [
       "law.com",
       "findlaw.com",
@@ -5708,15 +3808,7 @@
       "pkulaw.com"
     ],
     "path_patterns": [],
-    "title_patterns": [
-      "法律",
-      "法规",
-      "法院",
-      "专利",
-      "版权",
-      "legal",
-      "law"
-    ],
+    "title_patterns": ["法律", "法规", "法院", "专利", "版权", "legal", "law"],
     "priority": 42,
     "description": "Legal information, courts, and copyright resources",
     "specificity": 60

@@ -25,7 +25,7 @@ pub fn extract_chromium_downloads(db_path: &Path, browser: &str) -> Result<Vec<D
     let conn = Connection::open(db_path)?;
 
     let mut stmt = conn.prepare(
-        "SELECT tab_url, target_path, total_bytes, start_time, end_time, state 
+        "SELECT tab_url, target_path, total_bytes, start_time, end_time, state
          FROM downloads",
     )?;
 

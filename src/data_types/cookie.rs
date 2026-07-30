@@ -27,7 +27,7 @@ pub fn extract_chromium_cookies(db_path: &Path, browser: &str) -> Result<Vec<Coo
     let conn = Connection::open(db_path)?;
 
     let mut stmt = conn.prepare(
-        "SELECT host_key, name, encrypted_value, path, expires_utc, is_secure, is_httponly 
+        "SELECT host_key, name, encrypted_value, path, expires_utc, is_secure, is_httponly
          FROM cookies",
     )?;
 
@@ -75,7 +75,7 @@ pub fn extract_firefox_cookies(db_path: &Path) -> Result<Vec<Cookie>> {
     let conn = Connection::open(db_path)?;
 
     let mut stmt = conn.prepare(
-        "SELECT host, name, value, path, expiry, isSecure, isHttpOnly 
+        "SELECT host, name, value, path, expiry, isSecure, isHttpOnly
          FROM moz_cookies",
     )?;
 

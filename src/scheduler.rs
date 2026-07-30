@@ -38,7 +38,7 @@ pub async fn start_scheduler(config: SchedulerConfig) -> Result<()> {
                     // Use incremental mode for scheduled syncs
                     match engine.sync(SyncMode::Incremental, false, false).await {
                         Ok(stats) => {
-                            info!("✅ Scheduled sync completed: {} bookmarks synced, {} duplicates removed", 
+                            info!("✅ Scheduled sync completed: {} bookmarks synced, {} duplicates removed",
                                 stats.bookmarks_synced, stats.duplicates_removed);
                         }
                         Err(e) => {
