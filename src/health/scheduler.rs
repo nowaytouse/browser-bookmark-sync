@@ -1,0 +1,195 @@
+//! Host/Domain Scheduler and Rate Limiter
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration, Instant};
+
+#[derive(Debug, Clone)]
+pub struct SchedulerConfig {
+    pub max_global_concurrency: usize,
+    pub per_host_concurrency: usize,
+    pub host_interval_ms: u64,
+    pub default_429_cooldown_secs: u64,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            max_global_concurrency: 5,
+            per_host_concurrency: 1,
+            host_interval_ms: 200,
+            default_429_cooldown_secs: 30,
+        }
+    }
+}
+
+impl SchedulerConfig {
+    pub fn slow_mode() -> Self {
+        Self {
+            max_global_concurrency: 2,
+            per_host_concurrency: 1,
+            host_interval_ms: 2000,
+            default_429_cooldown_secs: 60,
+        }
+    }
+}
+
+struct HostState {
+    last_request: Option<Instant>,
+    cooldown_until: Option<Instant>,
+    active_requests: usize,
+}
+
+/// Host & Domain Rate Limiter for probes
+#[derive(Clone)]
+pub struct HostScheduler {
+    config: SchedulerConfig,
+    hosts: Arc<Mutex<HashMap<String, HostState>>>,
+    global_semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+impl HostScheduler {
+    pub fn new(config: SchedulerConfig) -> Self {
+        let global_semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_global_concurrency));
+        Self {
+            config,
+            hosts: Arc::new(Mutex::new(HashMap::new())),
+            global_semaphore,
+        }
+    }
+
+    /// Acquire permission to probe target keys (host and/or registrable domain), respecting interval and cooldown
+    pub async fn acquire_keys(&self, keys: &[&str]) -> tokio::sync::OwnedSemaphorePermit {
+        let permit = self
+            .global_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("Semaphore closed");
+
+        if keys.is_empty() {
+            return permit;
+        }
+
+        loop {
+            let max_delay = {
+                let mut guard = self.hosts.lock().await;
+                let now = Instant::now();
+                let mut delay = Duration::ZERO;
+
+                for &k in keys {
+                    let state = guard.entry(k.to_string()).or_insert(HostState {
+                        last_request: None,
+                        cooldown_until: None,
+                        active_requests: 0,
+                    });
+
+                    let key_delay = if let Some(until) = state.cooldown_until {
+                        if now < until {
+                            now.duration_since(now) + (until - now)
+                        } else {
+                            state.cooldown_until = None;
+                            Duration::ZERO
+                        }
+                    } else if state.active_requests >= self.config.per_host_concurrency {
+                        Duration::from_millis(100)
+                    } else if let Some(last) = state.last_request {
+                        let interval = Duration::from_millis(self.config.host_interval_ms);
+                        let elapsed = now.duration_since(last);
+                        if elapsed < interval {
+                            interval - elapsed
+                        } else {
+                            Duration::ZERO
+                        }
+                    } else {
+                        Duration::ZERO
+                    };
+
+                    if key_delay > delay {
+                        delay = key_delay;
+                    }
+                }
+                delay
+            };
+
+            if max_delay.is_zero() {
+                let mut guard = self.hosts.lock().await;
+                let now = Instant::now();
+                for &k in keys {
+                    if let Some(state) = guard.get_mut(k) {
+                        state.active_requests += 1;
+                        state.last_request = Some(now);
+                    }
+                }
+                break;
+            }
+
+            sleep(max_delay).await;
+        }
+
+        permit
+    }
+
+    /// Single key helper for acquire
+    pub async fn acquire(&self, host_key: &str) -> tokio::sync::OwnedSemaphorePermit {
+        self.acquire_keys(&[host_key]).await
+    }
+
+    /// Mark request complete for multiple keys and optionally register a 429 cooldown
+    pub async fn release_keys(&self, keys: &[&str], cooldown_duration: Option<Duration>) {
+        let mut guard = self.hosts.lock().await;
+        let now = Instant::now();
+        for &k in keys {
+            if let Some(state) = guard.get_mut(k) {
+                if state.active_requests > 0 {
+                    state.active_requests -= 1;
+                }
+                state.last_request = Some(now);
+
+                if let Some(cooldown) = cooldown_duration {
+                    state.cooldown_until = Some(now + cooldown);
+                }
+            }
+        }
+    }
+
+    /// Single key helper for release
+    pub async fn release(&self, host_key: &str, cooldown_duration: Option<Duration>) {
+        self.release_keys(&[host_key], cooldown_duration).await
+    }
+
+    /// Parse Retry-After header string into Duration
+    pub fn parse_retry_after(header_val: &str, default_secs: u64) -> Duration {
+        if let Ok(secs) = header_val.trim().parse::<u64>() {
+            Duration::from_secs(secs)
+        } else if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(header_val.trim()) {
+            let now = chrono::Utc::now();
+            let target = dt.with_timezone(&chrono::Utc);
+            if target > now {
+                Duration::from_secs((target - now).num_seconds().max(1) as u64)
+            } else {
+                Duration::from_secs(default_secs)
+            }
+        } else {
+            Duration::from_secs(default_secs)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_retry_after_parsing() {
+        assert_eq!(
+            HostScheduler::parse_retry_after("120", 30),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            HostScheduler::parse_retry_after("invalid", 45),
+            Duration::from_secs(45)
+        );
+    }
+}
