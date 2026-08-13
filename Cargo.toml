@@ -40,12 +40,14 @@ tokio = { version = "1.53.1", features = ["full"] }
 tokio-cron-scheduler = "0.10.2"
 futures = "0.3.33"
 reqwest = { version = "0.12.28", features = ["json"] }
+async-trait = "0.1"
 
 # Local GUI server (latest)
 axum = { version = "0.7.9", features = ["macros"] }
 tower = "0.5.3"
 open = "5.4.0"
 tokio-stream = { version = "0.1.19", features = ["sync"] }
+tempfile = "3.27.0"
 
 # SQLite for Firefox-based browsers (latest)
 rusqlite = { version = "0.33.0", features = ["bundled"] }
@@ -68,6 +70,7 @@ aes = "0.8.4"
 cbc = "0.1.2"
 pbkdf2 = "0.12.2"
 sha1 = "0.10.7"
+hickory-resolver = { version = "0.26.1", features = ["https-ring", "tokio", "webpki-roots"] }
 
 # macOS specific (latest)
 [target.'cfg(target_os = "macos")'.dependencies]

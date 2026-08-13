@@ -25,7 +25,7 @@ impl Default for SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    pub fn slow_mode() -> Self {
+    pub const fn slow_mode() -> Self {
         Self {
             max_global_concurrency: 2,
             per_host_concurrency: 1,
@@ -98,7 +98,7 @@ impl HostScheduler {
                         let interval = Duration::from_millis(self.config.host_interval_ms);
                         let elapsed = now.duration_since(last);
                         if elapsed < interval {
-                            interval - elapsed
+                            interval.checked_sub(elapsed).unwrap()
                         } else {
                             Duration::ZERO
                         }
@@ -156,7 +156,7 @@ impl HostScheduler {
 
     /// Single key helper for release
     pub async fn release(&self, host_key: &str, cooldown_duration: Option<Duration>) {
-        self.release_keys(&[host_key], cooldown_duration).await
+        self.release_keys(&[host_key], cooldown_duration).await;
     }
 
     /// Parse Retry-After header string into Duration

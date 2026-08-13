@@ -12,7 +12,7 @@ use tempfile::NamedTempFile;
 pub struct LycheeCliBackend;
 
 impl LycheeCliBackend {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -60,15 +60,14 @@ impl ProbeBackend for LycheeCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
-        let bin_path = match Self::find_binary() {
-            Some(b) => b,
-            None => {
-                obs.backend_version = "not_installed".to_string();
-                obs.actual_request = "unknown".to_string();
-                obs.error_kind = Some("ToolNotInstalled: lychee".to_string());
-                obs.finished_at = Utc::now();
-                return Ok(obs);
-            }
+        let bin_path = if let Some(b) = Self::find_binary() {
+            b
+        } else {
+            obs.backend_version = "not_installed".to_string();
+            obs.actual_request = "unknown".to_string();
+            obs.error_kind = Some("ToolNotInstalled: lychee".to_string());
+            obs.finished_at = Utc::now();
+            return Ok(obs);
         };
 
         obs.backend_version = "0.24.2".to_string();

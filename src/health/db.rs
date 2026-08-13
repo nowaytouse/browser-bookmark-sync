@@ -7,7 +7,7 @@ use std::path::Path;
 use tracing::info;
 
 pub struct HealthDatabase {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl HealthDatabase {
@@ -207,15 +207,36 @@ impl HealthDatabase {
             )?;
         }
 
+        if current_version < 3 {
+            info!("Migrating health database to version 3 (Adding per-attempt timestamps)");
+            // Real attempt timestamps — NULL for pre-migration rows (intentional: old rows
+            // must not become automatic strong evidence via temporal boundary checks).
+            let _ = tx.execute("ALTER TABLE health_attempts ADD COLUMN started_at TEXT", []);
+            let _ = tx.execute(
+                "ALTER TABLE health_attempts ADD COLUMN finished_at TEXT",
+                [],
+            );
+
+            tx.execute(
+                "INSERT INTO health_schema_version (version, applied_at) VALUES (3, ?1)",
+                params![Utc::now().to_rfc3339()],
+            )?;
+        }
+
         tx.commit()?;
         Ok(())
     }
 
     /// Record start of a new health check run
     pub fn record_run_start(&self, ctx: &ProbeContext) -> SqlResult<()> {
-        let config_json = serde_json::to_string(&ctx.secondary_backends).unwrap_or_default();
-        let config_hash = blake3::hash(config_json.as_bytes()).to_hex().to_string();
-        let rule_version = "1.0.0";
+        let hash_input = crate::health::models::ConfigHashInput::from_probe_context(ctx);
+        let config_json = hash_input
+            .canonical_json()
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let config_hash = hash_input
+            .stable_hash()
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let rule_version = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
 
         self.conn.execute(
             "INSERT INTO health_runs (run_id, started_at, completed, mode, config_json, config_hash, rule_version, app_version)
@@ -242,7 +263,7 @@ impl HealthDatabase {
         Ok(())
     }
 
-    /// Save check result and attempt observations
+    /// Save a complete check and update its summary immediately.
     pub fn record_check_result(
         &self,
         run_id: &str,
@@ -254,6 +275,75 @@ impl HealthDatabase {
     ) -> SqlResult<()> {
         let tx = self.conn.unchecked_transaction()?;
 
+        Self::insert_check_observations(
+            &tx,
+            run_id,
+            check_id,
+            bookmark_id,
+            url,
+            verdict,
+            observations,
+        )?;
+
+        Self::update_summary_internal(&tx, bookmark_id, url, run_id, verdict)?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Persist raw observations without publishing a historical verdict.
+    /// The engine uses this while the enclosing run is still incomplete.
+    pub fn record_check_observations(
+        &self,
+        run_id: &str,
+        check_id: &str,
+        bookmark_id: &str,
+        url: &str,
+        single_run_verdict: HealthVerdict,
+        observations: &[BackendObservation],
+    ) -> SqlResult<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        Self::insert_check_observations(
+            &tx,
+            run_id,
+            check_id,
+            bookmark_id,
+            url,
+            single_run_verdict,
+            observations,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Publish the final verdict only after the enclosing run is complete.
+    pub fn finalize_check_result(
+        &self,
+        run_id: &str,
+        check_id: &str,
+        bookmark_id: &str,
+        url: &str,
+        verdict: HealthVerdict,
+    ) -> SqlResult<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE health_checks SET run_verdict = ?1 WHERE check_id = ?2 AND run_id = ?3",
+            params![verdict.as_str(), check_id, run_id],
+        )?;
+        Self::update_summary_internal(&tx, bookmark_id, url, run_id, verdict)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn insert_check_observations(
+        tx: &rusqlite::Transaction<'_>,
+        run_id: &str,
+        check_id: &str,
+        bookmark_id: &str,
+        url: &str,
+        verdict: HealthVerdict,
+        observations: &[BackendObservation],
+    ) -> SqlResult<()> {
         tx.execute(
             "INSERT OR REPLACE INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, finished_at, run_verdict)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -278,8 +368,8 @@ impl HealthDatabase {
                     actual_request, cache_hit, method, status_code, error_kind, initial_url,
                     final_url, redirect_count, response_time_ms, content_type, content_length,
                     title, canonical_url, body_hash, ip_addresses_json, tls_summary, confidence,
-                    resolver_id, dns_rcode
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                    resolver_id, dns_rcode, started_at, finished_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
                 params![
                     attempt_id,
                     check_id,
@@ -288,7 +378,7 @@ impl HealthDatabase {
                     obs.route,
                     idx as i64,
                     obs.actual_request,
-                    if obs.cache_hit { 1 } else { 0 },
+                    i32::from(obs.cache_hit),
                     obs.request_method,
                     obs.status_code,
                     obs.error_kind,
@@ -306,14 +396,12 @@ impl HealthDatabase {
                     obs.confidence,
                     obs.resolver_id,
                     obs.dns_rcode,
+                    obs.started_at.to_rfc3339(),
+                    obs.finished_at.to_rfc3339(),
                 ],
             )?;
         }
 
-        // Update health summary table
-        Self::update_summary_internal(&tx, bookmark_id, url, run_id, verdict)?;
-
-        tx.commit()?;
         Ok(())
     }
 
@@ -395,7 +483,7 @@ impl HealthDatabase {
             )?;
         } else {
             let summary_id = uuid::Uuid::new_v4().to_string();
-            let cons_fail = if is_failure { 1 } else { 0 };
+            let cons_fail = i32::from(is_failure);
             let first_fail = if is_failure {
                 Some(now_str.clone())
             } else {
@@ -466,58 +554,132 @@ impl HealthDatabase {
             .optional()
     }
 
+    pub fn get_bookmark_current_verdict(
+        &self,
+        bookmark_id: &str,
+    ) -> SqlResult<Option<HealthVerdict>> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT current_verdict FROM health_summaries WHERE bookmark_id = ?1",
+                params![bookmark_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.as_deref().and_then(HealthVerdict::from_db_str))
+    }
+
+    /// Count trailing completed runs that contain a real 2xx response and no semantic-death signal.
+    pub fn get_consecutive_real_success_runs(
+        &self,
+        bookmark_id: &str,
+        current_config_hash: Option<&str>,
+        current_rule_version: &str,
+    ) -> SqlResult<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                MAX(CASE WHEN a.started_at IS NOT NULL
+                              AND a.actual_request = 'yes'
+                              AND a.cache_hit = 0
+                              AND a.status_code >= 200 AND a.status_code < 300
+                         THEN 1 ELSE 0 END) AS has_success,
+                MAX(CASE WHEN a.error_kind IN (
+                                  'ContentMissing', 'RedirectedToHomepage', 'Soft404Candidate'
+                              )
+                         THEN 1 ELSE 0 END) AS has_semantic_failure
+             FROM health_runs r
+             JOIN health_checks c ON c.run_id = r.run_id
+             JOIN health_attempts a ON a.check_id = c.check_id
+             WHERE c.bookmark_id = ?1
+               AND r.completed = 1
+               AND (?2 IS NULL OR r.config_hash = ?2)
+               AND r.rule_version = ?3
+             GROUP BY r.run_id
+             ORDER BY MAX(COALESCE(r.finished_at, r.started_at)) DESC",
+        )?;
+        let rows = stmt.query_map(
+            params![bookmark_id, current_config_hash, current_rule_version],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+
+        let mut count = 0;
+        for row in rows {
+            let (has_success, has_semantic_failure) = row?;
+            if has_success == 0 || has_semantic_failure != 0 {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Build the qualifying run evidence set for a bookmark from raw attempts/checks/runs.
     ///
     /// A run qualifies only when:
     ///   - run.completed = 1
-    ///   - all attempts within the run for this bookmark_id have actual_request = 'yes'
-    ///     AND cache_hit = 0
+    ///   - all attempts within the run for this `bookmark_id` have `actual_request` = 'yes'
+    ///     AND `cache_hit` = 0
     ///   - the run occurred AFTER the last real success for the bookmark
-    ///   - the run contains NO real success (actual_request='yes', cache_hit=0, 2xx status)
+    ///   - the run contains NO real success (`actual_request`='yes', `cache_hit=0`, 2xx status)
     ///   - the run contains at least one allowed strong failure
-    ///   - the run shares config_hash with `current_config_hash` (if provided)
+    ///   - the run shares `config_hash` with `current_config_hash` (if provided)
     ///
-    /// Each run_id contributes at most one QualifyingRunEvidence entry.
+    /// Each `run_id` contributes at most one `QualifyingRunEvidence` entry.
     pub fn get_qualifying_run_evidences(
         &self,
         bookmark_id: &str,
         current_config_hash: Option<&str>,
+        current_rule_version: &str,
     ) -> SqlResult<Vec<crate::health::models::QualifyingRunEvidence>> {
         use crate::health::models::{QualifyingRunEvidence, StrongFailureKind};
         use chrono::DateTime;
         use std::collections::{BTreeMap, BTreeSet};
 
         // 1. Find the last real success timestamp for this bookmark.
+        //    Pre-v3 rows have no attempt timestamp and cannot be promoted into evidence.
         let last_real_success: Option<String> = self
             .conn
             .query_row(
-                "SELECT MAX(c.started_at)
+                "SELECT MAX(a.started_at)
              FROM health_attempts a
              JOIN health_checks c ON c.check_id = a.check_id
              JOIN health_runs r ON r.run_id = c.run_id
              WHERE c.bookmark_id = ?1
                AND r.completed = 1
+               AND a.started_at IS NOT NULL
                AND a.actual_request = 'yes'
                AND a.cache_hit = 0
                AND a.status_code >= 200
-               AND a.status_code < 300",
+               AND a.status_code < 300
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM health_attempts semantic_attempt
+                   JOIN health_checks semantic_check
+                     ON semantic_check.check_id = semantic_attempt.check_id
+                   WHERE semantic_check.run_id = r.run_id
+                     AND semantic_check.bookmark_id = c.bookmark_id
+                     AND semantic_attempt.error_kind IN (
+                         'ContentMissing', 'RedirectedToHomepage', 'Soft404Candidate'
+                     )
+               )",
                 params![bookmark_id],
                 |row| row.get(0),
             )
             .optional()?
             .flatten();
 
-        let last_success_dt: Option<DateTime<chrono::Utc>> =
-            last_real_success.as_deref().and_then(|s| {
-                DateTime::parse_from_rfc3339(s)
-                    .ok()
-                    .map(|d| d.with_timezone(&chrono::Utc))
-            });
+        let last_success_dt: Option<DateTime<Utc>> = last_real_success.as_deref().and_then(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|d| d.with_timezone(&Utc))
+        });
 
         // 2. Query all completed runs that have at least one strong-failure attempt
         //    for this bookmark, after the last success, matching config_hash if required.
+        //    Only real per-attempt timestamps are accepted. Check/run timestamps are not
+        //    substitutes because they can cross a later-success boundary.
         let config_filter = if current_config_hash.is_some() {
-            "AND r.config_hash = ?3"
+            "AND r.config_hash = ?2"
         } else {
             "AND 1=1" // no filter
         };
@@ -526,7 +688,7 @@ impl HealthDatabase {
             "SELECT
                 r.run_id,
                 r.finished_at,
-                c.started_at   AS attempt_started_at,
+                a.started_at AS attempt_time,
                 a.backend,
                 a.status_code,
                 a.error_kind,
@@ -539,20 +701,18 @@ impl HealthDatabase {
              JOIN health_runs    r ON r.run_id   = c.run_id
              WHERE c.bookmark_id = ?1
                AND r.completed   = 1
-               AND (?2 IS NULL OR r.finished_at > ?2)
+               AND a.started_at IS NOT NULL
+               AND r.rule_version = ?3
                {config_filter}
              ORDER BY r.run_id, a.attempt_id"
         );
 
-        let last_success_str = last_success_dt.as_ref().map(|d| d.to_rfc3339());
-
         let mut stmt = self.conn.prepare(&sql)?;
 
-        // Collect rows grouped by run_id
         struct AttemptRow {
             run_id: String,
             finished_at: Option<String>,
-            attempt_started_at: String,
+            attempt_time: String,
             backend: String,
             status_code: Option<i64>,
             error_kind: Option<String>,
@@ -563,11 +723,11 @@ impl HealthDatabase {
         }
 
         let rows: Vec<AttemptRow> = if let Some(hash) = current_config_hash {
-            stmt.query_map(params![bookmark_id, last_success_str, hash], |row| {
+            stmt.query_map(params![bookmark_id, hash, current_rule_version], |row| {
                 Ok(AttemptRow {
                     run_id: row.get(0)?,
                     finished_at: row.get(1)?,
-                    attempt_started_at: row.get(2)?,
+                    attempt_time: row.get(2)?,
                     backend: row.get(3)?,
                     status_code: row.get(4)?,
                     error_kind: row.get(5)?,
@@ -577,14 +737,13 @@ impl HealthDatabase {
                     cache_hit: row.get(9)?,
                 })
             })?
-            .filter_map(|r| r.ok())
-            .collect()
+            .collect::<SqlResult<Vec<_>>>()?
         } else {
-            stmt.query_map(params![bookmark_id, last_success_str], |row| {
+            stmt.query_map(params![bookmark_id, "", current_rule_version], |row| {
                 Ok(AttemptRow {
                     run_id: row.get(0)?,
                     finished_at: row.get(1)?,
-                    attempt_started_at: row.get(2)?,
+                    attempt_time: row.get(2)?,
                     backend: row.get(3)?,
                     status_code: row.get(4)?,
                     error_kind: row.get(5)?,
@@ -594,8 +753,7 @@ impl HealthDatabase {
                     cache_hit: row.get(9)?,
                 })
             })?
-            .filter_map(|r| r.ok())
-            .collect()
+            .collect::<SqlResult<Vec<_>>>()?
         };
 
         // Group by run_id
@@ -610,7 +768,7 @@ impl HealthDatabase {
         fn is_real_success(a: &AttemptRow) -> bool {
             a.actual_request == "yes"
                 && a.cache_hit == 0
-                && a.status_code.map_or(false, |c| c >= 200 && c < 300)
+                && a.status_code.is_some_and(|c| (200..300).contains(&c))
         }
 
         fn strong_failure_kind(a: &AttemptRow) -> Option<StrongFailureKind> {
@@ -621,13 +779,15 @@ impl HealthDatabase {
                 match code {
                     404 => return Some(StrongFailureKind::Http404),
                     410 => return Some(StrongFailureKind::Http410),
-                    451 => return Some(StrongFailureKind::Http451),
                     _ => {}
                 }
             }
             if let Some(ref err) = a.error_kind {
                 if err == "RedirectedToHomepage" {
                     return Some(StrongFailureKind::RedirectedToHomepage);
+                }
+                if err == "ContentMissing" {
+                    return Some(StrongFailureKind::ContentMissing);
                 }
                 if err == "DnsNxdomain" {
                     return Some(StrongFailureKind::ConfirmedNxDomain);
@@ -677,8 +837,15 @@ impl HealthDatabase {
         let mut evidences: Vec<QualifyingRunEvidence> = Vec::new();
 
         for (run_id, (finished_at, attempts)) in by_run {
-            // Skip if any real success in this run
-            if attempts.iter().any(is_real_success) {
+            let has_content_signal = attempts.iter().any(|attempt| {
+                matches!(
+                    attempt.error_kind.as_deref(),
+                    Some("ContentMissing" | "RedirectedToHomepage" | "Soft404Candidate")
+                )
+            });
+            // A 2xx transport response is expected for a soft-404. It is a real success only
+            // when no content-aware probe in the same run found the deep resource missing.
+            if !has_content_signal && attempts.iter().any(is_real_success) {
                 continue;
             }
 
@@ -686,10 +853,21 @@ impl HealthDatabase {
             let mut sfk: BTreeSet<StrongFailureKind> = BTreeSet::new();
             let mut families: BTreeSet<String> = BTreeSet::new();
             let mut nxdomain_resolver_ids: BTreeSet<String> = BTreeSet::new();
-            let mut has_noerror_address = false;
+            let mut has_non_nxdomain_dns_rcode = false;
+            let mut qualifying_times: Vec<DateTime<Utc>> = Vec::new();
+            let mut nxdomain_times: Vec<DateTime<Utc>> = Vec::new();
 
             for a in &attempts {
                 if a.actual_request != "yes" || a.cache_hit != 0 {
+                    continue;
+                }
+                let Some(attempt_at) = DateTime::parse_from_rfc3339(&a.attempt_time)
+                    .ok()
+                    .map(|time| time.with_timezone(&Utc))
+                else {
+                    continue;
+                };
+                if last_success_dt.is_some_and(|last_success| attempt_at <= last_success) {
                     continue;
                 }
                 if let Some(ref rcode) = a.dns_rcode {
@@ -698,10 +876,11 @@ impl HealthDatabase {
                         if let Some(ref rid) = a.resolver_id {
                             if !rid.is_empty() {
                                 nxdomain_resolver_ids.insert(rid.clone());
+                                nxdomain_times.push(attempt_at);
                             }
                         }
-                    } else if rcode.eq_ignore_ascii_case("NOERROR") {
-                        has_noerror_address = true;
+                    } else {
+                        has_non_nxdomain_dns_rcode = true;
                     }
                 }
                 match strong_failure_kind(a) {
@@ -710,17 +889,20 @@ impl HealthDatabase {
                     }
                     Some(kind) => {
                         sfk.insert(kind);
+                        qualifying_times.push(attempt_at);
+                        if let Some(fam) = verifier_family(&a.backend) {
+                            families.insert(fam.to_string());
+                        }
                     }
                     None => {}
                 }
-                if let Some(fam) = verifier_family(&a.backend) {
-                    families.insert(fam.to_string());
-                }
             }
 
-            // DNS resolver agreement: require 2+ distinct resolver_ids, all NxDomain, no NOERROR
-            if nxdomain_resolver_ids.len() >= 2 && !has_noerror_address {
+            // DNS resolver agreement: require 2+ distinct resolver_ids, and NO conflicting rcodes
+            if nxdomain_resolver_ids.len() >= 2 && !has_non_nxdomain_dns_rcode {
                 sfk.insert(StrongFailureKind::ConfirmedNxDomain);
+                families.insert("dns".to_string());
+                qualifying_times.extend(nxdomain_times);
             }
 
             if sfk.is_empty() {
@@ -732,21 +914,12 @@ impl HealthDatabase {
                 .and_then(|s| {
                     DateTime::parse_from_rfc3339(s)
                         .ok()
-                        .map(|d| d.with_timezone(&chrono::Utc))
+                        .map(|d| d.with_timezone(&Utc))
                 })
-                .unwrap_or_else(chrono::Utc::now);
+                .unwrap_or_else(Utc::now);
 
-            // Use earliest attempt timestamp as the strong_failure_at for span calculation
-            let strong_failure_at = attempts
-                .iter()
-                .filter(|a| strong_failure_kind(a).is_some())
-                .filter_map(|a| {
-                    DateTime::parse_from_rfc3339(&a.attempt_started_at)
-                        .ok()
-                        .map(|d| d.with_timezone(&chrono::Utc))
-                })
-                .min()
-                .unwrap_or(completed_at);
+            // Use earliest real attempt timestamp as the strong_failure_at for span calculation.
+            let strong_failure_at = qualifying_times.into_iter().min().unwrap_or(completed_at);
 
             evidences.push(QualifyingRunEvidence {
                 run_id,
@@ -760,8 +933,8 @@ impl HealthDatabase {
         Ok(evidences)
     }
 
-    /// Return quarantine candidates: bookmarks whose latest verdict is probable_dead or confirmed_dead.
-    /// Returns (url, current_verdict, last_checked_at) tuples ordered by verdict severity.
+    /// Return quarantine candidates: bookmarks whose latest verdict is `probable_dead` or `confirmed_dead`.
+    /// Returns (url, `current_verdict`, `last_checked_at`) tuples ordered by verdict severity.
     pub fn get_quarantine_candidates(&self) -> SqlResult<Vec<(String, String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT url, current_verdict, last_checked_at
@@ -783,7 +956,7 @@ impl HealthDatabase {
         Ok(results)
     }
 
-    /// Return counts of bookmarks grouped by current_verdict in health_summaries.
+    /// Return counts of bookmarks grouped by `current_verdict` in `health_summaries`.
     pub fn get_verdict_counts(&self) -> SqlResult<Vec<(String, usize)>> {
         let mut stmt = self.conn.prepare(
             "SELECT current_verdict, COUNT(*)
@@ -802,8 +975,8 @@ impl HealthDatabase {
         Ok(results)
     }
 
-    /// Return (bookmark_id, url) pairs for all bookmarks matching a specific verdict.
-    /// If verdict is "all_failing" or "failing", matches probable_dead, confirmed_dead, temporary_failure, needs_review.
+    /// Return (`bookmark_id`, url) pairs for all bookmarks matching a specific verdict.
+    /// If verdict is "`all_failing`" or "failing", matches `probable_dead`, `confirmed_dead`, `temporary_failure`, `needs_review`.
     pub fn get_urls_by_verdict(&self, verdict: &str) -> SqlResult<Vec<(String, String)>> {
         let sql = if verdict == "all_failing" || verdict == "failing" {
             "SELECT bookmark_id, url FROM health_summaries WHERE current_verdict IN ('probable_dead', 'confirmed_dead', 'temporary_failure', 'needs_review')"
@@ -826,11 +999,11 @@ impl HealthDatabase {
         Ok(results)
     }
 
-    /// Rebuild health_summaries from scratch using health_checks as authoritative source.
+    /// Rebuild `health_summaries` from scratch using `health_checks` as authoritative source.
     ///
     /// Per plan §10: "任何 summary 必须可以通过 `health rebuild-summary` 从 attempts/checks 完整重建。"
     ///
-    /// This wipes the summary table and recomputes per-bookmark aggregates from health_checks.
+    /// This wipes the summary table and recomputes per-bookmark aggregates from `health_checks`.
     /// Returns the number of summary rows written.
     pub fn rebuild_summary_from_checks(&self) -> SqlResult<usize> {
         let tx = self.conn.unchecked_transaction()?;
@@ -992,5 +1165,56 @@ mod tests {
         let history = db.get_url_history("https://example.com").unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].2, "live");
+    }
+
+    #[test]
+    fn counts_successes_from_distinct_completed_runs() {
+        let db = HealthDatabase::in_memory().unwrap();
+        let mut ctx = ProbeContext {
+            run_id: "success-1".to_string(),
+            check_id: "check-1".to_string(),
+            proxy_url: None,
+            timeout_secs: 10,
+            slow_mode: false,
+            allow_private_ips: false,
+            history_db_path: None,
+            secondary_backends: vec![],
+            artifact_dir: None,
+        };
+        let config_hash = crate::health::models::ConfigHashInput::from_probe_context(&ctx)
+            .stable_hash()
+            .unwrap();
+
+        for index in 1..=2 {
+            ctx.run_id = format!("success-{index}");
+            ctx.check_id = format!("check-{index}");
+            db.record_run_start(&ctx).unwrap();
+            let obs = BackendObservation {
+                run_id: ctx.run_id.clone(),
+                check_id: ctx.check_id.clone(),
+                status_code: Some(200),
+                ..Default::default()
+            };
+            db.record_check_observations(
+                &ctx.run_id,
+                &ctx.check_id,
+                "bm-success",
+                "https://example.com/post",
+                HealthVerdict::Live,
+                &[obs],
+            )
+            .unwrap();
+            db.record_run_finish(&ctx.run_id).unwrap();
+
+            assert_eq!(
+                db.get_consecutive_real_success_runs(
+                    "bm-success",
+                    Some(&config_hash),
+                    crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+                )
+                .unwrap(),
+                index
+            );
+        }
     }
 }

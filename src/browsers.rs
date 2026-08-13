@@ -119,6 +119,11 @@ pub trait BrowserAdapter: Send + Sync {
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
         self.read_bookmarks()
     }
+    /// Read bookmarks from all user profiles with profile names
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
+        let b = self.read_all_bookmarks()?;
+        Ok(vec![("Default".to_string(), b)])
+    }
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()>;
     fn backup_bookmarks(&self) -> Result<PathBuf>;
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool>;
@@ -230,8 +235,13 @@ impl BrowserAdapter for WaterfoxAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         let profiles = self.detect_all_profiles()?;
-        read_all_firefox_bookmarks("Waterfox", &profiles)
+        read_all_firefox_bookmarks_with_profiles("Waterfox", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
@@ -670,8 +680,13 @@ impl BrowserAdapter for BraveAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         let profiles = self.detect_all_profiles()?;
-        read_all_chromium_bookmarks("Brave", &profiles)
+        read_all_chromium_bookmarks_with_profiles("Brave", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
@@ -841,8 +856,13 @@ impl BrowserAdapter for BraveNightlyAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         let profiles = self.detect_all_profiles()?;
-        read_all_chromium_bookmarks("Brave Nightly", &profiles)
+        read_all_chromium_bookmarks_with_profiles("Brave Nightly", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
@@ -1021,8 +1041,13 @@ impl BrowserAdapter for ChromeAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         let profiles = self.detect_all_profiles()?;
-        read_all_chromium_bookmarks("Chrome", &profiles)
+        read_all_chromium_bookmarks_with_profiles("Chrome", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
@@ -1246,10 +1271,15 @@ impl BrowserAdapter for FirefoxNightlyAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         if let Ok(profiles) = self.detect_all_profiles() {
-            read_all_firefox_bookmarks("Firefox Nightly", &profiles)
+            read_all_firefox_bookmarks_with_profiles("Firefox Nightly", &profiles)
         } else if let Ok(path) = self.detect_bookmark_path() {
-            read_all_firefox_bookmarks("Firefox Nightly", &[path])
+            read_all_firefox_bookmarks_with_profiles("Firefox Nightly", &[path])
         } else {
             Ok(Vec::new())
         }
@@ -1350,10 +1380,15 @@ impl BrowserAdapter for LibreWolfAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         if let Ok(profiles) = self.detect_all_profiles() {
-            read_all_firefox_bookmarks("LibreWolf", &profiles)
+            read_all_firefox_bookmarks_with_profiles("LibreWolf", &profiles)
         } else if let Ok(path) = self.detect_bookmark_path() {
-            read_all_firefox_bookmarks("LibreWolf", &[path])
+            read_all_firefox_bookmarks_with_profiles("LibreWolf", &[path])
         } else {
             Ok(Vec::new())
         }
@@ -1425,8 +1460,11 @@ impl LibreWolfAdapter {
     }
 }
 
-fn read_all_chromium_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
-    let mut all_bookmarks = Vec::new();
+fn read_all_chromium_bookmarks_with_profiles(
+    browser_name: &str,
+    profiles: &[PathBuf],
+) -> Result<Vec<(String, Vec<Bookmark>)>> {
+    let mut results = Vec::new();
     for profile_path in profiles {
         let bookmarks_path = profile_path.join("Bookmarks");
         if !bookmarks_path.exists() {
@@ -1446,23 +1484,31 @@ fn read_all_chromium_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Resu
                             "✅ {} ({}): {} bookmarks",
                             browser_name, profile_name, count
                         );
-                        all_bookmarks.extend(bookmarks);
+                        results.push((profile_name.to_string(), bookmarks));
                     }
                 }
             }
         }
     }
-    Ok(all_bookmarks)
+    Ok(results)
 }
 
-fn read_all_firefox_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
-    let mut all_bookmarks = Vec::new();
+#[allow(dead_code)]
+fn read_all_chromium_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
+    let results = read_all_chromium_bookmarks_with_profiles(browser_name, profiles)?;
+    Ok(results.into_iter().flat_map(|(_, b)| b).collect())
+}
+
+fn read_all_firefox_bookmarks_with_profiles(
+    browser_name: &str,
+    profiles: &[PathBuf],
+) -> Result<Vec<(String, Vec<Bookmark>)>> {
+    let mut results = Vec::new();
     for profile_path in profiles {
         if let Ok(bookmarks) = read_firefox_bookmarks(profile_path) {
             if !bookmarks.is_empty() {
                 let profile_name = profile_path
-                    .parent()
-                    .and_then(|p| p.file_name())
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("Profile");
                 let count = count_bookmarks(&bookmarks);
@@ -1470,11 +1516,17 @@ fn read_all_firefox_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Resul
                     "✅ {} ({}): {} bookmarks",
                     browser_name, profile_name, count
                 );
-                all_bookmarks.extend(bookmarks);
+                results.push((profile_name.to_string(), bookmarks));
             }
         }
     }
-    Ok(all_bookmarks)
+    Ok(results)
+}
+
+#[allow(dead_code)]
+fn read_all_firefox_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
+    let results = read_all_firefox_bookmarks_with_profiles(browser_name, profiles)?;
+    Ok(results.into_iter().flat_map(|(_, b)| b).collect())
 }
 
 // Helper functions for Safari plist parsing
@@ -1906,12 +1958,11 @@ pub fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>
             id,
             Bookmark {
                 id: id.to_string(),
-                title: match row.get::<_, Option<String>>(1)? {
-                    Some(t) => t,
-                    None => {
-                        tracing::debug!("Safari 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
-                        String::new()
-                    }
+                title: if let Some(t) = row.get::<_, Option<String>>(1)? {
+                    t
+                } else {
+                    tracing::debug!("Safari 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
+                    String::new()
                 },
                 url: row.get::<_, Option<String>>(2)?,
                 folder: bookmark_type == 2,
@@ -2279,21 +2330,25 @@ pub(crate) fn update_safari_reading_list(
 fn chromium_epoch() -> chrono::DateTime<chrono::Utc> {
     chrono::NaiveDate::from_ymd_opt(1601, 1, 1)
         .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|dt| dt.and_utc())
-        .unwrap_or_else(|| {
-            warn!("无法构造 Chromium 纪元时间 (1601-01-01)，显式回退至 UNIX_EPOCH");
-            chrono::DateTime::UNIX_EPOCH
-        })
+        .map_or_else(
+            || {
+                warn!("无法构造 Chromium 纪元时间 (1601-01-01)，显式回退至 UNIX_EPOCH");
+                chrono::DateTime::UNIX_EPOCH
+            },
+            |dt| dt.and_utc(),
+        )
 }
 
 fn safari_epoch() -> chrono::DateTime<chrono::Utc> {
     chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
         .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|dt| dt.and_utc())
-        .unwrap_or_else(|| {
-            warn!("无法构造 Safari 纪元时间 (2001-01-01)，显式回退至 UNIX_EPOCH");
-            chrono::DateTime::UNIX_EPOCH
-        })
+        .map_or_else(
+            || {
+                warn!("无法构造 Safari 纪元时间 (2001-01-01)，显式回退至 UNIX_EPOCH");
+                chrono::DateTime::UNIX_EPOCH
+            },
+            |dt| dt.and_utc(),
+        )
 }
 
 // Chromium history helper functions

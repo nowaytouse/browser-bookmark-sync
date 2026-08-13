@@ -19,6 +19,7 @@ pub struct HealthRunSummaryReport {
     pub confirmed_dead_count: usize,
     pub needs_review_count: usize,
     pub duration_secs: f64,
+    pub confirmed_dead_urls: Vec<String>,
 }
 
 pub struct ReportExporter;
@@ -51,7 +52,10 @@ impl ReportExporter {
                 HealthVerdict::Protected => summary.protected_count += 1,
                 HealthVerdict::TemporaryFailure => summary.temp_failure_count += 1,
                 HealthVerdict::ProbableDead => summary.probable_dead_count += 1,
-                HealthVerdict::ConfirmedDead => summary.confirmed_dead_count += 1,
+                HealthVerdict::ConfirmedDead => {
+                    summary.confirmed_dead_count += 1;
+                    summary.confirmed_dead_urls.push(url.clone());
+                }
                 HealthVerdict::NeedsReview => summary.needs_review_count += 1,
             }
             categorized
@@ -241,12 +245,16 @@ impl ReportExporter {
         Ok(())
     }
 
-    /// Enforce deletion safety check: refuse single-run deletion and refuse automated destructive deletion in Phase 1
+    /// Only multi-run `ConfirmedDead` verdicts are eligible for deletion.
     pub fn verify_delete_safety(
-        _verdict: HealthVerdict,
-        _multi_run_confirmed: bool,
+        verdict: HealthVerdict,
+        multi_run_confirmed: bool,
     ) -> Result<(), String> {
-        Err("Automated destructive deletion is disabled in Phase 1. ConfirmedDead is quarantine-only.".to_string())
+        if verdict == HealthVerdict::ConfirmedDead && multi_run_confirmed {
+            Ok(())
+        } else {
+            Err("Deletion requires a multi-run ConfirmedDead verdict.".to_string())
+        }
     }
 
     /// Enforce deletion safety check with explicit 404/NXDOMAIN support:
@@ -279,7 +287,7 @@ mod tests {
     fn test_delete_safety_refusal() {
         assert!(ReportExporter::verify_delete_safety(HealthVerdict::ProbableDead, false).is_err());
         assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, false).is_err());
-        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_err());
+        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_ok());
 
         // Single run explicit unreachable ConfirmedDead must still be rejected
         assert!(ReportExporter::verify_delete_safety_explicit(
@@ -293,7 +301,7 @@ mod tests {
             true,
             true
         )
-        .is_err());
+        .is_ok());
         assert!(ReportExporter::verify_delete_safety_explicit(
             HealthVerdict::ProbableDead,
             true,
@@ -303,13 +311,13 @@ mod tests {
     }
 
     #[test]
-    fn test_confirmed_dead_is_quarantine_only() {
-        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_err());
+    fn test_confirmed_dead_multi_run_can_be_deleted() {
+        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_ok());
         assert!(ReportExporter::verify_delete_safety_explicit(
             HealthVerdict::ConfirmedDead,
             true,
             true
         )
-        .is_err());
+        .is_ok());
     }
 }

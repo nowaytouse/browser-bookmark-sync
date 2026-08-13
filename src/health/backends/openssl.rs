@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 pub struct OpenSslCliBackend;
 
 impl OpenSslCliBackend {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -61,15 +61,14 @@ impl ProbeBackend for OpenSslCliBackend {
             return Ok(obs);
         }
 
-        let bin_path = match Self::find_binary() {
-            Some(b) => b,
-            None => {
-                obs.backend_version = "not_installed".to_string();
-                obs.actual_request = "unknown".to_string();
-                obs.error_kind = Some("ToolNotInstalled: openssl".to_string());
-                obs.finished_at = Utc::now();
-                return Ok(obs);
-            }
+        let bin_path = if let Some(b) = Self::find_binary() {
+            b
+        } else {
+            obs.backend_version = "not_installed".to_string();
+            obs.actual_request = "unknown".to_string();
+            obs.error_kind = Some("ToolNotInstalled: openssl".to_string());
+            obs.finished_at = Utc::now();
+            return Ok(obs);
         };
 
         obs.backend_version = "3.6.3".to_string();

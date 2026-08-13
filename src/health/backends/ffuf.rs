@@ -11,7 +11,7 @@ use std::process::Command;
 pub struct FfufCliBackend;
 
 impl FfufCliBackend {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -55,15 +55,14 @@ impl ProbeBackend for FfufCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
-        let bin_path = match Self::find_binary() {
-            Some(b) => b,
-            None => {
-                obs.backend_version = "not_installed".to_string();
-                obs.actual_request = "unknown".to_string();
-                obs.error_kind = Some("ToolNotInstalled: ffuf".to_string());
-                obs.finished_at = Utc::now();
-                return Ok(obs);
-            }
+        let bin_path = if let Some(b) = Self::find_binary() {
+            b
+        } else {
+            obs.backend_version = "not_installed".to_string();
+            obs.actual_request = "unknown".to_string();
+            obs.error_kind = Some("ToolNotInstalled: ffuf".to_string());
+            obs.finished_at = Utc::now();
+            return Ok(obs);
         };
 
         obs.backend_version = "2.1.0".to_string();
@@ -88,7 +87,7 @@ impl ProbeBackend for FfufCliBackend {
                 if let Ok(v) = serde_json::from_str::<Value>(trim_stdout) {
                     if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
                         if let Some(first) = results.first() {
-                            if let Some(status) = first.get("status").and_then(|s| s.as_u64()) {
+                            if let Some(status) = first.get("status").and_then(Value::as_u64) {
                                 obs.status_code = Some(status as u16);
                             }
                             if let Some(redir) =
@@ -99,7 +98,7 @@ impl ProbeBackend for FfufCliBackend {
                                 }
                             }
                         }
-                    } else if let Some(status) = v.get("status").and_then(|s| s.as_u64()) {
+                    } else if let Some(status) = v.get("status").and_then(Value::as_u64) {
                         obs.status_code = Some(status as u16);
                     }
                 } else if out.status.success() {

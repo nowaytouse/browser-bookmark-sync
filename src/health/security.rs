@@ -29,10 +29,10 @@ pub fn validate_url_parsed(parsed: &Url, allow_private: bool) -> SecurityCheckRe
     }
 
     // Localhost check
-    if host_str == "localhost" || host_str.ends_with(".localhost") || host_str.ends_with(".local") {
-        if !allow_private {
-            return SecurityCheckResult::Denied("Localhost host blocked by default".to_string());
-        }
+    if (host_str == "localhost" || host_str.ends_with(".localhost") || host_str.ends_with(".local"))
+        && !allow_private
+    {
+        return SecurityCheckResult::Denied("Localhost host blocked by default".to_string());
     }
 
     // IP address checks

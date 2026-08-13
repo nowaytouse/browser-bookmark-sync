@@ -118,12 +118,6 @@ impl BookmarkCollector {
                 format!("{home}/Library/Application Support/Firefox"),
             ),
             (
-                "Firefox Developer Edition",
-                BrowserKind::Firefox("Firefox Developer Edition".into()),
-                Some("Developer Edition".into()),
-                format!("{home}/Library/Application Support/Firefox/Profiles"),
-            ),
-            (
                 "Firefox Nightly",
                 BrowserKind::Firefox("Firefox Nightly".into()),
                 Some("Nightly".into()),
@@ -222,19 +216,16 @@ impl BookmarkCollector {
                 let path = entry.path();
                 if path.is_dir() {
                     let folder_name = entry.file_name().to_string_lossy().to_string();
-                    if folder_name == "Default" || folder_name.starts_with("Profile ") {
-                        let bookmarks_file = path.join("Bookmarks");
-                        if bookmarks_file.exists() {
-                            let display_name = name_map
-                                .get(&folder_name)
-                                .cloned()
-                                .unwrap_or_else(|| folder_name.clone());
-                            profiles.push(BrowserProfile {
-                                id: folder_name,
-                                name: display_name,
-                                path,
-                            });
-                        }
+                    if path.join("Bookmarks").is_file() {
+                        let display_name = name_map
+                            .get(&folder_name)
+                            .cloned()
+                            .unwrap_or_else(|| folder_name.clone());
+                        profiles.push(BrowserProfile {
+                            id: folder_name,
+                            name: display_name,
+                            path,
+                        });
                     }
                 }
             }
@@ -251,6 +242,7 @@ impl BookmarkCollector {
             }
         }
 
+        profiles.sort_by(|a, b| a.id.cmp(&b.id));
         profiles
     }
 
@@ -280,6 +272,7 @@ impl BookmarkCollector {
             }
         }
 
+        profiles.sort_by(|a, b| a.id.cmp(&b.id));
         profiles
     }
 
@@ -311,9 +304,19 @@ impl BookmarkCollector {
             }
 
             for prof in &profiles {
-                let snapshot = create_profile_snapshot(prof, &snapshots_dir)?;
+                let snapshot_root = snapshots_dir.join(inst.name.replace(['/', ':'], "_"));
+                let snapshot = match create_profile_snapshot(prof, &snapshot_root) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        warnings.push(format!(
+                            "Profile '{}' in '{}' could not be snapshotted: {error}",
+                            prof.name, inst.name
+                        ));
+                        continue;
+                    }
+                };
                 for (k, v) in &snapshot.blake3_hashes {
-                    snapshot_hashes.insert(format!("{}/{}", prof.id, k), v.clone());
+                    snapshot_hashes.insert(format!("{}/{}/{}", inst.name, prof.id, k), v.clone());
                 }
 
                 let source_desc = SourceDescriptor {
@@ -326,7 +329,16 @@ impl BookmarkCollector {
                 sources.push(source_desc.clone());
 
                 let (prof_nodes, bm_count, folder_count) =
-                    Self::harvest_snapshot_bookmarks(inst, prof, &snapshot, &source_desc)?;
+                    match Self::harvest_snapshot_bookmarks(inst, prof, &snapshot, &source_desc) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            warnings.push(format!(
+                                "Profile '{}' in '{}' could not be harvested: {error}",
+                                prof.name, inst.name
+                            ));
+                            continue;
+                        }
+                    };
 
                 if bm_count == 0 {
                     warnings.push(format!("Profile '{}' (`{}`) in '{}' was scanned but contained 0 valid bookmark occurrences.", prof.name, prof.id, inst.name));
@@ -587,9 +599,10 @@ impl BookmarkCollector {
             Ok((id, btype, title, url, date_added, date_modified))
         })?;
 
-        let parse_ts = |t: i64| match DateTime::from_timestamp_micros(t) {
-            Some(dt) => dt,
-            None => {
+        let parse_ts = |t: i64| {
+            if let Some(dt) = DateTime::from_timestamp_micros(t) {
+                dt
+            } else {
                 tracing::warn!("Firefox Places 时间戳 '{}' 微秒超出范围，回退至纪元零点", t);
                 DateTime::UNIX_EPOCH
             }
@@ -597,14 +610,13 @@ impl BookmarkCollector {
 
         for (idx, r) in rows.flatten().enumerate() {
             let (id, btype, title_opt, url_opt, d_add, d_mod) = r;
-            let title = match title_opt {
-                Some(t) => t,
-                None => {
-                    if btype == 1 {
-                        tracing::debug!("Firefox 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
-                    }
-                    String::new()
+            let title = if let Some(t) = title_opt {
+                t
+            } else {
+                if btype == 1 {
+                    tracing::debug!("Firefox 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
                 }
+                String::new()
             };
 
             if btype == 1 {
@@ -778,5 +790,28 @@ impl BookmarkCollector {
         }
 
         Ok((nodes, bm_count, folder_count))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovers_named_chromium_profile_by_bookmarks_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join("Work Account");
+        fs::create_dir(&profile).unwrap();
+        fs::write(profile.join("Bookmarks"), "{}").unwrap();
+        let installation = BrowserInstallation {
+            name: "Test Chromium".into(),
+            kind: BrowserKind::Chromium("Chromium".into()),
+            channel: None,
+            root_path: temp.path().to_path_buf(),
+        };
+
+        let profiles = BookmarkCollector::discover_profiles(&installation);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "Work Account");
     }
 }

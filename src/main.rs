@@ -4,6 +4,9 @@ use tracing::{error, info, warn};
 
 use browser_bookmark_sync::{
     browsers, data_types, expand_path, gui,
+    health::{
+        reporting::ReportExporter, HealthEngine, HealthEngineOptions, HealthVerdict, ProbeTarget,
+    },
     sync::{self, SyncEngine},
     sync_flags::SyncFlags,
     url_checker,
@@ -152,6 +155,22 @@ enum Commands {
         /// Skips bookmarks that already exist in the target file
         #[arg(short = 'u', long)]
         update: Option<String>,
+
+        /// Copy exported bookmark HTML to a copy path and perform validity checking
+        #[arg(long)]
+        validate_copy: Option<String>,
+
+        /// Enable content-level validity checking (checks specific page/video URLs for 404/410 instead of just apex domain)
+        #[arg(long)]
+        validate_content: bool,
+
+        /// Concurrency limit for validity checking (default: 10, max: 10)
+        #[arg(long, default_value = "10")]
+        validate_concurrency: usize,
+
+        /// Limit number of URLs to check during copy validation (default: 0 = all)
+        #[arg(long, default_value = "0")]
+        validate_limit: usize,
     },
 
     /// Analyze bookmarks (duplicates, empty folders, NSFW)
@@ -304,6 +323,24 @@ enum Commands {
         /// Keep empty folders after deletion (default: remove empty folders)
         #[arg(long)]
         keep_empty: bool,
+
+        /// Enable slow conservative probing mode
+        #[arg(long)]
+        slow: bool,
+
+        /// Path to SQLite health history database
+        #[arg(long)]
+        history_db: Option<String>,
+
+        /// Secondary probe backends (comma separated, e.g., lychee,httpx)
+        #[arg(long)]
+        secondary: Option<String>,
+    },
+
+    /// Manage multi-run bookmark health history, audit tools, and quarantine reports
+    Health {
+        #[command(subcommand)]
+        command: browser_bookmark_sync::health::HealthCommands,
     },
 
     /// Create full backup of all browser data
@@ -527,6 +564,10 @@ async fn main() -> Result<()> {
             wrap,
             no_wrap,
             update,
+            validate_copy,
+            validate_content,
+            validate_concurrency,
+            validate_limit,
         } => {
             // Create sync flags from arguments
             let sync_flags = SyncFlags {
@@ -575,13 +616,15 @@ async fn main() -> Result<()> {
 
             // Import from existing HTML files, SQLite files, or external profile directories
             let mut extra_bookmarks: Vec<browsers::Bookmark> = Vec::new();
+            let mut external_source_reports: Vec<serde_json::Value> = Vec::new();
             for source_path in &include {
                 let expanded = expand_path(source_path);
                 info!("📥 导入外部数据源: {}", expanded);
-                match sync::import_bookmarks_from_source(&expanded) {
-                    Ok(bookmarks) => {
+                match sync::import_bookmarks_from_source_with_report(&expanded) {
+                    Ok((bookmarks, report)) => {
                         let count: usize = bookmarks.iter().map(count_tree).sum();
                         info!("   ✅ 成功从 '{}' 导入 {} 条书签节点", expanded, count);
+                        external_source_reports.push(report);
                         extra_bookmarks.extend(bookmarks);
                     }
                     Err(e) => {
@@ -764,17 +807,207 @@ async fn main() -> Result<()> {
                 existing_count + stats.new_added
             } else {
                 engine
-                    .export_to_html_with_extra(
+                    .export_to_html_with_report(
                         Some(&browsers),
                         &output,
+                        None,
                         &export_config,
                         extra_bookmarks,
+                        external_source_reports,
                     )
                     .await?
             };
 
             info!("");
             info!("✅ Exported {} bookmarks to {}", count, output);
+
+            if let Some(ref copy_path) = validate_copy {
+                let expanded_copy = expand_path(copy_path);
+                let expanded_output = expand_path(&output);
+                info!(
+                    "📋 Copying exported file to {} for validation...",
+                    expanded_copy
+                );
+                if let Err(e) = std::fs::copy(&expanded_output, &expanded_copy) {
+                    error!("❌ Failed to copy file for validation: {}", e);
+                } else {
+                    info!("✅ Copied to {}. Running validity check...", expanded_copy);
+                    use std::collections::HashSet;
+                    use url_checker::{collect_urls_from_bookmarks, CheckerConfig, UrlChecker};
+                    if let Ok(bookmarks) = sync::import_bookmarks_from_html(&expanded_copy) {
+                        let all_urls: HashSet<String> = collect_urls_from_bookmarks(&bookmarks)
+                            .into_iter()
+                            .collect();
+                        let safe_conc = validate_concurrency.min(10);
+                        let cfg = CheckerConfig {
+                            proxy_url: None,
+                            timeout_secs: 10,
+                            concurrency: safe_conc,
+                            retry_count: 1,
+                        };
+                        if let Ok(checker) = UrlChecker::new(cfg) {
+                            use indicatif::{ProgressBar, ProgressStyle};
+                            let mut url_vec: Vec<String> = all_urls.into_iter().collect();
+                            if validate_limit > 0 && url_vec.len() > validate_limit {
+                                info!(
+                                    "📊 限制有效性检查数量: {} / {} URLs",
+                                    validate_limit,
+                                    url_vec.len()
+                                );
+                                url_vec.truncate(validate_limit);
+                            }
+                            let pb = ProgressBar::new(url_vec.len() as u64);
+                            pb.set_style(
+                                ProgressStyle::default_bar()
+                                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                                    .unwrap_or_else(|_| ProgressStyle::default_bar())
+                                    .progress_chars("#>-"),
+                            );
+                            let pb2 = pb.clone();
+                            let results = if validate_content {
+                                info!("🎯 启用【内容有效性检测 (Content Validity Mode)】: 针对主域名有效的前提下，深度排查具体页面内容是否返回 HTTP 404 Not Found / 410 Gone...");
+                                checker
+                                    .check_batch_content(url_vec, move |current, total, _url| {
+                                        pb2.set_length(total as u64);
+                                        pb2.set_position(current as u64);
+                                    })
+                                    .await
+                            } else {
+                                info!("🌐 启用【网站主域名去重有效性检测 (Domain Validity Mode)】: 结合大站白名单豁免，探测主域可达性...");
+                                let pb3 = pb.clone();
+                                checker
+                                    .check_batch(url_vec, move |current, total, _url| {
+                                        pb3.set_length(total as u64);
+                                        pb3.set_position(current as u64);
+                                    })
+                                    .await
+                            };
+                            pb.finish_with_message("检查完成");
+                            let total_checked = results.len();
+                            let review_candidate_urls: HashSet<String> = results
+                                .iter()
+                                .filter(|r| r.status.should_auto_delete())
+                                .map(|r| r.url.clone())
+                                .collect();
+                            let exempt_count =
+                                results.iter().filter(|r| r.url.contains(".onion")).count();
+                            let valid_count = results
+                                .iter()
+                                .filter(|r| {
+                                    matches!(
+                                        r.status,
+                                        url_checker::ValidationStatus::Valid
+                                            | url_checker::ValidationStatus::Redirected
+                                    )
+                                })
+                                .count();
+                            let doubtful_count = total_checked
+                                .saturating_sub(review_candidate_urls.len() + valid_count);
+
+                            let review_candidate_items: Vec<serde_json::Value> = results
+                                .iter()
+                                .filter(|r| r.status.should_auto_delete())
+                                .map(|r| {
+                                    serde_json::json!({
+                                        "url": r.url,
+                                        "status": format!("{:?}", r.status),
+                                        "reason": r.error_message.clone().unwrap_or_else(|| "单轮检查命中失效候选 (DNS无法解析 / 服务器主动拒绝连接 / 404 Not Found / 410 Gone)".to_string()),
+                                        "action": "候选待复核，校验副本保留 (Review candidate; validation copy retained)"
+                                    })
+                                })
+                                .collect();
+
+                            let doubtful_retained_items: Vec<serde_json::Value> = results
+                                .iter()
+                                .filter(|r| {
+                                    !r.status.should_auto_delete()
+                                        && !matches!(
+                                            r.status,
+                                            url_checker::ValidationStatus::Valid
+                                                | url_checker::ValidationStatus::Redirected
+                                        )
+                                })
+                                .map(|r| {
+                                    serde_json::json!({
+                                        "url": r.url,
+                                        "status": format!("{:?}", r.status),
+                                        "reason": r.error_message.clone().unwrap_or_else(|| "存疑保留 (本地网络与代理IO临时错误 / 网站暂时维护5xx / 403防护与429限流 / 暗网地址)".to_string()),
+                                        "action": "存疑但保留 (Retained: local network IO error or temporary server maintenance)"
+                                    })
+                                })
+                                .collect();
+
+                            let validity_conclusions = serde_json::json!({
+                                "validation_performed": true,
+                                "validation_mode": if validate_content {
+                                    "ContentValidity (内容有效性检测 - 针对主域名有效的前提下，排查具体完整页面路径返回 404/410 的失效候选)"
+                                } else {
+                                    "DomainValidity (网站主域名有效性检测 - 主层级域名去重 + 大站白名单豁免)"
+                                },
+                                "validated_copy_file_path": expanded_copy,
+                                "summary": {
+                                    "total_urls_checked": total_checked,
+                                    "valid_or_redirected_retained_count": valid_count,
+                                    "doubtful_retained_count": doubtful_count,
+                                    "review_candidate_count": review_candidate_urls.len(),
+                                    "onion_websites_exempt_count": exempt_count,
+                                    "retained_checked_count": total_checked
+                                },
+                                "conclusions_and_rules": {
+                                    "major_site_whitelist_rule": "根据‘常见且热门的互联网站点清单’规则（内置涵盖 YouTube, GitHub, Google, Baidu, Bing, Bilibili, Zhihu, Taobao, Twitter, Apple, Microsoft 等近 50 个核心平台，并支持通过外部 JSON 文件如 major_sites.json 进行热部署配置与扩展），系统自动豁免此类绝不可发生全站 404/倒闭的站点，直接赋予白名单跳过并保留，大幅缩减检测耗时且杜绝平台反爬防封锁。",
+                                    "domain_level_validation_rule": "系统采用‘主层级域名去重校验’机制。例如 youtube.com 下所有视频仅检测主域是否存活，消减 90%+ 的重复网络请求并彻底解决 WAF/429 限流问题，凡主域名可正常访问的，下属所有书签均视为有效保留。",
+                                    "content_validity_rule": "有关于内容有效性检测（--validate-content）：本功能为单独的深度内容有效性排查，检测前提是该网站主域名有效。系统对完整书签 URL 路径（例如具体的视频或贴文 URL）进行校验，当页面返回明确 HTTP 404 Not Found 或 410 Gone 时列为失效候选；反爬限流等情况继续存疑保留。",
+                                    "review_candidate_rule": "单轮检查只能报告失效候选，不能作为破坏性删除依据。DNS无法解析、服务器主动拒绝连接或明确返回 404/410 的书签会列入候选清单，但校验副本保持原样，等待多轮历史确认与人工复核。",
+                                    "retained_links_rule": "返回 HTTP 2xx (正常访问) 和 3xx (重定向) 的有效网址予以完全保留。",
+                                    "doubtful_retained_rule": "基于死链判定五维度规则，对以下情况绝不误删并予以保留：【维度4】网络/网络代理原因导致的临时IO报错（连接超时/TLS握手错误/网络连接重置等 - LocalNetworkError/Timeout），判定为本地网络侧原因；【维度5】网站暂时维护但未来有望开放，以及开启反爬/WAF防护（HTTP 401, 403, 429, 502/503/504 ServiceUnavailable/ServerError 等）。以上全部列入‘存疑但保留’清单；同时针对 .onion 暗网地址亦免除检查予以保留。"
+                                },
+                                "review_candidate_items": review_candidate_items,
+                                "doubtful_retained_items": doubtful_retained_items,
+                                "validation_copy_preserved": true,
+                                "status": "Completed (report only)"
+                            });
+
+                            info!("📊 Validity Check Summary:");
+                            info!("   Total Checked: {}", total_checked);
+                            info!("   Retained after review-only scan: {}", total_checked);
+                            info!("   Onion Websites Exempted: {}", exempt_count);
+                            info!(
+                                "   Review candidates (copy unchanged): {}",
+                                review_candidate_urls.len()
+                            );
+
+                            let report_path = {
+                                let p = std::path::Path::new(&expanded_output);
+                                let stem =
+                                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("export");
+                                let dir = p.parent().unwrap_or(std::path::Path::new("."));
+                                dir.join(format!("{stem}_report.json"))
+                                    .to_string_lossy()
+                                    .to_string()
+                            };
+                            if let Ok(content) = std::fs::read_to_string(&report_path) {
+                                if let Ok(mut json_val) =
+                                    serde_json::from_str::<serde_json::Value>(&content)
+                                {
+                                    json_val["validity_check_conclusions"] = validity_conclusions;
+                                    if let Ok(updated_json) =
+                                        serde_json::to_string_pretty(&json_val)
+                                    {
+                                        if let Err(e) = std::fs::write(&report_path, updated_json) {
+                                            error!("❌ 更新报告 JSON 失败: {}", e);
+                                        } else {
+                                            info!(
+                                                "📋 已将详细的有效性检测结论与清单更新至报告: {}",
+                                                report_path
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             if clear_after {
                 if !unsafe_write {
@@ -907,6 +1140,10 @@ async fn main() -> Result<()> {
             SyncEngine::print_builtin_rules();
         }
 
+        Commands::Health { command } => {
+            command.execute().await.map_err(|e| anyhow::anyhow!(e))?;
+        }
+
         Commands::Check {
             file,
             output,
@@ -921,6 +1158,9 @@ async fn main() -> Result<()> {
             export_invalid,
             export_dir,
             keep_empty,
+            slow,
+            history_db,
+            secondary,
         } => {
             use indicatif::{ProgressBar, ProgressStyle};
             use std::collections::HashSet;
@@ -932,6 +1172,20 @@ async fn main() -> Result<()> {
 
             // 从文件模式
             let from_file = file.is_some();
+
+            if delete && history_db.is_none() {
+                println!("Deletion requires --history-db and a multi-run ConfirmedDead verdict.");
+                return Ok(());
+            }
+            if delete && !from_file {
+                println!("Direct browser mutation is disabled: current adapters cannot identify every source profile safely.");
+                println!("Use --file and --output to create an exact, backed-up cleaned copy.");
+                return Ok(());
+            }
+            if delete && output.is_none() {
+                println!("Deletion from an HTML input requires a separate --output path.");
+                return Ok(());
+            }
 
             info!("🔍 检查收藏夹URL有效性");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -1028,7 +1282,7 @@ async fn main() -> Result<()> {
                 for adapter in browsers::get_all_adapters() {
                     let name = adapter.browser_type().name();
                     if browsers == "all" || browser_list.iter().any(|b| matches_browser(name, b)) {
-                        match adapter.read_bookmarks() {
+                        match adapter.read_all_bookmarks() {
                             Ok(bookmarks) => {
                                 let urls = collect_urls_from_bookmarks(&bookmarks);
                                 info!(
@@ -1043,6 +1297,30 @@ async fn main() -> Result<()> {
                                 warn!("⚠️  {} 读取失败: {}", adapter.browser_type().name(), e);
                             }
                         }
+                    }
+                }
+
+                // The legacy adapter list is intentionally small. In historical health mode,
+                // supplement it with the comprehensive installation/profile harvester so Arc,
+                // Edge, Chromium, Vivaldi, beta channels, and named profiles are not missed.
+                if browsers == "all" && (history_db.is_some() || slow) {
+                    let temp = tempfile::tempdir()?;
+                    match sync::collector::BookmarkCollector::collect_all(temp.path()) {
+                        Ok((tree, inventory, _)) => {
+                            let (canonical, _, _, _, _) =
+                                sync::dedupe::DedupeEngine::deduplicate_tree(&tree, &[]);
+                            info!(
+                                "📚 全面 Profile 采集: {} 个浏览器安装 / {} 个 Profile / {} 个唯一 URL",
+                                inventory.total_installations,
+                                inventory.total_profiles,
+                                canonical.len()
+                            );
+                            for warning in inventory.warnings {
+                                warn!("⚠️  {warning}");
+                            }
+                            all_urls.extend(canonical.into_iter().map(|item| item.exact_url));
+                        }
+                        Err(error) => warn!("⚠️  全面 Profile 采集失败，保留适配器结果: {error}"),
                     }
                 }
             }
@@ -1071,6 +1349,125 @@ async fn main() -> Result<()> {
                 info!("\n📊 共 {} 个唯一URL待检查", unique_urls.len());
             }
 
+            // ── 新引擎路径: 提供 --history-db 或 --slow 时走 HealthEngine ──────────
+            if history_db.is_some() || slow {
+                let targets: Vec<ProbeTarget> = unique_urls
+                    .iter()
+                    .filter_map(|url| ProbeTarget::from_url(url.as_str(), url.as_str()).ok())
+                    .collect();
+
+                let sec_list: Vec<String> = secondary
+                    .as_deref()
+                    .unwrap_or("")
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                let db_path = history_db
+                    .as_ref()
+                    .map(|s| std::path::PathBuf::from(expand_path(s)));
+
+                let out_path = export_dir
+                    .as_ref()
+                    .map(|d| std::path::PathBuf::from(expand_path(d)));
+
+                let engine = match HealthEngine::new(HealthEngineOptions {
+                    proxy_url: proxy.clone(),
+                    timeout_secs: timeout,
+                    concurrency: safe_concurrency,
+                    slow_mode: slow,
+                    allow_private_ips: false,
+                    history_db_path: db_path,
+                    secondary_backends: sec_list,
+                    output_dir: out_path,
+                }) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        error!("❌ 健康引擎初始化失败: {}", e);
+                        return Ok(());
+                    }
+                };
+
+                let pb = ProgressBar::new(targets.len() as u64);
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+                        .unwrap_or_else(|_| ProgressStyle::default_bar())
+                        .progress_chars("#>-"),
+                );
+                let pb2 = pb.clone();
+
+                let report = engine
+                    .run_probes(targets, move |cur, _total, _url| {
+                        pb2.set_position(cur as u64);
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+
+                pb.finish_with_message("检查完成");
+
+                println!("\n📊 健康检查结果 (多后端多历史分析)");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("  总计检查:      {}", report.total_checked);
+                println!("  ✅ 有效:       {}", report.live_count);
+                println!("  🔄 已恢复:     {}", report.recovered_count);
+                println!("  🛡️  受保护:    {}", report.protected_count);
+                println!("  ⚠️  临时失败:  {}", report.temp_failure_count);
+                println!("  🔴 可能失效:   {}", report.probable_dead_count);
+                println!("  ☠️  确认失效:  {}", report.confirmed_dead_count);
+                println!("  ❓ 需人工审核: {}", report.needs_review_count);
+                println!("  ⏱️  耗时:       {:.2}秒", report.duration_secs);
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+                if history_db.is_some() {
+                    println!("\n💾 历史已写入 DB。后续运行:");
+                    println!("   bsync health quarantine   -- 查看需审核的书签");
+                    println!("   bsync health rebuild-summary  -- 重建汇总统计");
+                }
+
+                if delete {
+                    ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true)
+                        .map_err(anyhow::Error::msg)?;
+                    let confirmed: HashSet<String> =
+                        report.confirmed_dead_urls.iter().cloned().collect();
+                    let mut cleaned = file_bookmarks.clone().unwrap_or_default();
+                    let stats = remove_invalid_bookmarks_preserve_structure(
+                        &mut cleaned,
+                        &confirmed,
+                        &RemoveConfig {
+                            keep_empty_folders: keep_empty,
+                        },
+                    );
+
+                    if dry_run {
+                        println!(
+                            "\n🧪 预览：将精确删除 {} 个历史确认失效书签；未写入文件。",
+                            stats.bookmarks_removed
+                        );
+                    } else if let Some(out) = output.as_ref() {
+                        let out = expand_path(out);
+                        let temp = format!("{out}.tmp-{}", uuid::Uuid::new_v4());
+                        sync::export_bookmarks_to_html(&cleaned, &temp)?;
+                        if std::path::Path::new(&out).exists() {
+                            let backup = format!(
+                                "{out}.backup-{}",
+                                chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+                            );
+                            std::fs::copy(&out, &backup)?;
+                            println!("  🛟 原输出已备份: {backup}");
+                        }
+                        std::fs::rename(&temp, &out)?;
+                        println!(
+                            "\n✅ 已保存清理副本: {out}（精确删除 {} 项，存活和存疑项均保留）",
+                            stats.bookmarks_removed
+                        );
+                    }
+                }
+                return Ok(());
+            }
+
+            // ── 旧引擎路径 (无 --history-db / --slow) ─────────────────────────────
             // 创建进度条
             let pb = ProgressBar::new(unique_urls.len() as u64);
             pb.set_style(ProgressStyle::default_bar()
@@ -1142,29 +1539,24 @@ async fn main() -> Result<()> {
                 .map(|r| r.url.clone())
                 .collect();
 
-            // 文件模式: 导出有效书签到输出文件
+            // 文件模式: 导出保留全部书签的检查副本
             if from_file {
                 if let Some(ref out_path) = output {
                     let out_expanded = expand_path(out_path);
-                    println!("\n📤 导出有效书签到: {out_expanded}");
+                    println!("\n📤 导出保留全部书签的检查副本到: {out_expanded}");
 
                     if let Some(ref bookmarks) = file_bookmarks {
-                        // 移除无效和不确定的书签，保留有效和跳过的
-                        let keep_urls: HashSet<String> =
-                            valid_urls.union(&skipped_urls).cloned().collect();
-                        let valid_bookmarks =
-                            extract_by_status_preserve_structure(bookmarks, &keep_urls);
-
-                        match sync::export_bookmarks_to_html(&valid_bookmarks, &out_expanded) {
+                        // 旧扫描只有单轮结果，不能据此从默认输出中隔离任何书签。
+                        match sync::export_bookmarks_to_html(bookmarks, &out_expanded) {
                             Ok(()) => {
-                                let count: usize = valid_bookmarks.iter().map(count_tree).sum();
-                                info!("✅ 导出了 {} 个有效书签到 {}", count, out_expanded);
+                                let count: usize = bookmarks.iter().map(count_tree).sum();
+                                info!("✅ 保留并导出了 {} 个书签到 {}", count, out_expanded);
                             }
                             Err(e) => error!("❌ 导出失败: {}", e),
                         }
                     }
                 } else {
-                    warn!("⚠️  文件模式需要指定 --output 参数来保存有效书签");
+                    warn!("⚠️  文件模式需要指定 --output 参数来保存检查副本");
                 }
             }
 
@@ -1182,12 +1574,11 @@ async fn main() -> Result<()> {
 
                 // 根据模式选择书签源
                 let source_bookmarks: Vec<&Vec<browsers::Bookmark>> = if from_file {
-                    match file_bookmarks.as_ref() {
-                        Some(b) => vec![b],
-                        None => {
-                            tracing::warn!("指定了 --from-file 模式，但书签文件加载为空");
-                            Vec::new()
-                        }
+                    if let Some(b) = file_bookmarks.as_ref() {
+                        vec![b]
+                    } else {
+                        tracing::warn!("指定了 --from-file 模式，但书签文件加载为空");
+                        Vec::new()
                     }
                 } else {
                     all_bookmarks.iter().map(|(_, b)| b).collect()
@@ -1301,73 +1692,6 @@ async fn main() -> Result<()> {
                         ),
                         Err(e) => error!("❌ 导出失败: {}", e),
                     }
-                }
-            }
-
-            // 处理删除
-            if delete && report.invalid_count > 0 {
-                if dry_run {
-                    println!("\n🏃 Dry-run模式 - 以下URL将被删除:");
-                    for url in &invalid_urls {
-                        println!("  • {url}");
-                    }
-                    println!("\n共 {} 个URL将被删除 (实际未删除)", invalid_urls.len());
-                    if keep_empty {
-                        println!("📁 空文件夹将被保留 (--keep-empty)");
-                    } else {
-                        println!("📁 空文件夹将被删除 (默认行为)");
-                    }
-                } else {
-                    println!("\n🗑️  正在删除无效收藏夹 (保持文件夹结构)...");
-
-                    let remove_config = RemoveConfig {
-                        keep_empty_folders: keep_empty,
-                    };
-
-                    for (browser_type, mut bookmarks) in all_bookmarks {
-                        // 备份
-                        for adapter in browsers::get_all_adapters() {
-                            if adapter.browser_type() == browser_type {
-                                match adapter.backup_bookmarks() {
-                                    Ok(path) => {
-                                        info!("💾 {} 备份: {:?}", browser_type.name(), path);
-                                    }
-                                    Err(e) => warn!("⚠️  {} 备份失败: {}", browser_type.name(), e),
-                                }
-
-                                let stats = remove_invalid_bookmarks_preserve_structure(
-                                    &mut bookmarks,
-                                    &invalid_urls,
-                                    &remove_config,
-                                );
-
-                                if stats.bookmarks_removed > 0 || stats.empty_folders_removed > 0 {
-                                    match adapter.write_bookmarks(&bookmarks) {
-                                        Ok(()) => {
-                                            info!(
-                                                "✅ {} 删除了 {} 个无效书签",
-                                                browser_type.name(),
-                                                stats.bookmarks_removed
-                                            );
-                                            if stats.empty_folders_removed > 0 {
-                                                info!(
-                                                    "   清理了 {} 个空文件夹",
-                                                    stats.empty_folders_removed
-                                                );
-                                            }
-                                            info!("   保留了 {} 个文件夹", stats.folders_preserved);
-                                        }
-                                        Err(e) => {
-                                            error!("❌ {} 写入失败: {}", browser_type.name(), e);
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
-
-                    println!("\n✅ 删除完成 (文件夹结构已保持)");
                 }
             }
         }

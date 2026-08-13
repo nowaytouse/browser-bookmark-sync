@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 pub struct NativeReqwestBackend;
 
 impl NativeReqwestBackend {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -124,11 +124,21 @@ impl ProbeBackend for NativeReqwestBackend {
         let mut method = "HEAD";
         let mut response_res = client.head(&target.original_url).send().await;
 
-        // Fallback to GET if HEAD returns 405, 403, 404, 400, or 501 (many WAFs / CDNs block HEAD)
+        // Fallback to GET when HEAD is unsupported, or fetch a deep HTML page so content-level
+        // disappearance (soft-404 / removed post / unavailable video) can be verified.
         let mut fell_back = false;
         if let Ok(ref resp) = response_res {
             let status = resp.status().as_u16();
-            if matches!(status, 405 | 403 | 404 | 400 | 501) {
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_lowercase);
+            let should_probe_content = (200..300).contains(&status)
+                && content_type
+                    .as_deref()
+                    .is_none_or(|value| value.contains("html") || value.contains("xhtml"));
+            if matches!(status, 405 | 403 | 404 | 400 | 501) || should_probe_content {
                 method = "GET";
                 fell_back = true;
                 response_res = client.get(&target.original_url).send().await;
@@ -175,7 +185,7 @@ impl ProbeBackend for NativeReqwestBackend {
                 }
 
                 if let Some(ct) = resp.headers().get(reqwest::header::CONTENT_TYPE) {
-                    obs.content_type = ct.to_str().ok().map(|s| s.to_string());
+                    obs.content_type = ct.to_str().ok().map(ToString::to_string);
                 }
                 if let Some(cl) = resp.headers().get(reqwest::header::CONTENT_LENGTH) {
                     if let Ok(l) = cl.to_str().unwrap_or("").parse::<u64>() {
@@ -201,11 +211,11 @@ impl ProbeBackend for NativeReqwestBackend {
                     let text = String::from_utf8_lossy(&buffer);
                     obs.content_length = Some(buffer.len() as u64);
 
-                    let preview: String = text.chars().take(500).collect();
-                    obs.body_preview = Some(preview);
+                    let raw_preview: String = text.chars().take(500).collect();
+                    obs.body_preview = Some(raw_preview);
 
                     // Title, Canonical, and Body Hash extraction ONLY if Content-Type is HTML/XHTML
-                    let is_html = obs.content_type.as_ref().map_or(false, |ct| {
+                    let is_html = obs.content_type.as_ref().is_some_and(|ct| {
                         let ct_lower = ct.to_lowercase();
                         ct_lower.contains("html") || ct_lower.contains("xhtml")
                     });
@@ -219,6 +229,28 @@ impl ProbeBackend for NativeReqwestBackend {
                         }
                         let hash = blake3::hash(&buffer).to_hex().to_string();
                         obs.body_hash = Some(hash);
+                        if let Some(visible_text) =
+                            crate::health::content::extract_content_text(&text)
+                        {
+                            obs.body_preview = Some(visible_text);
+                        }
+                        if obs.error_kind.is_none() {
+                            if crate::health::content::is_parked_domain(
+                                obs.title.as_deref(),
+                                obs.body_preview.as_deref(),
+                            ) || (crate::health::content::is_deep_content_url(
+                                &target.original_url,
+                            ) && crate::health::content::is_structured_content_missing(
+                                &text,
+                            )) {
+                                obs.error_kind = Some("ContentMissing".to_string());
+                            } else if crate::health::content::is_soft_404(
+                                obs.title.as_deref(),
+                                obs.body_preview.as_deref(),
+                            ) {
+                                obs.error_kind = Some("Soft404Candidate".to_string());
+                            }
+                        }
                     }
                 }
             }
@@ -241,5 +273,68 @@ impl ProbeBackend for NativeReqwestBackend {
         }
 
         Ok(obs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn probe_html(path: &str, html: &str) -> BackendObservation {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = html.to_string();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 2048];
+                let size = socket.read(&mut request).await.unwrap();
+                let is_head = request[..size].starts_with(b"HEAD ");
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(headers.as_bytes()).await.unwrap();
+                if !is_head {
+                    socket.write_all(body.as_bytes()).await.unwrap();
+                }
+            }
+        });
+
+        let url = format!("http://{address}{path}");
+        let target = ProbeTarget::from_url("test-bookmark", &url).unwrap();
+        let context = ProbeContext {
+            run_id: "test-run".to_string(),
+            check_id: "test-check".to_string(),
+            proxy_url: None,
+            timeout_secs: 5,
+            slow_mode: false,
+            allow_private_ips: true,
+            history_db_path: None,
+            secondary_backends: Vec::new(),
+            artifact_dir: None,
+        };
+        let observation = NativeReqwestBackend::new()
+            .probe(&target, &context)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        observation
+    }
+
+    #[tokio::test]
+    async fn html_200_still_detects_parked_site_and_removed_video() {
+        let parked = probe_html("/", "<html><title>Domain for Sale</title></html>").await;
+        assert_eq!(parked.request_method, "GET");
+        assert_eq!(parked.error_kind.as_deref(), Some("ContentMissing"));
+
+        let removed_video = probe_html(
+            "/watch?v=gone",
+            r#"<html><script>{"playabilityStatus":{"status":"ERROR","reason":"Video has been removed"}}</script></html>"#,
+        )
+        .await;
+        assert_eq!(removed_video.request_method, "GET");
+        assert_eq!(removed_video.error_kind.as_deref(), Some("ContentMissing"));
     }
 }

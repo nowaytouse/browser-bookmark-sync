@@ -11,7 +11,7 @@ use std::process::Command;
 pub struct CurlCliBackend;
 
 impl CurlCliBackend {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -55,15 +55,14 @@ impl ProbeBackend for CurlCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
-        let bin_path = match Self::find_binary() {
-            Some(b) => b,
-            None => {
-                obs.backend_version = "not_installed".to_string();
-                obs.actual_request = "unknown".to_string();
-                obs.error_kind = Some("ToolNotInstalled: curl".to_string());
-                obs.finished_at = Utc::now();
-                return Ok(obs);
-            }
+        let bin_path = if let Some(b) = Self::find_binary() {
+            b
+        } else {
+            obs.backend_version = "not_installed".to_string();
+            obs.actual_request = "unknown".to_string();
+            obs.error_kind = Some("ToolNotInstalled: curl".to_string());
+            obs.finished_at = Utc::now();
+            return Ok(obs);
         };
 
         obs.backend_version = "8.7.1".to_string();
@@ -91,12 +90,12 @@ impl ProbeBackend for CurlCliBackend {
                 obs.actual_request = "yes".to_string();
                 let stdout_str = String::from_utf8_lossy(&out.stdout);
                 if let Ok(v) = serde_json::from_str::<Value>(&stdout_str) {
-                    if let Some(code) = v.get("http_code").and_then(|c| c.as_u64()) {
+                    if let Some(code) = v.get("http_code").and_then(Value::as_u64) {
                         if code > 0 {
                             obs.status_code = Some(code as u16);
                         }
                     }
-                    if let Some(time) = v.get("time_total").and_then(|t| t.as_f64()) {
+                    if let Some(time) = v.get("time_total").and_then(Value::as_f64) {
                         obs.response_time_ms = (time * 1000.0) as u64;
                     }
                     if let Some(url_effective) = v.get("url_effective").and_then(|u| u.as_str()) {

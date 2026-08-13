@@ -55,7 +55,7 @@ pub enum HealthCommands {
     /// Re-check bookmarks in a specific failing state
     Retry {
         /// Target verdict state (e.g. `probable_dead`, `temporary_failure`)
-        #[arg(long, default_value = "probable_dead")]
+        #[arg(long, default_value = "needs_review")]
         state: String,
         /// Secondary backends to run (comma separated)
         #[arg(long, default_value = "lychee,httpx")]
@@ -63,6 +63,12 @@ pub enum HealthCommands {
         /// SQLite database path
         #[arg(long, default_value = "./bookmark-health.sqlite")]
         db: PathBuf,
+        /// Number of separate completed probe runs before manual review
+        #[arg(long, default_value = "2", value_parser = clap::value_parser!(u8).range(1..=5))]
+        attempts: u8,
+        /// Delay between probe runs in seconds
+        #[arg(long, default_value = "30")]
+        interval_secs: u64,
     },
     /// Display quarantine review candidates eligible for multi-run deletion
     Quarantine {
@@ -70,7 +76,7 @@ pub enum HealthCommands {
         #[arg(long, default_value = "./bookmark-health.sqlite")]
         db: PathBuf,
     },
-    /// Rebuild health_summaries table from raw health_checks history
+    /// Rebuild `health_summaries` table from raw `health_checks` history
     RebuildSummary {
         /// SQLite database path
         #[arg(long, default_value = "./bookmark-health.sqlite")]
@@ -123,9 +129,8 @@ impl HealthCommands {
                         let _ = render_live_dashboard(&db, total, true);
                         std::thread::sleep(std::time::Duration::from_secs(2));
                     }
-                } else {
-                    render_live_dashboard(&db, total, false)?;
                 }
+                render_live_dashboard(&db, total, false)?;
             }
             Self::Monitor {
                 db,
@@ -139,6 +144,8 @@ impl HealthCommands {
                 state,
                 secondary,
                 db,
+                attempts,
+                interval_secs,
             } => {
                 if !db.exists() {
                     println!("Database file {} does not exist.", db.display());
@@ -180,10 +187,20 @@ impl HealthCommands {
                 })
                 .map_err(|e| format!("Engine initialization failed: {e}"))?;
 
-                let report = engine
-                    .run_probes(targets, |_cur, _total, _url| {})
-                    .await
-                    .map_err(|e| format!("Retry probe error: {e}"))?;
+                let mut report = None;
+                for attempt in 1..=attempts {
+                    println!("   Probe run {attempt}/{attempts}");
+                    report = Some(
+                        engine
+                            .run_probes(targets.clone(), |_cur, _total, _url| {})
+                            .await
+                            .map_err(|e| format!("Retry probe error: {e}"))?,
+                    );
+                    if attempt < attempts {
+                        tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                    }
+                }
+                let report = report.expect("attempt count is constrained to at least one");
 
                 println!("✅ Retry completed:");
                 println!("   Checked:           {}", report.total_checked);
@@ -370,7 +387,7 @@ fn render_live_dashboard(
             "-".repeat(empty)
         );
     } else {
-        println!("  排查进度   : 已记录 {} 条书签", tracked);
+        println!("  排查进度   : 已记录 {tracked} 条书签");
     }
 
     if counts.is_empty() {
@@ -394,7 +411,7 @@ fn render_live_dashboard(
                 "recovered" => "🔄 已恢复",
                 _ => "•  其他",
             };
-            println!("  {:<20} | {:>8} | {:>6.1}%", icon_str, c, share);
+            println!("  {icon_str:<20} | {c:>8} | {share:>6.1}%");
         }
     }
     println!("-------------------------------------------------------------------");

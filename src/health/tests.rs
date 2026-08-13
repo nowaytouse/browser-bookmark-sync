@@ -86,7 +86,7 @@ mod tests {
     }
 
     use crate::health::db::HealthDatabase;
-    use crate::health::models::{BackendObservation, HealthVerdict};
+    use crate::health::models::{BackendObservation, ConfigHashInput, HealthVerdict, ProbeContext};
     use crate::health::reporting::ReportExporter;
     use crate::health::scheduler::{HostScheduler, SchedulerConfig};
     use crate::health::security::{validate_url_security, SecurityCheckResult};
@@ -329,6 +329,7 @@ mod tests {
             first_failed_at: Some(now - Duration::days(30)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
+            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ConfirmedDead),
             qualifying_evidences: mock_evidences(
                 9,
@@ -346,7 +347,7 @@ mod tests {
     fn test_delete_safety_prevention() {
         assert!(ReportExporter::verify_delete_safety(HealthVerdict::ProbableDead, false).is_err());
         assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, false).is_err());
-        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_err());
+        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_ok());
     }
 
     #[test]
@@ -389,6 +390,36 @@ mod tests {
         let verdict = StateMachine::compute_single_run_verdict(&[obs]);
         assert_ne!(verdict, HealthVerdict::Live);
         assert_eq!(verdict, HealthVerdict::TemporaryFailure);
+    }
+
+    #[test]
+    fn content_missing_with_http_200_is_not_live() {
+        let observation = BackendObservation {
+            backend: "native_reqwest".to_string(),
+            status_code: Some(200),
+            error_kind: Some("ContentMissing".to_string()),
+            initial_url: "https://example.com/posts/removed".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[observation]),
+            HealthVerdict::ProbableDead
+        );
+    }
+
+    #[test]
+    fn soft_404_keyword_with_http_200_is_review_only() {
+        let observation = BackendObservation {
+            backend: "native_reqwest".to_string(),
+            status_code: Some(200),
+            error_kind: Some("Soft404Candidate".to_string()),
+            initial_url: "https://example.com/posts/suspicious".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[observation]),
+            HealthVerdict::NeedsReview
+        );
     }
 
     #[test]
@@ -599,7 +630,7 @@ mod tests {
         );
         assert!(ReportExporter::verify_delete_safety(HealthVerdict::NeedsReview, false).is_err());
         // In Phase 1, ConfirmedDead is quarantine-only; delete is rejected
-        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_err());
+        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_ok());
         // Live bookmarks are never candidates for deletion
         assert!(ReportExporter::verify_delete_safety(HealthVerdict::Live, false).is_err());
     }
@@ -802,8 +833,8 @@ mod tests {
         .unwrap_err();
         let err2 =
             ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, false).unwrap_err();
-        assert!(err1.contains("Automated destructive deletion is disabled in Phase 1"));
-        assert!(err2.contains("Automated destructive deletion is disabled in Phase 1"));
+        assert!(err1.contains("multi-run ConfirmedDead"));
+        assert!(err2.contains("multi-run ConfirmedDead"));
     }
 
     #[test]
@@ -880,6 +911,7 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
+            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 3,
@@ -1007,6 +1039,7 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
+            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences_one_family(
                 4,
@@ -1183,6 +1216,7 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
+            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 4,
@@ -1192,7 +1226,7 @@ mod tests {
             ..Default::default()
         };
         let verdict = StateMachine::resolve_final_verdict(&[obs_fail, obs_success], &history, now);
-        assert!(verdict == HealthVerdict::Live || verdict == HealthVerdict::Recovered);
+        assert_eq!(verdict, HealthVerdict::Recovered);
     }
 
     #[test]
@@ -1209,6 +1243,7 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
+            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ConfirmedDead),
             qualifying_evidences: mock_evidences(
                 0,
@@ -1244,6 +1279,7 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
+            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
@@ -1402,7 +1438,33 @@ mod tests {
             ..Default::default()
         };
         let verdict = StateMachine::resolve_final_verdict(&[obs1, obs2], &history, now);
-        assert_eq!(verdict, HealthVerdict::ProbableDead);
+        assert_eq!(verdict, HealthVerdict::NeedsReview);
+    }
+
+    #[test]
+    fn probable_dead_requires_a_full_twenty_four_hour_span() {
+        let now = Utc::now();
+        let observation = BackendObservation {
+            backend: "native_reqwest".to_string(),
+            status_code: Some(404),
+            ..Default::default()
+        };
+        let verdict_after = |span| {
+            let history = BookmarkHistoryStats {
+                qualifying_evidences: mock_evidences(2, Some(now - span), Some(now)),
+                ..Default::default()
+            };
+            StateMachine::resolve_final_verdict(&[observation.clone()], &history, now)
+        };
+
+        assert_eq!(
+            verdict_after(Duration::hours(24) - Duration::seconds(1)),
+            HealthVerdict::NeedsReview
+        );
+        assert_eq!(
+            verdict_after(Duration::hours(24)),
+            HealthVerdict::ProbableDead
+        );
     }
 
     #[test]
@@ -1476,6 +1538,7 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
+            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
@@ -1680,6 +1743,7 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
+            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ConfirmedDead),
             qualifying_evidences: mock_evidences(
                 0,
@@ -1734,7 +1798,7 @@ mod tests {
     #[test]
     fn confirmed_dead_is_quarantine_only() {
         assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, false).is_err());
-        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_err());
+        assert!(ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true).is_ok());
     }
 
     #[test]
@@ -1864,7 +1928,7 @@ mod tests {
 
         conn.execute(
             "INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version)
-             VALUES (?1, ?2, ?3, ?4, 'standard', ?5, '2', '0.0.0')",
+             VALUES (?1, ?2, ?3, ?4, 'standard', ?5, '4', '0.0.0')",
             params![
                 run_id,
                 started_at,
@@ -1887,8 +1951,8 @@ mod tests {
                 attempt_id, check_id, backend, backend_version, route, attempt_index,
                 actual_request, cache_hit, method, status_code, error_kind,
                 initial_url, redirect_count, response_time_ms, confidence,
-                dns_rcode, resolver_id
-            ) VALUES (?1, ?2, ?3, '0.0.0', 'direct', 0, ?4, ?5, 'GET', ?6, ?7, ?8, 0, 0, 1.0, ?9, ?10)",
+                dns_rcode, resolver_id, started_at, finished_at
+            ) VALUES (?1, ?2, ?3, '0.0.0', 'direct', 0, ?4, ?5, 'GET', ?6, ?7, ?8, 0, 0, 1.0, ?9, ?10, ?11, ?12)",
             params![
                 attempt_id,
                 check_id,
@@ -1900,6 +1964,8 @@ mod tests {
                 url,
                 dns_rcode,
                 resolver_id,
+                started_at,
+                finished_at,
             ],
         )
         .unwrap();
@@ -1927,7 +1993,13 @@ mod tests {
             "hash1",
         );
 
-        let evidences = db.get_qualifying_run_evidences("bm1", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm1",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 1, "one qualifying run");
 
         let obs = BackendObservation {
@@ -1982,7 +2054,13 @@ mod tests {
             "hash1",
         );
 
-        let evidences = db.get_qualifying_run_evidences("bm2", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm2",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 2, "two qualifying runs");
 
         let obs = BackendObservation {
@@ -2006,13 +2084,19 @@ mod tests {
         let check_id = "chk-bm3-1".to_string();
         let conn = db.raw_conn_for_test();
         let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','2','0')", rusqlite::params![run_id, t, t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id, t, t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, finished_at, run_verdict) VALUES (?1,?2,'bm3','http://x.com',?3,?4,'needs_review')", rusqlite::params![check_id, run_id, t, t]).unwrap();
         for i in 0..3 {
             let aid = format!("att-bm3-{i}");
-            conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence) VALUES (?1,?2,'native_reqwest','0','direct',?3,'yes',0,'GET',404,'http://x.com',0,0,1.0)", rusqlite::params![aid, check_id, i as i64]).unwrap();
+            conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence,started_at,finished_at) VALUES (?1,?2,'native_reqwest','0','direct',?3,'yes',0,'GET',404,'http://x.com',0,0,1.0,?4,?4)", rusqlite::params![aid, check_id, i as i64, t]).unwrap();
         }
-        let evidences = db.get_qualifying_run_evidences("bm3", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm3",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 1, "3 attempts in 1 run = 1 evidence entry");
     }
 
@@ -2035,7 +2119,13 @@ mod tests {
             -3,
             "hash1",
         );
-        let evidences = db.get_qualifying_run_evidences("bm4", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm4",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(
             evidences.len(),
             0,
@@ -2062,7 +2152,13 @@ mod tests {
             -3,
             "hash1",
         );
-        let evidences = db.get_qualifying_run_evidences("bm5", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm5",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 0, "actual_request=no must be excluded");
     }
 
@@ -2074,11 +2170,17 @@ mod tests {
         let check_id = "chk-bm6-1".to_string();
         let conn = db.raw_conn_for_test();
         let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','2','0')", rusqlite::params![run_id, t, t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id, t, t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, finished_at, run_verdict) VALUES (?1,?2,'bm6','http://x.com',?3,?4,'live')", rusqlite::params![check_id, run_id, t, t]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence) VALUES ('a1',?1,'native_reqwest','0','direct',0,'yes',0,'GET',404,'http://x.com',0,0,1.0)", rusqlite::params![check_id]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence) VALUES ('a2',?1,'lychee','0','direct',1,'yes',0,'GET',200,'http://x.com',0,0,1.0)", rusqlite::params![check_id]).unwrap();
-        let evidences = db.get_qualifying_run_evidences("bm6", None).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence,started_at,finished_at) VALUES ('a1',?1,'native_reqwest','0','direct',0,'yes',0,'GET',404,'http://x.com',0,0,1.0,?2,?2)", rusqlite::params![check_id, t]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence,started_at,finished_at) VALUES ('a2',?1,'lychee','0','direct',1,'yes',0,'GET',200,'http://x.com',0,0,1.0,?2,?2)", rusqlite::params![check_id, t]).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm6",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 0, "run with real success must be excluded");
     }
 
@@ -2133,7 +2235,13 @@ mod tests {
             "h",
         );
 
-        let evidences = db.get_qualifying_run_evidences("bm7", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm7",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(
             evidences.len(),
             1,
@@ -2206,8 +2314,70 @@ mod tests {
             "h",
         );
 
-        let evidences = db.get_qualifying_run_evidences("bm8", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm8",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 2, "two post-success failure runs");
+    }
+
+    #[test]
+    fn two_completed_runs_can_be_probable_dead() {
+        let db = HealthDatabase::in_memory().unwrap();
+        insert_run_and_attempt(
+            &db,
+            "bm8b",
+            "http://dead.example.com",
+            true,
+            "yes",
+            false,
+            Some(404),
+            None,
+            None,
+            None,
+            "native_reqwest",
+            -10,
+            "h",
+        );
+        insert_run_and_attempt(
+            &db,
+            "bm8b",
+            "http://dead.example.com",
+            true,
+            "yes",
+            false,
+            Some(404),
+            None,
+            None,
+            None,
+            "lychee",
+            -1,
+            "h",
+        );
+
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm8b",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evidences.len(), 2);
+
+        let obs = BackendObservation {
+            backend: "native_reqwest".to_string(),
+            status_code: Some(404),
+            ..Default::default()
+        };
+        let history = BookmarkHistoryStats {
+            qualifying_evidences: evidences,
+            ..Default::default()
+        };
+        let verdict = StateMachine::resolve_final_verdict(&[obs], &history, Utc::now());
+        assert_eq!(verdict, HealthVerdict::ProbableDead);
     }
 
     #[test]
@@ -2260,7 +2430,13 @@ mod tests {
             "h",
         );
 
-        let evidences = db.get_qualifying_run_evidences("bm9", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm9",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 3);
 
         let obs = BackendObservation {
@@ -2331,7 +2507,13 @@ mod tests {
             "h",
         );
 
-        let evidences = db.get_qualifying_run_evidences("bm10", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm10",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 3);
 
         // Patch families: runs must collectively cover 2 families
@@ -2399,7 +2581,13 @@ mod tests {
         );
 
         // Query evidences before the current run is persisted
-        let evidences = db.get_qualifying_run_evidences("bm11", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm11",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 2, "only 2 completed runs should appear");
 
         // Current run has 2 different families → with only 2 DB runs, cannot reach ConfirmedDead
@@ -2476,7 +2664,13 @@ mod tests {
             "h",
         );
 
-        let evidences = db.get_qualifying_run_evidences("bm12", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "bm12",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         // Only the last failure (after the success) qualifies
         assert_eq!(
             evidences.len(),
@@ -2505,7 +2699,13 @@ mod tests {
             -3,
             "h",
         );
-        let evidences = db.get_qualifying_run_evidences("dns1", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "dns1",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         // Single resolver NxDomain is NOT promoted to ConfirmedNxDomain, so run has no strong failure → 0 evidences
         assert_eq!(
             evidences.len(),
@@ -2522,12 +2722,18 @@ mod tests {
         let check_id = "chk-dns2-1".to_string();
         let conn = db.raw_conn_for_test();
         let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','2','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns2','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a')", rusqlite::params![check_id]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-b')", rusqlite::params![check_id]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
 
-        let evidences = db.get_qualifying_run_evidences("dns2", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "dns2",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(
             evidences.len(),
             1,
@@ -2549,12 +2755,18 @@ mod tests {
         let check_id = "chk-dns3".to_string();
         let conn = db.raw_conn_for_test();
         let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','2','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns3','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a')", rusqlite::params![check_id]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','resolver-b')", rusqlite::params![check_id]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','resolver-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
 
-        let evidences = db.get_qualifying_run_evidences("dns3", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "dns3",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 0, "NxDomain+ServFail is not agreement");
     }
 
@@ -2565,12 +2777,18 @@ mod tests {
         let check_id = "chk-dns4".to_string();
         let conn = db.raw_conn_for_test();
         let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','2','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns4','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','r-a')", rusqlite::params![check_id]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NOERROR','r-b')", rusqlite::params![check_id]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','r-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NOERROR','r-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
 
-        let evidences = db.get_qualifying_run_evidences("dns4", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "dns4",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 0, "NxDomain+NOERROR must not agree");
     }
 
@@ -2582,12 +2800,18 @@ mod tests {
         let check_id = "chk-dns5".to_string();
         let conn = db.raw_conn_for_test();
         let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','2','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns5','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','r-a')", rusqlite::params![check_id]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','r-b')", rusqlite::params![check_id]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','r-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','r-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
 
-        let evidences = db.get_qualifying_run_evidences("dns5", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "dns5",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(evidences.len(), 0, "ServFail is never a strong failure");
     }
 
@@ -2599,12 +2823,18 @@ mod tests {
         let check_id = "chk-dns6".to_string();
         let conn = db.raw_conn_for_test();
         let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','2','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns6','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a')", rusqlite::params![check_id]).unwrap();
-        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a')", rusqlite::params![check_id]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
+        conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
 
-        let evidences = db.get_qualifying_run_evidences("dns6", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "dns6",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         assert_eq!(
             evidences.len(),
             0,
@@ -2667,12 +2897,12 @@ mod tests {
     #[test]
     fn matching_rule_version_uses_or_rebuilds_valid_summary() {
         use crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
-        assert_eq!(CURRENT_HEALTH_RULE_VERSION, "2");
+        assert_eq!(CURRENT_HEALTH_RULE_VERSION, "4");
     }
 
     #[test]
     fn stale_rule_version_forces_rebuild() {
-        // Simulate: summary stored with rule_version "1", current is "2"
+        // Simulate: summary stored with rule_version "1", current is "4"
         // State machine should not trust the cached summary → rebuild from evidences
         let db = HealthDatabase::in_memory().unwrap();
         // No evidence in DB → qualifying_evidences will be empty regardless of summary
@@ -2694,7 +2924,13 @@ mod tests {
 
         // Simulated stale summary: would claim ProbableDead via consecutive_failures
         // But with fresh evidence query (rule_version mismatch → rebuild), only 1 run → NeedsReview
-        let evidences = db.get_qualifying_run_evidences("rv1", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "rv1",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         let obs = BackendObservation {
             backend: "native_reqwest".to_string(),
             status_code: Some(404),
@@ -2702,7 +2938,7 @@ mod tests {
         };
         let history = BookmarkHistoryStats {
             qualifying_evidences: evidences,
-            rule_version: "2".to_string(), // current version
+            rule_version: "4".to_string(), // current version
             consecutive_failures: 99,      // stale summary would say 99, but evidences override
             ..Default::default()
         };
@@ -2735,7 +2971,13 @@ mod tests {
             -3,
             "h",
         );
-        let evidences = db.get_qualifying_run_evidences("rv2", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "rv2",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         let obs = BackendObservation {
             backend: "native_reqwest".to_string(),
             status_code: Some(404),
@@ -2759,42 +3001,46 @@ mod tests {
             rule_version: CURRENT_HEALTH_RULE_VERSION.to_string(),
             ..Default::default()
         };
-        assert_eq!(history.rule_version, "2");
+        assert_eq!(history.rule_version, "4");
     }
 
     #[test]
-    fn same_config_has_stable_hash() {
-        // Same backend list → same config_hash (blake3 is deterministic)
-        let backends: Vec<String> = vec!["lychee".to_string(), "httpx".to_string()];
-        let json = serde_json::to_string(&backends).unwrap();
-        let h1 = blake3::hash(json.as_bytes()).to_hex().to_string();
-        let h2 = blake3::hash(json.as_bytes()).to_hex().to_string();
-        assert_eq!(h1, h2, "same config must produce same hash");
-    }
+    fn config_hash_is_canonical_and_semantic() {
+        let context = |secondary_backends, timeout_secs, artifact_dir| ProbeContext {
+            run_id: "run".to_string(),
+            check_id: "check".to_string(),
+            proxy_url: None,
+            timeout_secs,
+            slow_mode: false,
+            allow_private_ips: false,
+            history_db_path: None,
+            secondary_backends,
+            artifact_dir,
+        };
+        let first = context(
+            vec!["lychee".to_string(), "dnsx".to_string()],
+            10,
+            Some("first".into()),
+        );
+        let reordered = context(
+            vec!["dnsx".to_string(), "lychee".to_string()],
+            10,
+            Some("second".into()),
+        );
+        let different_timeout = context(vec!["dnsx".to_string(), "lychee".to_string()], 11, None);
 
-    #[test]
-    fn evidence_affecting_change_changes_hash() {
-        let backends_a: Vec<String> = vec!["lychee".to_string()];
-        let backends_b: Vec<String> = vec!["lychee".to_string(), "httpx".to_string()];
-        let ha = blake3::hash(serde_json::to_string(&backends_a).unwrap().as_bytes())
-            .to_hex()
-            .to_string();
-        let hb = blake3::hash(serde_json::to_string(&backends_b).unwrap().as_bytes())
-            .to_hex()
-            .to_string();
-        assert_ne!(ha, hb, "different backends must produce different hash");
-    }
+        let first_hash = ConfigHashInput::from_probe_context(&first)
+            .stable_hash()
+            .unwrap();
+        let reordered_hash = ConfigHashInput::from_probe_context(&reordered)
+            .stable_hash()
+            .unwrap();
+        let different_timeout_hash = ConfigHashInput::from_probe_context(&different_timeout)
+            .stable_hash()
+            .unwrap();
 
-    #[test]
-    fn non_semantic_output_path_does_not_change_hash() {
-        // The config hash must NOT include output_dir/log_level etc.
-        // We verify by hashing only the backend list (the semantic part)
-        let backends: Vec<String> = vec!["lychee".to_string()];
-        let json = serde_json::to_string(&backends).unwrap();
-        let h1 = blake3::hash(json.as_bytes()).to_hex().to_string();
-        // Simulated second call with same backends but different output dir → hash is same
-        let h2 = blake3::hash(json.as_bytes()).to_hex().to_string();
-        assert_eq!(h1, h2, "non-semantic fields must not affect config hash");
+        assert_eq!(first_hash, reordered_hash);
+        assert_ne!(first_hash, different_timeout_hash);
     }
 
     #[test]
@@ -2849,7 +3095,11 @@ mod tests {
 
         // Query with a different (new) config hash — incompatible history must be excluded
         let evidences = db
-            .get_qualifying_run_evidences("cfg1", Some("new_hash"))
+            .get_qualifying_run_evidences(
+                "cfg1",
+                Some("new_hash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
             .unwrap();
         assert_eq!(
             evidences.len(),
@@ -2893,14 +3143,18 @@ mod tests {
         );
 
         let evidences = db
-            .get_qualifying_run_evidences("cfg2", Some("same_hash"))
+            .get_qualifying_run_evidences(
+                "cfg2",
+                Some("same_hash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
             .unwrap();
         assert_eq!(evidences.len(), 2, "matching config_hash runs must qualify");
     }
 
     #[test]
     fn summary_config_mismatch_forces_rebuild() {
-        // Summary rule_version "1" vs current "2" → qualifying_evidences must be rebuilt fresh
+        // Summary rule_version "1" vs current "4" → qualifying_evidences must be rebuilt fresh
         let db = HealthDatabase::in_memory().unwrap();
         insert_run_and_attempt(
             &db,
@@ -2934,7 +3188,13 @@ mod tests {
         );
 
         // Fresh rebuild (ignoring stale summary):
-        let evidences = db.get_qualifying_run_evidences("cfg3", None).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "cfg3",
+                None,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
         let obs = BackendObservation {
             backend: "native_reqwest".to_string(),
             status_code: Some(404),
@@ -2953,5 +3213,842 @@ mod tests {
             HealthVerdict::ProbableDead,
             "rebuild with 2 runs → ProbableDead"
         );
+    }
+}
+
+#[cfg(test)]
+mod sqlite_integration_tests {
+    use crate::health::db::HealthDatabase;
+    use crate::health::models::{BackendObservation, ConfigHashInput, HealthVerdict, ProbeContext};
+    use chrono::{Duration, Utc};
+    use rusqlite::params;
+
+    fn setup_db() -> HealthDatabase {
+        HealthDatabase::open(":memory:").unwrap()
+    }
+
+    fn insert_run(db: &HealthDatabase, run_id: &str, completed: bool, rule_version: &str) {
+        db.conn.execute(
+            "INSERT INTO health_runs (run_id, started_at, completed, mode, config_json, config_hash, rule_version, app_version)
+             VALUES (?1, ?2, ?3, 'standard', '{}', 'testhash', ?4, '1.0.0')",
+            params![run_id, Utc::now().to_rfc3339(), if completed { 1 } else { 0 }, rule_version],
+        ).unwrap();
+    }
+
+    fn insert_check(
+        db: &HealthDatabase,
+        check_id: &str,
+        run_id: &str,
+        bookmark_id: &str,
+        start_offset_secs: i64,
+    ) {
+        let started_at = (Utc::now() + Duration::seconds(start_offset_secs)).to_rfc3339();
+        db.conn.execute(
+            "INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, run_verdict)
+             VALUES (?1, ?2, ?3, 'http://test.com', ?4, 'needs_review')",
+            params![check_id, run_id, bookmark_id, started_at],
+        ).unwrap();
+    }
+
+    fn insert_attempt(
+        db: &HealthDatabase,
+        attempt_id: &str,
+        check_id: &str,
+        actual_request: &str,
+        status_code: Option<u16>,
+        dns_rcode: Option<&str>,
+        resolver_id: Option<&str>,
+        backend: &str,
+    ) {
+        let started_at: String = db
+            .conn
+            .query_row(
+                "SELECT started_at FROM health_checks WHERE check_id = ?1",
+                params![check_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO health_attempts (
+                attempt_id, check_id, backend, backend_version, route, attempt_index,
+                actual_request, cache_hit, method, status_code, dns_rcode, resolver_id, confidence,
+                initial_url, redirect_count, response_time_ms, started_at, finished_at
+             ) VALUES (
+                ?1, ?2, ?3, '1', 'direct', 0,
+                ?4, 0, 'GET', ?5, ?6, ?7, 100,
+                'http://test.com', 0, 100, ?8, ?8
+             )",
+                params![
+                    attempt_id,
+                    check_id,
+                    backend,
+                    actual_request,
+                    status_code,
+                    dns_rcode,
+                    resolver_id,
+                    started_at,
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn overlapping_run_failure_before_later_success_is_excluded() {
+        let db = setup_db();
+        let b = "bm_overlap";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+
+        insert_run(
+            &db,
+            "run_fail",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_fail", "run_fail", b, 5); // attempt started before success (10)
+        insert_attempt(
+            &db,
+            "att1",
+            "chk_fail",
+            "yes",
+            Some(404),
+            None,
+            None,
+            "native_reqwest",
+        );
+        // But let's say the run finished after success. It shouldn't matter since we filter by check started_at.
+
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(
+            evs.len(),
+            0,
+            "Failure attempt started before success should be excluded"
+        );
+    }
+
+    #[test]
+    fn run_finished_after_success_does_not_revive_old_failure() {
+        // The run containing the failure STARTED before the success (check offset 5 vs 10).
+        // Even if that run FINISHED after the success, the attempt time pre-dates the success,
+        // so the evidence must NOT qualify. This test uses explicit attempt started_at values
+        // to exercise the COALESCE(a.started_at, c.started_at) temporal filter.
+        let db = setup_db();
+        let b = "bm_revive";
+        let rv = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
+        let t_success = (Utc::now() + Duration::seconds(20)).to_rfc3339();
+        let t_fail_attempt = (Utc::now() + Duration::seconds(5)).to_rfc3339();
+
+        db.conn.execute(
+            "INSERT INTO health_runs (run_id, started_at, completed, mode, config_json, config_hash, rule_version, app_version)
+             VALUES ('run_s', ?1, 1, 'standard', '{}', 'testhash', ?2, '1')",
+            params![&t_success, rv],
+        ).unwrap();
+        db.conn.execute(
+            "INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, run_verdict)
+             VALUES ('chk_s', 'run_s', ?1, 'http://test.com', ?2, 'live')",
+            params![b, &t_success],
+        ).unwrap();
+        db.conn.execute(
+            "INSERT INTO health_attempts (attempt_id, check_id, backend, backend_version, route, attempt_index, actual_request, cache_hit, method, status_code, confidence, initial_url, redirect_count, response_time_ms, started_at, finished_at)
+             VALUES ('a_s', 'chk_s', 'native_reqwest', '1', 'direct', 0, 'yes', 0, 'GET', 200, 1.0, 'http://test.com', 0, 100, ?1, ?1)",
+            params![&t_success],
+        ).unwrap();
+
+        // Run containing failure started (attempt time = 5s) before success (20s)
+        db.conn.execute(
+            "INSERT INTO health_runs (run_id, started_at, completed, mode, config_json, config_hash, rule_version, app_version)
+             VALUES ('run_f', ?1, 1, 'standard', '{}', 'testhash', ?2, '1')",
+            params![&t_fail_attempt, rv],
+        ).unwrap();
+        db.conn.execute(
+            "INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, run_verdict)
+             VALUES ('chk_f', 'run_f', ?1, 'http://test.com', ?2, 'probable_dead')",
+            params![b, &t_fail_attempt],
+        ).unwrap();
+        db.conn.execute(
+            "INSERT INTO health_attempts (attempt_id, check_id, backend, backend_version, route, attempt_index, actual_request, cache_hit, method, status_code, confidence, initial_url, redirect_count, response_time_ms, started_at, finished_at)
+             VALUES ('a_f', 'chk_f', 'native_reqwest', '1', 'direct', 0, 'yes', 0, 'GET', 404, 1.0, 'http://test.com', 0, 100, ?1, ?1)",
+            params![&t_fail_attempt],
+        ).unwrap();
+
+        let evs = db
+            .get_qualifying_run_evidences(b, Some("testhash"), rv)
+            .unwrap();
+        assert_eq!(
+            evs.len(),
+            0,
+            "Failure attempt at t=5 must be excluded because success at t=20 happened after it"
+        );
+    }
+
+    #[test]
+    fn failure_attempt_after_last_success_can_qualify() {
+        let db = setup_db();
+        let b = "bm_fail_after";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+
+        insert_run(
+            &db,
+            "run_fail",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_fail", "run_fail", b, 10);
+        insert_attempt(
+            &db,
+            "att1",
+            "chk_fail",
+            "yes",
+            Some(404),
+            None,
+            None,
+            "native_reqwest",
+        );
+
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evs.len(), 1);
+    }
+
+    #[test]
+    fn same_run_success_blocks_all_failures() {
+        let db = setup_db();
+        let b = "bm_mixed";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_run(
+            &db,
+            "r1",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "c1", "r1", b, 10);
+        insert_attempt(
+            &db,
+            "a1",
+            "c1",
+            "yes",
+            Some(404),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_attempt(
+            &db,
+            "a2",
+            "c1",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evs.len(), 0);
+    }
+
+    #[test]
+    fn matching_rule_version_evidence_is_used() {
+        let db = setup_db();
+        let b = "bm_match_rv";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_run(
+            &db,
+            "r1",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "c1", "r1", b, 10);
+        insert_attempt(
+            &db,
+            "a1",
+            "c1",
+            "yes",
+            Some(404),
+            None,
+            None,
+            "native_reqwest",
+        );
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evs.len(), 1);
+    }
+
+    #[test]
+    fn mismatched_rule_version_evidence_is_excluded() {
+        let db = setup_db();
+        let b = "bm_mismatch_rv";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_run(&db, "r1", true, "OLD_VERSION");
+        insert_check(&db, "c1", "r1", b, 10);
+        insert_attempt(
+            &db,
+            "a1",
+            "c1",
+            "yes",
+            Some(404),
+            None,
+            None,
+            "native_reqwest",
+        );
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evs.len(), 0);
+    }
+
+    #[test]
+    fn two_distinct_resolvers_nxdomain_qualifies_dns_run() {
+        let db = setup_db();
+        let b = "bm_dns1";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_run(
+            &db,
+            "r1",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "c1", "r1", b, 10);
+        insert_attempt(
+            &db,
+            "a1",
+            "c1",
+            "yes",
+            None,
+            Some("NXDOMAIN"),
+            Some("1.1.1.1"),
+            "native_reqwest",
+        );
+        insert_attempt(
+            &db,
+            "a2",
+            "c1",
+            "yes",
+            None,
+            Some("NXDOMAIN"),
+            Some("8.8.8.8"),
+            "native_reqwest",
+        );
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evs.len(), 1);
+        assert!(evs[0]
+            .strong_failure_kinds
+            .contains(&crate::health::models::StrongFailureKind::ConfirmedNxDomain));
+    }
+
+    #[test]
+    fn single_resolver_nxdomain_not_qualifying() {
+        let db = setup_db();
+        let b = "bm_dns2";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_run(
+            &db,
+            "r1",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "c1", "r1", b, 10);
+        insert_attempt(
+            &db,
+            "a1",
+            "c1",
+            "yes",
+            None,
+            Some("NXDOMAIN"),
+            Some("1.1.1.1"),
+            "native_reqwest",
+        );
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evs.len(), 0);
+    }
+
+    #[test]
+    fn error_string_nxdomain_without_structured_dns_does_not_qualify() {
+        let db = setup_db();
+        let b = "bm_dns3";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_run(
+            &db,
+            "r1",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "c1", "r1", b, 10);
+        let attempt_at: String = db
+            .conn
+            .query_row(
+                "SELECT started_at FROM health_checks WHERE check_id = 'c1'",
+                params![],
+                |row| row.get(0),
+            )
+            .unwrap();
+        db.conn.execute(
+            "INSERT INTO health_attempts (attempt_id, check_id, backend, backend_version, route, attempt_index, actual_request, cache_hit, method, error_kind, confidence, initial_url, redirect_count, response_time_ms, started_at, finished_at) VALUES ('a1', 'c1', 'hickory_dns', '1', 'direct', 0, 'yes', 0, 'GET', 'DnsNxdomain', 1.0, 'http://test.com', 0, 100, ?1, ?1)",
+            params![attempt_at],
+        ).unwrap();
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(
+            evs.len(),
+            0,
+            "error-string NXDOMAIN must not qualify without structured DNS evidence"
+        );
+    }
+
+    #[test]
+    fn nxdomain_and_noerror_do_not_agree() {
+        let db = setup_db();
+        let b = "bm_dns3";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_run(
+            &db,
+            "r1",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "c1", "r1", b, 10);
+        insert_attempt(
+            &db,
+            "a1",
+            "c1",
+            "yes",
+            None,
+            Some("NXDOMAIN"),
+            Some("1.1.1.1"),
+            "native_reqwest",
+        );
+        insert_attempt(
+            &db,
+            "a2",
+            "c1",
+            "yes",
+            None,
+            Some("NXDOMAIN"),
+            Some("8.8.8.8"),
+            "native_reqwest",
+        );
+        insert_attempt(
+            &db,
+            "a3",
+            "c1",
+            "yes",
+            None,
+            Some("NOERROR"),
+            Some("9.9.9.9"),
+            "native_reqwest",
+        );
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evs.len(), 0);
+    }
+
+    #[test]
+    fn nxdomain_and_servfail_do_not_agree() {
+        let db = setup_db();
+        let b = "bm_dns4";
+        insert_run(
+            &db,
+            "run_succ",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "chk_succ", "run_succ", b, 10);
+        insert_attempt(
+            &db,
+            "att_succ",
+            "chk_succ",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_run(
+            &db,
+            "r1",
+            true,
+            crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+        );
+        insert_check(&db, "c1", "r1", b, 10);
+        insert_attempt(
+            &db,
+            "a1",
+            "c1",
+            "yes",
+            None,
+            Some("NXDOMAIN"),
+            Some("1.1.1.1"),
+            "native_reqwest",
+        );
+        insert_attempt(
+            &db,
+            "a2",
+            "c1",
+            "yes",
+            None,
+            Some("NXDOMAIN"),
+            Some("8.8.8.8"),
+            "native_reqwest",
+        );
+        insert_attempt(
+            &db,
+            "a3",
+            "c1",
+            "yes",
+            None,
+            Some("SERVFAIL"),
+            Some("9.9.9.9"),
+            "native_reqwest",
+        );
+        let evs = db
+            .get_qualifying_run_evidences(
+                b,
+                Some("testhash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evs.len(), 0);
+    }
+
+    #[test]
+    fn content_missing_200_is_evidence_despite_transport_only_200() {
+        let db = setup_db();
+        let rule = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
+        insert_run(&db, "content_run", true, rule);
+        insert_check(&db, "content_check", "content_run", "content_bookmark", 0);
+        insert_attempt(
+            &db,
+            "content_attempt",
+            "content_check",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        insert_attempt(
+            &db,
+            "transport_attempt",
+            "content_check",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "curl",
+        );
+        db.conn
+            .execute(
+                "UPDATE health_attempts SET error_kind = 'ContentMissing' WHERE attempt_id = 'content_attempt'",
+                [],
+            )
+            .unwrap();
+
+        let evidences = db
+            .get_qualifying_run_evidences("content_bookmark", Some("testhash"), rule)
+            .unwrap();
+        assert_eq!(evidences.len(), 1);
+        assert!(evidences[0]
+            .strong_failure_kinds
+            .contains(&crate::health::models::StrongFailureKind::ContentMissing));
+    }
+
+    #[test]
+    fn soft_404_candidate_is_not_strong_history_evidence() {
+        let db = setup_db();
+        let rule = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
+        insert_run(&db, "soft_run", true, rule);
+        insert_check(&db, "soft_check", "soft_run", "soft_bookmark", 0);
+        insert_attempt(
+            &db,
+            "soft_attempt",
+            "soft_check",
+            "yes",
+            Some(200),
+            None,
+            None,
+            "native_reqwest",
+        );
+        db.conn
+            .execute(
+                "UPDATE health_attempts SET error_kind = 'Soft404Candidate' WHERE attempt_id = 'soft_attempt'",
+                [],
+            )
+            .unwrap();
+
+        assert!(db
+            .get_qualifying_run_evidences("soft_bookmark", Some("testhash"), rule)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn legacy_attempt_without_its_own_timestamp_is_not_strong_evidence() {
+        let db = setup_db();
+        let rule = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
+        insert_run(&db, "legacy_run", true, rule);
+        insert_check(&db, "legacy_check", "legacy_run", "legacy_bookmark", 0);
+        db.conn
+            .execute(
+                "INSERT INTO health_attempts (
+                    attempt_id, check_id, backend, backend_version, route, attempt_index,
+                    actual_request, cache_hit, method, status_code, initial_url,
+                    redirect_count, response_time_ms, confidence
+                 ) VALUES (
+                    'legacy_attempt', 'legacy_check', 'native_reqwest', '1', 'direct', 0,
+                    'yes', 0, 'GET', 404, 'http://test.com', 0, 100, 1.0
+                 )",
+                [],
+            )
+            .unwrap();
+
+        let evidences = db
+            .get_qualifying_run_evidences("legacy_bookmark", Some("testhash"), rule)
+            .unwrap();
+        assert!(evidences.is_empty());
+    }
+
+    #[test]
+    fn completed_current_run_immediately_contributes_dual_resolver_dns_evidence() {
+        let db = setup_db();
+        let context = ProbeContext {
+            run_id: "current_run".to_string(),
+            check_id: "current_check".to_string(),
+            proxy_url: None,
+            timeout_secs: 10,
+            slow_mode: false,
+            allow_private_ips: false,
+            history_db_path: None,
+            secondary_backends: vec!["dnsx".to_string()],
+            artifact_dir: None,
+        };
+        let config_hash = ConfigHashInput::from_probe_context(&context)
+            .stable_hash()
+            .unwrap();
+        db.record_run_start(&context).unwrap();
+
+        let dns_observation = |resolver_id: &str| BackendObservation {
+            backend: "dnsx".to_string(),
+            run_id: context.run_id.clone(),
+            check_id: context.check_id.clone(),
+            dns_rcode: Some("NXDOMAIN".to_string()),
+            resolver_id: Some(resolver_id.to_string()),
+            error_kind: Some("DnsNxdomain".to_string()),
+            ..Default::default()
+        };
+        db.record_check_observations(
+            &context.run_id,
+            &context.check_id,
+            "current_bookmark",
+            "https://dead.example",
+            HealthVerdict::NeedsReview,
+            &[dns_observation("1.1.1.1"), dns_observation("223.5.5.5")],
+        )
+        .unwrap();
+
+        let rule = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
+        assert!(db
+            .get_qualifying_run_evidences("current_bookmark", Some(&config_hash), rule)
+            .unwrap()
+            .is_empty());
+
+        db.record_run_finish(&context.run_id).unwrap();
+        let evidences = db
+            .get_qualifying_run_evidences("current_bookmark", Some(&config_hash), rule)
+            .unwrap();
+        assert_eq!(evidences.len(), 1);
+        assert!(evidences[0]
+            .strong_failure_kinds
+            .contains(&crate::health::models::StrongFailureKind::ConfirmedNxDomain));
     }
 }

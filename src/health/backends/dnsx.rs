@@ -1,4 +1,4 @@
-//! ProjectDiscovery dnsx CLI Probe Backend Adapter (Tier 5)
+//! `ProjectDiscovery` dnsx CLI Probe Backend Adapter (Tier 5)
 
 use crate::health::backends::ProbeBackend;
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
@@ -7,11 +7,25 @@ use chrono::Utc;
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy)]
-pub struct DnsxCliBackend;
+pub struct DnsxCliBackend {
+    resolver_id: &'static str,
+}
 
 impl DnsxCliBackend {
-    pub fn new() -> Self {
-        Self
+    pub const fn new() -> Self {
+        Self::cloudflare()
+    }
+
+    pub const fn cloudflare() -> Self {
+        Self {
+            resolver_id: "1.1.1.1",
+        }
+    }
+
+    pub const fn alidns() -> Self {
+        Self {
+            resolver_id: "223.5.5.5",
+        }
     }
 
     pub fn find_binary() -> Option<String> {
@@ -53,9 +67,10 @@ impl ProbeBackend for DnsxCliBackend {
         obs.check_id = context.check_id.clone();
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
+        obs.resolver_id = Some(self.resolver_id.to_string());
 
         let bin_path = match Self::find_binary() {
-            Some(b) => b,
+            Some(path) => path,
             None => {
                 obs.backend_version = "not_installed".to_string();
                 obs.actual_request = "unknown".to_string();
@@ -71,7 +86,8 @@ impl ProbeBackend for DnsxCliBackend {
             .arg("-d")
             .arg(&target.host)
             .arg("-a")
-            .arg("-rcode")
+            .arg("-r")
+            .arg(self.resolver_id)
             .arg("-json")
             .output();
 

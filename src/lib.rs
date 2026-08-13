@@ -26,6 +26,7 @@ pub mod firefox_sync;
 pub mod firefox_sync_api;
 pub mod gui;
 pub mod hackbrowserdata;
+pub mod health;
 pub mod scheduler;
 pub mod sync;
 pub mod sync_flags;

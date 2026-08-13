@@ -567,15 +567,14 @@ impl SyncEngine {
 
         // Use the best browser's bookmarks as base (preserving folder structure)
         let mut merged = if let Some(browser) = best_browser {
-            let bookmarks = match browser_bookmarks.get(&browser) {
-                Some(b) => b.clone(),
-                None => {
-                    tracing::error!(
-                        "未找到最佳同步源浏览器 '{}' 对应的书签数据列表",
-                        browser.name()
-                    );
-                    Vec::new()
-                }
+            let bookmarks = if let Some(b) = browser_bookmarks.get(&browser) {
+                b.clone()
+            } else {
+                tracing::error!(
+                    "未找到最佳同步源浏览器 '{}' 对应的书签数据列表",
+                    browser.name()
+                );
+                Vec::new()
             };
             let url_count = Self::count_all_bookmarks(&bookmarks);
             let folder_count = Self::count_all_folders(&bookmarks);
@@ -769,7 +768,7 @@ impl SyncEngine {
         normalized
     }
 
-    fn count_all_folders(bookmarks: &[Bookmark]) -> usize {
+    pub(crate) fn count_all_folders(bookmarks: &[Bookmark]) -> usize {
         let mut count = 0;
         for b in bookmarks {
             if b.folder {
@@ -790,6 +789,37 @@ impl SyncEngine {
             }
         }
         count
+    }
+
+    /// Collect folder breakdown details for reporting
+    pub fn get_folder_breakdown(bookmarks: &[Bookmark]) -> Vec<serde_json::Value> {
+        let mut breakdown = Vec::new();
+        fn recurse(b: &Bookmark, path: &str, breakdown: &mut Vec<serde_json::Value>) {
+            if b.folder {
+                let current_path = if path.is_empty() {
+                    b.title.clone()
+                } else {
+                    format!("{} / {}", path, b.title)
+                };
+                let count = SyncEngine::count_all_bookmarks(&b.children);
+                let folder_count = SyncEngine::count_all_folders(&b.children);
+                let direct_bookmarks = b.children.iter().filter(|c| !c.folder).count();
+                breakdown.push(serde_json::json!({
+                    "folder_name": b.title,
+                    "folder_path": current_path,
+                    "total_bookmarks": count,
+                    "direct_bookmarks": direct_bookmarks,
+                    "subfolder_count": folder_count,
+                }));
+                for child in &b.children {
+                    recurse(child, &current_path, breakdown);
+                }
+            }
+        }
+        for b in bookmarks {
+            recurse(b, "", &mut breakdown);
+        }
+        breakdown
     }
 
     /// Remove empty folders and folders with invalid names
@@ -2999,16 +3029,15 @@ impl SyncEngine {
             let inputs: Vec<OllamaBookmarkInput> = batch
                 .iter()
                 .map(|bookmark| {
-                    let url = match bookmark.url.clone() {
-                        Some(u) => u,
-                        None => {
-                            tracing::debug!(
-                                "书签 ID={} ('{}') 没有 URL 字段，作为无网址节点传递给模型",
-                                bookmark.id,
-                                bookmark.title
-                            );
-                            String::new()
-                        }
+                    let url = if let Some(u) = bookmark.url.clone() {
+                        u
+                    } else {
+                        tracing::debug!(
+                            "书签 ID={} ('{}') 没有 URL 字段，作为无网址节点传递给模型",
+                            bookmark.id,
+                            bookmark.title
+                        );
+                        String::new()
                     };
                     let (domain, path) = Self::parse_url_for_llm(&url);
                     OllamaBookmarkInput {
@@ -4959,13 +4988,15 @@ impl SyncEngine {
         Ok(all_bookmarks)
     }
 
-    /// Export all bookmarks with additional bookmarks from external sources
-    pub async fn export_to_html_with_extra(
+    /// Export all bookmarks with additional bookmarks from external sources and generate a detailed JSON report
+    pub async fn export_to_html_with_report(
         &self,
         browser_names: Option<&str>,
         output_path: &str,
+        report_json_path: Option<&str>,
         config: &ExportConfig,
         extra_bookmarks: Vec<Bookmark>,
+        external_source_reports: Vec<serde_json::Value>,
     ) -> Result<usize> {
         let merge = config.merge;
         let deduplicate = config.deduplicate;
@@ -5009,36 +5040,60 @@ impl SyncEngine {
             info!("  - {}", adapter.browser_type().name());
         }
 
-        // Collect bookmarks from all browsers
         let mut all_bookmarks: Vec<Bookmark> = Vec::new();
         let mut browser_stats: Vec<(String, usize)> = Vec::new();
+        let mut browser_source_reports: Vec<serde_json::Value> = Vec::new();
 
-        // Add extra bookmarks first (from HTML imports etc.)
         if !extra_bookmarks.is_empty() {
             let extra_count = Self::count_all_bookmarks(&extra_bookmarks);
-            info!("  📥 HTML import: {} bookmarks", extra_count);
-            browser_stats.push(("HTML Import".to_string(), extra_count));
+            info!("  📥 HTML / External import: {} bookmarks", extra_count);
+            browser_stats.push(("External Import".to_string(), extra_count));
             all_bookmarks.extend(extra_bookmarks);
         }
 
         for adapter in &target_adapters {
             let browser_name = adapter.browser_type().name();
-            let res = if config.all_profiles {
-                adapter.read_all_bookmarks()
+            let profiles_res = if config.all_profiles {
+                adapter.read_all_bookmarks_with_profiles()
             } else {
-                adapter.read_bookmarks()
+                adapter
+                    .read_bookmarks()
+                    .map(|b| vec![("Default".to_string(), b)])
             };
-            match res {
-                Ok(bookmarks) => {
-                    let count = Self::count_all_bookmarks(&bookmarks);
-                    info!("  ✅ {} : {} bookmarks", browser_name, count);
-                    browser_stats.push((browser_name.to_string(), count));
+            match profiles_res {
+                Ok(profiles) => {
+                    let mut profile_reports = Vec::new();
+                    let mut total_browser_bookmarks = 0;
+                    let mut total_browser_folders = 0;
+                    let mut browser_bookmarks = Vec::new();
+                    for (p_name, p_bookmarks) in profiles {
+                        let b_count = Self::count_all_bookmarks(&p_bookmarks);
+                        let f_count = Self::count_all_folders(&p_bookmarks);
+                        total_browser_bookmarks += b_count;
+                        total_browser_folders += f_count;
+                        let top_folders: Vec<String> =
+                            p_bookmarks.iter().map(|b| b.title.clone()).collect();
+                        info!("  ✅ {} ({}) : {} bookmarks", browser_name, p_name, b_count);
+                        profile_reports.push(serde_json::json!({
+                            "profile_name": p_name,
+                            "bookmark_count": b_count,
+                            "folder_count": f_count,
+                            "top_level_folders": top_folders,
+                            "folder_breakdown": Self::get_folder_breakdown(&p_bookmarks)
+                        }));
+                        browser_bookmarks.extend(p_bookmarks);
+                    }
+                    browser_stats.push((browser_name.to_string(), total_browser_bookmarks));
+                    browser_source_reports.push(serde_json::json!({
+                        "browser_name": browser_name,
+                        "profiles": profile_reports,
+                        "total_bookmarks_collected": total_browser_bookmarks,
+                        "total_folders_collected": total_browser_folders
+                    }));
 
                     if merge {
-                        // Merge into single list
-                        all_bookmarks.extend(bookmarks);
+                        all_bookmarks.extend(browser_bookmarks);
                     } else {
-                        // Create a folder for each browser
                         let browser_folder = Bookmark {
                             id: format!(
                                 "browser-{}",
@@ -5047,7 +5102,7 @@ impl SyncEngine {
                             title: browser_name.to_string(),
                             url: None,
                             folder: true,
-                            children: bookmarks,
+                            children: browser_bookmarks,
                             date_added: Some(chrono::Utc::now().timestamp_millis()),
                             date_modified: None,
                         };
@@ -5056,6 +5111,11 @@ impl SyncEngine {
                 }
                 Err(e) => {
                     warn!("  ⚠️  {} : read failed - {}", browser_name, e);
+                    browser_source_reports.push(serde_json::json!({
+                        "browser_name": browser_name,
+                        "error": e.to_string(),
+                        "status": "Failed"
+                    }));
                 }
             }
         }
@@ -5073,23 +5133,25 @@ impl SyncEngine {
         }
 
         let before_dedup = Self::count_all_bookmarks(&all_bookmarks);
+        let before_dedup_folders = Self::count_all_folders(&all_bookmarks);
         info!("\n📊 Collection complete: {} bookmarks", before_dedup);
 
+        let mut removed_dups = 0;
         // Deduplicate if requested
         if deduplicate {
             info!("🧹 Deduplicating...");
             Self::deduplicate_bookmarks_global(&mut all_bookmarks);
             let after_dedup = Self::count_all_bookmarks(&all_bookmarks);
-            let removed = before_dedup.saturating_sub(after_dedup);
-            if removed > 0 {
-                info!("  ✅ Removed {} duplicate bookmarks", removed);
+            removed_dups = before_dedup.saturating_sub(after_dedup);
+            if removed_dups > 0 {
+                info!("  ✅ Removed {} duplicate bookmarks", removed_dups);
             }
         }
 
+        let mut total_empty_removed = 0;
         // Clean empty folders if requested
         if clean_empty {
             info!("🧹 Cleaning empty folders...");
-            let mut total_empty_removed = 0;
             loop {
                 let removed = Self::cleanup_empty_folders(&mut all_bookmarks);
                 if removed == 0 {
@@ -5178,6 +5240,7 @@ impl SyncEngine {
         }
 
         let final_count = Self::count_all_bookmarks(&all_bookmarks);
+        let final_folders = Self::count_all_folders(&all_bookmarks);
 
         // Export to HTML
         let output = if output_path.starts_with("~/") {
@@ -5189,6 +5252,75 @@ impl SyncEngine {
         };
 
         export_bookmarks_to_html(&all_bookmarks, &output)?;
+
+        let report_path_str = if let Some(p) = report_json_path {
+            if p.starts_with("~/") {
+                let home = std::env::var("HOME")
+                    .map_err(|e| anyhow::anyhow!("获取 HOME 环境变量失败: {e}"))?;
+                p.replacen('~', &home, 1)
+            } else {
+                p.to_string()
+            }
+        } else {
+            let p = std::path::Path::new(&output);
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("export");
+            let dir = p.parent().unwrap_or(std::path::Path::new("."));
+            dir.join(format!("{stem}_report.json"))
+                .to_string_lossy()
+                .to_string()
+        };
+
+        let report = serde_json::json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "report_version": "1.0.0",
+            "export_configuration": {
+                "target_browsers": browser_names.unwrap_or("all"),
+                "all_profiles": config.all_profiles,
+                "deduplicate_mode": if config.deduplicate { "exact" } else { "none" },
+                "merge_flat_structure": config.merge,
+                "clean_empty_folders": config.clean_empty,
+                "flatten_browser_roots": config.flat,
+                "wrap_root_folder": config.wrap_folder.as_deref().unwrap_or("📁镜像文件夹")
+            },
+            "sources": {
+                "installed_browsers": browser_source_reports,
+                "external_files_and_directories": external_source_reports
+            },
+            "deduplication_and_cleanup_statistics": {
+                "total_raw_bookmarks_collected": before_dedup,
+                "total_raw_folders_collected": before_dedup_folders,
+                "exact_duplicate_bookmarks_removed": removed_dups,
+                "empty_folders_cleaned": total_empty_removed,
+                "unique_bookmarks_remaining": before_dedup.saturating_sub(removed_dups),
+                "final_exported_bookmark_nodes": final_count,
+                "final_exported_folders": final_folders
+            },
+            "validity_check_conclusions": {
+                "validation_performed": false,
+                "note": "未执行 --validate-copy (若启用将在此记录检测结论)"
+            },
+            "output_summary": {
+                "html_file_path": output,
+                "json_report_path": report_path_str,
+                "total_unique_bookmarks": final_count,
+                "total_unique_folders": final_folders,
+                "status": "Success"
+            }
+        });
+
+        if let Ok(json_content) = serde_json::to_string_pretty(&report) {
+            if let Err(e) = std::fs::write(&report_path_str, json_content) {
+                warn!(
+                    "⚠️ Failed to write JSON report to {}: {}",
+                    report_path_str, e
+                );
+            } else {
+                info!(
+                    "📋 Detailed Export JSON Report saved to: {}",
+                    report_path_str
+                );
+            }
+        }
 
         info!("\n✅ Export complete!");
         info!("   📄 File: {}", output);
@@ -5202,6 +5334,25 @@ impl SyncEngine {
         }
 
         Ok(final_count)
+    }
+
+    /// Export all bookmarks with additional bookmarks from external sources
+    pub async fn export_to_html_with_extra(
+        &self,
+        browser_names: Option<&str>,
+        output_path: &str,
+        config: &ExportConfig,
+        extra_bookmarks: Vec<Bookmark>,
+    ) -> Result<usize> {
+        self.export_to_html_with_report(
+            browser_names,
+            output_path,
+            None,
+            config,
+            extra_bookmarks,
+            Vec::new(),
+        )
+        .await
     }
 
     /// Clear bookmarks from specified browsers (use with caution!)
@@ -5745,45 +5896,88 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Import bookmarks from HTML file, SQLite database, or Firefox/Waterfox profile directory
-pub fn import_bookmarks_from_source(source_path: &str) -> Result<Vec<Bookmark>> {
+/// Import bookmarks from source with detailed JSON reporting
+pub fn import_bookmarks_from_source_with_report(
+    source_path: &str,
+) -> Result<(Vec<Bookmark>, serde_json::Value)> {
     use std::path::Path;
     let path = Path::new(source_path);
     if path.is_dir() {
         let mut all_b = Vec::new();
-        let mut found_any = false;
+        let mut found_db_paths = Vec::new();
         for entry in walkdir::WalkDir::new(path).follow_links(true) {
-            let entry =
-                entry.map_err(|e| anyhow::anyhow!("扫描目录 '{}' 失败: {}", source_path, e))?;
+            let entry = entry.map_err(|e| anyhow::anyhow!("扫描目录 '{source_path}' 失败: {e}"))?;
             if entry.file_name() == "places.sqlite" {
-                found_any = true;
                 let db_path = entry.path();
                 info!("🔍 发现 Firefox/Waterfox 数据库文件: {}", db_path.display());
                 let b = crate::browsers::read_firefox_bookmarks(db_path).with_context(|| {
                     format!("读取 Firefox/Waterfox 数据库 '{}' 失败", db_path.display())
                 })?;
                 info!("   📚 成功从数据库导入 {} 条书签节点", b.len());
+                found_db_paths.push(db_path.to_string_lossy().to_string());
                 all_b.extend(b);
             }
         }
-        if !found_any {
-            anyhow::bail!(
-                "在目录 '{}' 中未找到任何 'places.sqlite' 数据库文件",
-                source_path
-            );
+        if found_db_paths.is_empty() {
+            anyhow::bail!("在目录 '{source_path}' 中未找到任何 'places.sqlite' 数据库文件");
         }
-        Ok(all_b)
+        let b_count = SyncEngine::count_all_bookmarks(&all_b);
+        let f_count = SyncEngine::count_all_folders(&all_b);
+        let top_folders: Vec<String> = all_b.iter().map(|b| b.title.clone()).collect();
+        let breakdown = SyncEngine::get_folder_breakdown(&all_b);
+        let report = serde_json::json!({
+            "source_path": source_path,
+            "source_type": "Firefox/Waterfox Profile Directory",
+            "detected_database_paths": found_db_paths,
+            "bookmark_count": b_count,
+            "folder_count": f_count,
+            "top_level_folders": top_folders,
+            "folder_breakdown": breakdown
+        });
+        Ok((all_b, report))
     } else if path
         .extension()
-        .map_or(false, |ext| ext == "sqlite" || ext == "db")
+        .is_some_and(|ext| ext == "sqlite" || ext == "db")
     {
         info!("🔍 读取 SQLite 书签数据库文件: {}", source_path);
-        crate::browsers::read_firefox_bookmarks(path)
-            .with_context(|| format!("读取数据库 '{}' 失败", source_path))
+        let all_b = crate::browsers::read_firefox_bookmarks(path)
+            .with_context(|| format!("读取数据库 '{source_path}' 失败"))?;
+        let b_count = SyncEngine::count_all_bookmarks(&all_b);
+        let f_count = SyncEngine::count_all_folders(&all_b);
+        let top_folders: Vec<String> = all_b.iter().map(|b| b.title.clone()).collect();
+        let breakdown = SyncEngine::get_folder_breakdown(&all_b);
+        let report = serde_json::json!({
+            "source_path": source_path,
+            "source_type": "SQLite Database",
+            "detected_database_path": source_path,
+            "bookmark_count": b_count,
+            "folder_count": f_count,
+            "top_level_folders": top_folders,
+            "folder_breakdown": breakdown
+        });
+        Ok((all_b, report))
     } else {
-        import_bookmarks_from_html(source_path)
-            .with_context(|| format!("从 HTML 文件 '{}' 导入失败", source_path))
+        let all_b = import_bookmarks_from_html(source_path)
+            .with_context(|| format!("从 HTML 文件 '{source_path}' 导入失败"))?;
+        let b_count = SyncEngine::count_all_bookmarks(&all_b);
+        let f_count = SyncEngine::count_all_folders(&all_b);
+        let top_folders: Vec<String> = all_b.iter().map(|b| b.title.clone()).collect();
+        let breakdown = SyncEngine::get_folder_breakdown(&all_b);
+        let report = serde_json::json!({
+            "source_path": source_path,
+            "source_type": "HTML Bookmark File",
+            "bookmark_count": b_count,
+            "folder_count": f_count,
+            "top_level_folders": top_folders,
+            "folder_breakdown": breakdown
+        });
+        Ok((all_b, report))
     }
+}
+
+/// Import bookmarks from HTML file, SQLite database, or Firefox/Waterfox profile directory
+pub fn import_bookmarks_from_source(source_path: &str) -> Result<Vec<Bookmark>> {
+    import_bookmarks_from_source_with_report(source_path).map(|(b, _)| b)
 }
 
 /// Import bookmarks from HTML file

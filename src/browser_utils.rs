@@ -17,11 +17,7 @@ pub fn create_profile_snapshot(
     profile: &BrowserProfile,
     dest_dir: &Path,
 ) -> Result<ProfileSnapshot> {
-    let snapshot_folder_name = format!(
-        "{}_{}",
-        profile.id.replace('/', "_"),
-        Utc::now().timestamp_millis()
-    );
+    let snapshot_folder_name = format!("{}_{}", profile.id.replace('/', "_"), uuid::Uuid::new_v4());
     let snapshot_dir = dest_dir.join(&snapshot_folder_name);
     fs::create_dir_all(&snapshot_dir)
         .with_context(|| format!("Failed to create snapshot directory {snapshot_dir:?}"))?;
@@ -34,11 +30,12 @@ pub fn create_profile_snapshot(
             // e.g. Safari Bookmarks.plist or single file
             if let Some(file_name) = profile.path.file_name() {
                 let target_path = snapshot_dir.join(file_name);
-                if fs::copy(&profile.path, &target_path).is_ok() {
-                    if let Ok(hash) = calculate_file_hash(&target_path) {
-                        hashes.insert(file_name.to_string_lossy().to_string(), hash);
-                    }
-                }
+                fs::copy(&profile.path, &target_path)
+                    .with_context(|| format!("Failed to snapshot {:?}", profile.path))?;
+                hashes.insert(
+                    file_name.to_string_lossy().to_string(),
+                    calculate_file_hash(&target_path)?,
+                );
             }
         } else if profile.path.is_dir() {
             // Copy files like Bookmarks, places.sqlite, places.sqlite-wal, Local State, etc.
@@ -46,8 +43,6 @@ pub fn create_profile_snapshot(
                 "Bookmarks",
                 "Bookmarks.bak",
                 "places.sqlite",
-                "places.sqlite-wal",
-                "places.sqlite-shm",
                 "favicons.sqlite",
                 "Local State",
                 "Preferences",
@@ -57,15 +52,27 @@ pub fn create_profile_snapshot(
                 let src_file = profile.path.join(entry);
                 if src_file.exists() && src_file.is_file() {
                     let dst_file = snapshot_dir.join(entry);
-                    if fs::copy(&src_file, &dst_file).is_ok() {
-                        if let Ok(hash) = calculate_file_hash(&dst_file) {
-                            hashes.insert(entry.to_string(), hash);
-                        }
+                    if entry == "places.sqlite" {
+                        let source = rusqlite::Connection::open_with_flags(
+                            &src_file,
+                            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                        )?;
+                        source.execute("VACUUM main INTO ?1", [dst_file.to_string_lossy()])?;
+                    } else {
+                        fs::copy(&src_file, &dst_file)
+                            .with_context(|| format!("Failed to snapshot {src_file:?}"))?;
                     }
+                    hashes.insert(entry.to_string(), calculate_file_hash(&dst_file)?);
                 }
             }
         }
     }
+
+    anyhow::ensure!(
+        !hashes.is_empty(),
+        "Profile {:?} had no readable bookmark data",
+        profile.path
+    );
 
     Ok(ProfileSnapshot {
         original_profile: profile.clone(),
@@ -73,6 +80,38 @@ pub fn create_profile_snapshot(
         created_at: Utc::now(),
         blake3_hashes: hashes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshots_live_firefox_database_consistently() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile_dir = temp.path().join("profile");
+        fs::create_dir(&profile_dir).unwrap();
+        let db_path = profile_dir.join("places.sqlite");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE bookmark_test (url TEXT NOT NULL);
+             INSERT INTO bookmark_test VALUES ('https://example.com/post');",
+        )
+        .unwrap();
+        let profile = BrowserProfile {
+            id: "profile".into(),
+            name: "Profile".into(),
+            path: profile_dir,
+        };
+        let snapshot = create_profile_snapshot(&profile, &temp.path().join("snapshots")).unwrap();
+        let copy =
+            rusqlite::Connection::open(snapshot.snapshot_path.join("places.sqlite")).unwrap();
+        let value: String = copy
+            .query_row("SELECT url FROM bookmark_test", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "https://example.com/post");
+    }
 }
 
 fn calculate_file_hash(file_path: &Path) -> Result<String> {

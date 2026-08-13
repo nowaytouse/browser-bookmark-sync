@@ -1,4 +1,4 @@
-//! ProjectDiscovery httpx CLI Probe Backend Adapter (Tier 3 & Tier 4)
+//! `ProjectDiscovery` httpx CLI Probe Backend Adapter (Tier 3 & Tier 4)
 
 use crate::health::backends::ProbeBackend;
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
@@ -12,7 +12,7 @@ use tempfile::NamedTempFile;
 pub struct HttpxCliBackend;
 
 impl HttpxCliBackend {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 
@@ -56,15 +56,14 @@ impl ProbeBackend for HttpxCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
-        let bin_path = match Self::find_binary() {
-            Some(b) => b,
-            None => {
-                obs.backend_version = "not_installed".to_string();
-                obs.actual_request = "unknown".to_string();
-                obs.error_kind = Some("ToolNotInstalled: httpx".to_string());
-                obs.finished_at = Utc::now();
-                return Ok(obs);
-            }
+        let bin_path = if let Some(b) = Self::find_binary() {
+            b
+        } else {
+            obs.backend_version = "not_installed".to_string();
+            obs.actual_request = "unknown".to_string();
+            obs.error_kind = Some("ToolNotInstalled: httpx".to_string());
+            obs.finished_at = Utc::now();
+            return Ok(obs);
         };
 
         obs.backend_version = "1.6.0".to_string();
@@ -98,7 +97,7 @@ impl ProbeBackend for HttpxCliBackend {
                 obs.actual_request = "yes".to_string();
                 let stdout_str = String::from_utf8_lossy(&out.stdout);
                 if let Ok(v) = serde_json::from_str::<Value>(&stdout_str) {
-                    if let Some(code) = v.get("status_code").and_then(|c| c.as_u64()) {
+                    if let Some(code) = v.get("status_code").and_then(Value::as_u64) {
                         obs.status_code = Some(code as u16);
                     }
                     if let Some(t) = v.get("title").and_then(|t| t.as_str()) {
@@ -107,7 +106,7 @@ impl ProbeBackend for HttpxCliBackend {
                     if let Some(loc) = v.get("location").and_then(|l| l.as_str()) {
                         obs.final_url = Some(loc.to_string());
                     }
-                    if let Some(cl) = v.get("content_length").and_then(|l| l.as_u64()) {
+                    if let Some(cl) = v.get("content_length").and_then(Value::as_u64) {
                         obs.content_length = Some(cl);
                     }
                     if let Some(ct) = v.get("content_type").and_then(|t| t.as_str()) {
@@ -122,6 +121,18 @@ impl ProbeBackend for HttpxCliBackend {
             Err(e) => {
                 obs.actual_request = "unknown".to_string();
                 obs.error_kind = Some(format!("HttpxError: {e}"));
+            }
+        }
+
+        if obs
+            .status_code
+            .is_some_and(|code| (200..300).contains(&code))
+            && obs.error_kind.is_none()
+        {
+            if crate::health::content::is_parked_domain(obs.title.as_deref(), None) {
+                obs.error_kind = Some("ContentMissing".to_string());
+            } else if crate::health::content::is_soft_404(obs.title.as_deref(), None) {
+                obs.error_kind = Some("Soft404Candidate".to_string());
             }
         }
 

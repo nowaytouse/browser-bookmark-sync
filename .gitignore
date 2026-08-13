@@ -22,3 +22,16 @@ Thumbs.db
 # Logs
 *.log
 test-output/
+
+# Local health runs, databases, and agent experiments
+bookmark-health-run/
+bookmark-run/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.agy/
+.serena/
+htest/
+append_tests.py
+src/bin/quick_complete.rs
+major_sites.json

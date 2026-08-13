@@ -34,16 +34,14 @@ It aggregates your bookmarks, mathematically deduplicates them by URL, validates
 - **WebKit** (Safari): Parses `Bookmarks.plist`, including native support for extracting the Safari Reading List as standard bookmarks.
 - **Multi-Profile Support**: Automatically discovers and iterates through all user profiles (e.g., `Default`, `Profile 1`) to ensure no data is left behind.
 
-### 🔍 Dual-Network Dead Link Validation
+### 🔍 Historical Bookmark Health Validation
 
-Link rot detection is notoriously inaccurate due to geo-blocking and anti-bot protections (Cloudflare). `bsync` uses a dual-network strategy:
+Use `--history-db` for the conservative health engine. It distinguishes a dead website from a live site whose saved post/video/resource disappeared, and stores every real probe with its timestamp.
 
-- Tests URLs via a **Direct Connection** first.
-- If a connection fails or times out, it retries via a configurable **Local Proxy** (e.g., `127.0.0.1:7890`).
-- **Classification**:
-  - `valid.html`: HTTP 2xx, 3xx, or safe 4xx (e.g., 403/429 meaning the server is alive but blocking scraping).
-  - `invalid.html`: DNS failures or hard 404s on _both_ network paths.
-  - `uncertain.html`: Timeouts or conflicting network results.
+- `ConfirmedDead` requires at least three completed runs over seven days and two independent verifier families.
+- A doubtful or previously dead bookmark needs two separate successful runs before it becomes `Recovered`.
+- `bsync health retry` performs two timestamped probe runs by default before manual review.
+- `--delete` only removes `ConfirmedDead` URLs from an HTML input into a separate atomic output copy; it never rewrites browser profiles directly.
 
 ### 🤖 Smart Categorization (AI & Rules)
 
@@ -96,7 +94,10 @@ bsync export -o ~/Downloads/all_bookmarks.html --all-profiles --flat -d --clean
 Check an exported HTML file for dead links, utilizing a local proxy for blocked sites:
 
 ```bash
-bsync check --file ~/Downloads/all_bookmarks.html --proxy http://127.0.0.1:7890 --export-dir ~/Downloads/check_results
+bsync check --file ~/Downloads/all_bookmarks.html --history-db ~/Downloads/bookmark-health.sqlite --export-dir ~/Downloads/check_results
+bsync health retry --db ~/Downloads/bookmark-health.sqlite --state needs_review
+# After enough historical evidence:
+bsync check --file ~/Downloads/all_bookmarks.html --history-db ~/Downloads/bookmark-health.sqlite --delete --output ~/Downloads/bookmarks-cleaned.html
 ```
 
 **3. AI Categorization**
@@ -149,16 +150,14 @@ _(Note: Highly experimental flags such as `history`, `cookies`, and `export-data
 - **WebKit** (Safari): 解析 `Bookmarks.plist`，原生支持将 Safari 阅读列表（Reading List）转化为标准书签导出。
 - **多配置扫描**: 自动发现 `Default`、`Profile 1` 等所有分身账户配置，确保数据零遗漏。
 
-### 🔍 双网络死链验证 (应对网络屏蔽)
+### 🔍 带历史证据的失效收藏夹验证
 
-传统的死链检测极易因 GFW、Cloudflare 防爬虫或地域屏蔽产生误判。`bsync` 采用了严谨的双网络策略：
+使用 `--history-db` 启用保守健康引擎。它会区分“网站整体死亡”和“网站仍在但收藏的帖子、视频或深层内容消失”，并保存每次真实探测及时间。
 
-- 首先使用**直连（Direct）**测试 URL。
-- 若发生超时或连接重置，立即切换至配置的**本地代理（Proxy）**进行二次复测。
-- **分类输出**:
-  - `valid.html`: HTTP 2xx/3xx，或确认服务器存活的 403/429 状态码。
-  - `invalid.html`: 双重网络下均遭遇 DNS 解析失败或硬 404。
-  - `uncertain.html`: 频繁超时或两次网络结果严重冲突的孤立链接。
+- `ConfirmedDead` 至少需要 7 天内 3 次已完成运行、并由 2 个独立验证器家族形成证据。
+- 存疑或曾经死亡的书签，需要两个不同运行中的真实成功才能转为 `Recovered`。
+- `bsync health retry` 默认在人工复核前执行两轮带时间记录的复探。
+- `--delete` 只把历史确认死亡的 URL 从 HTML 输入精确移除并原子写入独立副本，不直接改写浏览器 Profile。
 
 ### 🤖 智能分类引擎 (AI大模型 + 正则)
 
@@ -194,7 +193,10 @@ bsync export -o ~/Downloads/all_bookmarks.html --all-profiles --flat -d --clean
 对导出的 HTML 文件进行双网络死链检测，隔离出真正的无效链接：
 
 ```bash
-bsync check --file ~/Downloads/all_bookmarks.html --proxy http://127.0.0.1:7890 --export-dir ~/Downloads/check_results
+bsync check --file ~/Downloads/all_bookmarks.html --history-db ~/Downloads/bookmark-health.sqlite --export-dir ~/Downloads/check_results
+bsync health retry --db ~/Downloads/bookmark-health.sqlite --state needs_review
+# 历史证据满足后：
+bsync check --file ~/Downloads/all_bookmarks.html --history-db ~/Downloads/bookmark-health.sqlite --delete --output ~/Downloads/bookmarks-cleaned.html
 ```
 
 **3. AI 智能整理**

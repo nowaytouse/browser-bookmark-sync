@@ -31,6 +31,7 @@ pub enum StrongFailureKind {
     Http410,
     Http451,
     RedirectedToHomepage,
+    ContentMissing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +44,7 @@ pub struct QualifyingRunEvidence {
 }
 
 impl HealthVerdict {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Live => "live",
             Self::Recovered => "recovered",
@@ -52,6 +53,19 @@ impl HealthVerdict {
             Self::ProbableDead => "probable_dead",
             Self::ConfirmedDead => "confirmed_dead",
             Self::NeedsReview => "needs_review",
+        }
+    }
+
+    pub fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "live" => Some(Self::Live),
+            "recovered" => Some(Self::Recovered),
+            "protected" => Some(Self::Protected),
+            "temporary_failure" => Some(Self::TemporaryFailure),
+            "probable_dead" => Some(Self::ProbableDead),
+            "confirmed_dead" => Some(Self::ConfirmedDead),
+            "needs_review" => Some(Self::NeedsReview),
+            _ => None,
         }
     }
 }
@@ -76,15 +90,15 @@ impl ProbeTarget {
         let port = parsed.port();
 
         // Extract registrable domain
-        let registrable_domain = if !host.is_empty() {
+        let registrable_domain = if host.is_empty() {
+            String::new()
+        } else {
             let parts: Vec<&str> = host.split('.').collect();
             if parts.len() >= 2 {
                 parts[parts.len() - 2..].join(".")
             } else {
                 host.clone()
             }
-        } else {
-            String::new()
         };
 
         Ok(Self {
@@ -196,4 +210,73 @@ pub struct ToolInfo {
     pub version: Option<String>,
     pub available: bool,
     pub supported_features: Vec<String>,
+}
+
+/// A canonical, order-stable representation of the engine configuration for hashing.
+///
+/// All fields that affect *evidence semantics* MUST be included.
+/// Fields that affect only display, logging, or output paths MUST NOT be included
+/// (e.g. run_id, started_at, output_dir, log_level, random jitter values).
+///
+/// Uses a Rust struct (field-order stable JSON serialization) — never a raw HashMap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConfigHashInput {
+    /// All enabled backends, canonicalized before serialization.
+    pub enabled_backends: Vec<String>,
+    /// Direct or proxy routing. Proxy credentials/endpoints are deliberately excluded.
+    pub route_strategy: String,
+    /// The HTTP method/fallback policy used by the primary probe.
+    pub request_strategy: String,
+    /// Request timeout in seconds.
+    pub timeout_secs: u64,
+    /// Whether private IPs are probed.
+    pub allow_private_ips: bool,
+    /// Current health rule version.
+    pub rule_version: String,
+    /// Resolver policy used for structured DNS evidence.
+    pub dns_resolver_policy: String,
+    /// Cache policy used by probes.
+    pub cache_policy: String,
+    /// Retry behavior that can change observed evidence.
+    pub retry_preset: String,
+    /// Bump when backend-to-verifier-family mapping semantics change.
+    pub verifier_family_mapping_version: String,
+}
+
+impl ConfigHashInput {
+    pub fn from_probe_context(context: &ProbeContext) -> Self {
+        let mut enabled_backends = context.secondary_backends.clone();
+        enabled_backends.push("native_reqwest".to_string());
+        enabled_backends.sort();
+        enabled_backends.dedup();
+
+        Self {
+            enabled_backends,
+            route_strategy: if context.proxy_url.is_some() {
+                "proxy".to_string()
+            } else {
+                "direct".to_string()
+            },
+            request_strategy: "head_then_get_html_content_v1".to_string(),
+            timeout_secs: context.timeout_secs,
+            allow_private_ips: context.allow_private_ips,
+            rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION.to_string(),
+            dns_resolver_policy: "cloudflare_and_alidns".to_string(),
+            cache_policy: "no_cache".to_string(),
+            retry_preset: "single_attempt".to_string(),
+            verifier_family_mapping_version: "1".to_string(),
+        }
+    }
+
+    pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
+        let mut canonical = self.clone();
+        canonical.enabled_backends.sort();
+        canonical.enabled_backends.dedup();
+        serde_json::to_string(&canonical)
+    }
+
+    pub fn stable_hash(&self) -> Result<String, serde_json::Error> {
+        self.canonical_json()
+            .map(|json| blake3::hash(json.as_bytes()).to_hex().to_string())
+    }
 }

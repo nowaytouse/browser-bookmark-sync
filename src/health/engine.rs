@@ -119,7 +119,8 @@ impl HealthEngine {
         let lychee_backend = LycheeCliBackend::new();
         let httpx_backend = HttpxCliBackend::new();
         let curl_backend = CurlCliBackend::new();
-        let dnsx_backend = DnsxCliBackend::new();
+        let dnsx_cloudflare_backend = DnsxCliBackend::cloudflare();
+        let dnsx_alidns_backend = DnsxCliBackend::alidns();
         let openssl_backend = OpenSslCliBackend::new();
         let wget_backend = WgetCliBackend::new();
         let ffuf_backend = FfufCliBackend::new();
@@ -128,229 +129,263 @@ impl HealthEngine {
 
         use futures::stream::{self, StreamExt};
 
-        let results: Vec<(String, String, HealthVerdict, Vec<BackendObservation>)> =
-            stream::iter(targets.into_iter().enumerate())
-                .map(|(idx, target)| {
-                    let scheduler = self.scheduler.clone();
-                    let ctx_base = ctx_base.clone();
-                    let db_opt = self.db.clone();
-                    let cb = progress_arc.clone();
-                    let secondary_list = self.options.secondary_backends.clone();
+        let probe_results: Vec<
+            Result<
+                (
+                    String,
+                    String,
+                    String,
+                    HealthVerdict,
+                    Vec<BackendObservation>,
+                ),
+                String,
+            >,
+        > = stream::iter(targets.into_iter().enumerate())
+            .map(|(idx, target)| {
+                let scheduler = self.scheduler.clone();
+                let ctx_base = ctx_base.clone();
+                let db_opt = self.db.clone();
+                let cb = progress_arc.clone();
+                let secondary_list = self.options.secondary_backends.clone();
 
-                    async move {
-                        let mut key_vec = vec![target.host.as_str()];
-                        if !target.registrable_domain.is_empty()
-                            && target.registrable_domain != target.host
-                        {
-                            key_vec.push(target.registrable_domain.as_str());
-                        }
-
-                        let check_id = uuid::Uuid::new_v4().to_string();
-                        let mut item_ctx = ctx_base.clone();
-                        item_ctx.check_id = check_id.clone();
-
-                        let permit = scheduler.acquire_keys(&key_vec).await;
-
-                        cb(idx + 1, total, &target.original_url);
-
-                        let mut observations = Vec::new();
-
-                        // Tier 1: Native Reqwest Probe
-                        if let Ok(obs) = native_backend.probe(&target, &item_ctx).await {
-                            observations.push(obs);
-                        }
-
-                        let initial_verdict =
-                            StateMachine::compute_single_run_verdict(&observations);
-
-                        // Tier 2 - Tier 5 Secondary Backends
-                        // In slow mode or when initial_verdict is Live or Protected (429/403), skip dense secondary backends
-                        let skip_secondary = item_ctx.slow_mode
-                            && initial_verdict == HealthVerdict::Live
-                            || initial_verdict == HealthVerdict::Live
-                            || initial_verdict == HealthVerdict::Protected;
-
-                        if !skip_secondary {
-                            for sec in &secondary_list {
-                                match sec.as_str() {
-                                    "lychee" => {
-                                        if let Ok(obs) =
-                                            lychee_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    "httpx" => {
-                                        if let Ok(obs) =
-                                            httpx_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    "curl" => {
-                                        if let Ok(obs) =
-                                            curl_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    "dnsx" => {
-                                        if let Ok(obs) =
-                                            dnsx_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    "openssl" => {
-                                        if let Ok(obs) =
-                                            openssl_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    "wget" => {
-                                        if let Ok(obs) =
-                                            wget_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    "ffuf" => {
-                                        if let Ok(obs) =
-                                            ffuf_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    "nmap" => {
-                                        if let Ok(obs) =
-                                            nmap_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    "ping" => {
-                                        if let Ok(obs) =
-                                            ping_backend.probe(&target, &item_ctx).await
-                                        {
-                                            observations.push(obs);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        // Check history if SQLite DB is enabled
-                        let history_stats = if let Some(ref db) = db_opt {
-                            // Get current config_hash from context (stored at run start)
-                            let current_config_json =
-                                serde_json::to_string(&item_ctx.secondary_backends)
-                                    .unwrap_or_default();
-                            let current_config_hash = blake3::hash(current_config_json.as_bytes())
-                                .to_hex()
-                                .to_string();
-
-                            let evidences = db
-                                .get_qualifying_run_evidences(
-                                    &target.bookmark_id,
-                                    Some(current_config_hash.as_str()),
-                                )
-                                .unwrap_or_default();
-
-                            if let Ok(Some((
-                                total_c,
-                                cons_fail,
-                                first_fail_str,
-                                last_fail_str,
-                                last_succ_str,
-                            ))) = db.get_bookmark_summary(&target.bookmark_id)
-                            {
-                                let parse_dt = |s: Option<String>| {
-                                    s.and_then(|s| {
-                                        DateTime::parse_from_rfc3339(&s)
-                                            .ok()
-                                            .map(|d| d.with_timezone(&Utc))
-                                    })
-                                };
-                                BookmarkHistoryStats {
-                                    total_runs: total_c,
-                                    consecutive_failures: cons_fail,
-                                    first_failed_at: parse_dt(first_fail_str),
-                                    last_failed_at: parse_dt(last_fail_str),
-                                    last_success_at: parse_dt(last_succ_str),
-                                    previous_verdict: None,
-                                    rule_version:
-                                        crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
-                                            .to_string(),
-                                    config_hash: current_config_hash,
-                                    qualifying_evidences: evidences,
-                                }
-                            } else {
-                                BookmarkHistoryStats {
-                                    rule_version:
-                                        crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
-                                            .to_string(),
-                                    config_hash: current_config_hash,
-                                    qualifying_evidences: evidences,
-                                    ..Default::default()
-                                }
-                            }
-                        } else {
-                            BookmarkHistoryStats::default()
-                        };
-
-                        let final_verdict = StateMachine::resolve_final_verdict(
-                            &observations,
-                            &history_stats,
-                            Utc::now(),
-                        );
-
-                        // Record to DB if present
-                        if let Some(ref db) = db_opt {
-                            let _ = db.record_check_result(
-                                &item_ctx.run_id,
-                                &check_id,
-                                &target.bookmark_id,
-                                &target.original_url,
-                                final_verdict,
-                                &observations,
-                            );
-                        }
-
-                        // Register 429 Retry-After cooldown on scheduler if 429 encountered
-                        let cooldown = observations.iter().find_map(|o| {
-                            if o.status_code == Some(429) {
-                                if let Some(ref err) = o.error_kind {
-                                    if err.starts_with("RetryAfter:") {
-                                        let val = err.trim_start_matches("RetryAfter:");
-                                        return Some(HostScheduler::parse_retry_after(val, 30));
-                                    }
-                                }
-                                Some(std::time::Duration::from_secs(30))
-                            } else {
-                                None
-                            }
-                        });
-
-                        scheduler.release_keys(&key_vec, cooldown).await;
-                        drop(permit);
-
-                        (
-                            target.bookmark_id,
-                            target.original_url,
-                            final_verdict,
-                            observations,
-                        )
+                async move {
+                    let mut key_vec = vec![target.host.as_str()];
+                    if !target.registrable_domain.is_empty()
+                        && target.registrable_domain != target.host
+                    {
+                        key_vec.push(target.registrable_domain.as_str());
                     }
-                })
-                .buffer_unordered(self.options.concurrency)
-                .collect()
-                .await;
+
+                    let check_id = uuid::Uuid::new_v4().to_string();
+                    let mut item_ctx = ctx_base.clone();
+                    item_ctx.check_id = check_id.clone();
+
+                    let permit = scheduler.acquire_keys(&key_vec).await;
+
+                    cb(idx + 1, total, &target.original_url);
+
+                    let mut observations = Vec::new();
+
+                    // Tier 1: Native Reqwest Probe
+                    if let Ok(obs) = native_backend.probe(&target, &item_ctx).await {
+                        observations.push(obs);
+                    }
+
+                    let initial_verdict = StateMachine::compute_single_run_verdict(&observations);
+
+                    // Tier 2 - Tier 5 Secondary Backends
+                    // In slow mode or when initial_verdict is Live or Protected (429/403), skip dense secondary backends
+                    let skip_secondary = item_ctx.slow_mode
+                        && initial_verdict == HealthVerdict::Live
+                        || initial_verdict == HealthVerdict::Live
+                        || initial_verdict == HealthVerdict::Protected;
+
+                    if !skip_secondary {
+                        for sec in &secondary_list {
+                            match sec.as_str() {
+                                "lychee" => {
+                                    if let Ok(obs) = lychee_backend.probe(&target, &item_ctx).await
+                                    {
+                                        observations.push(obs);
+                                    }
+                                }
+                                "httpx" => {
+                                    if let Ok(obs) = httpx_backend.probe(&target, &item_ctx).await {
+                                        observations.push(obs);
+                                    }
+                                }
+                                "curl" => {
+                                    if let Ok(obs) = curl_backend.probe(&target, &item_ctx).await {
+                                        observations.push(obs);
+                                    }
+                                }
+                                "dnsx" => {
+                                    if let Ok(obs) =
+                                        dnsx_cloudflare_backend.probe(&target, &item_ctx).await
+                                    {
+                                        observations.push(obs);
+                                    }
+                                    if let Ok(obs) =
+                                        dnsx_alidns_backend.probe(&target, &item_ctx).await
+                                    {
+                                        observations.push(obs);
+                                    }
+                                }
+                                "openssl" => {
+                                    if let Ok(obs) = openssl_backend.probe(&target, &item_ctx).await
+                                    {
+                                        observations.push(obs);
+                                    }
+                                }
+                                "wget" => {
+                                    if let Ok(obs) = wget_backend.probe(&target, &item_ctx).await {
+                                        observations.push(obs);
+                                    }
+                                }
+                                "ffuf" => {
+                                    if let Ok(obs) = ffuf_backend.probe(&target, &item_ctx).await {
+                                        observations.push(obs);
+                                    }
+                                }
+                                "nmap" => {
+                                    if let Ok(obs) = nmap_backend.probe(&target, &item_ctx).await {
+                                        observations.push(obs);
+                                    }
+                                }
+                                "ping" => {
+                                    if let Ok(obs) = ping_backend.probe(&target, &item_ctx).await {
+                                        observations.push(obs);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    let single_run_verdict =
+                        StateMachine::compute_single_run_verdict(&observations);
+
+                    let persistence_result = if let Some(ref db) = db_opt {
+                        db.record_check_observations(
+                            &item_ctx.run_id,
+                            &check_id,
+                            &target.bookmark_id,
+                            &target.original_url,
+                            single_run_verdict,
+                            &observations,
+                        )
+                        .map_err(|error| format!("DB check record failed: {error}"))
+                    } else {
+                        Ok(())
+                    };
+
+                    // Register 429 Retry-After cooldown on scheduler if 429 encountered
+                    let cooldown = observations.iter().find_map(|o| {
+                        if o.status_code == Some(429) {
+                            if let Some(ref err) = o.error_kind {
+                                if err.starts_with("RetryAfter:") {
+                                    let val = err.trim_start_matches("RetryAfter:");
+                                    return Some(HostScheduler::parse_retry_after(val, 30));
+                                }
+                            }
+                            Some(std::time::Duration::from_secs(30))
+                        } else {
+                            None
+                        }
+                    });
+
+                    scheduler.release_keys(&key_vec, cooldown).await;
+                    drop(permit);
+
+                    persistence_result?;
+                    Ok((
+                        target.bookmark_id,
+                        target.original_url,
+                        check_id,
+                        single_run_verdict,
+                        observations,
+                    ))
+                }
+            })
+            .buffer_unordered(self.options.concurrency)
+            .collect()
+            .await;
+
+        let probe_results: Vec<_> = probe_results.into_iter().collect::<Result<_, _>>()?;
 
         if let Some(ref db) = self.db {
-            let _ = db.record_run_finish(&run_id);
+            db.record_run_finish(&run_id)
+                .map_err(|error| format!("DB run finish record failed: {error}"))?;
         }
+
+        let results = if let Some(ref db) = self.db {
+            let config_hash = crate::health::models::ConfigHashInput::from_probe_context(&ctx_base)
+                .stable_hash()
+                .map_err(|error| format!("Config hash failed: {error}"))?;
+            let mut finalized = Vec::with_capacity(probe_results.len());
+
+            for (bookmark_id, url, check_id, _single_run_verdict, observations) in probe_results {
+                let evidences = db
+                    .get_qualifying_run_evidences(
+                        &bookmark_id,
+                        Some(&config_hash),
+                        crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+                    )
+                    .map_err(|error| format!("DB evidence query failed: {error}"))?;
+                let previous_verdict = db
+                    .get_bookmark_current_verdict(&bookmark_id)
+                    .map_err(|error| format!("DB verdict query failed: {error}"))?;
+                let consecutive_successes = db
+                    .get_consecutive_real_success_runs(
+                        &bookmark_id,
+                        Some(&config_hash),
+                        crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+                    )
+                    .map_err(|error| format!("DB success history query failed: {error}"))?;
+                let summary = db
+                    .get_bookmark_summary(&bookmark_id)
+                    .map_err(|error| format!("DB summary query failed: {error}"))?;
+                let parse_dt = |value: Option<String>| {
+                    value.and_then(|value| {
+                        DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|date| date.with_timezone(&Utc))
+                    })
+                };
+                let history = summary.map_or_else(
+                    || BookmarkHistoryStats {
+                        previous_verdict,
+                        consecutive_successes,
+                        rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
+                            .to_string(),
+                        config_hash: config_hash.clone(),
+                        qualifying_evidences: evidences.clone(),
+                        ..Default::default()
+                    },
+                    |(
+                        total_runs,
+                        consecutive_failures,
+                        first_failed,
+                        last_failed,
+                        last_success,
+                    )| {
+                        BookmarkHistoryStats {
+                            total_runs,
+                            consecutive_failures,
+                            first_failed_at: parse_dt(first_failed),
+                            last_failed_at: parse_dt(last_failed),
+                            last_success_at: parse_dt(last_success),
+                            previous_verdict,
+                            consecutive_successes,
+                            rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
+                                .to_string(),
+                            config_hash: config_hash.clone(),
+                            qualifying_evidences: evidences.clone(),
+                        }
+                    },
+                );
+                let verdict =
+                    StateMachine::resolve_final_verdict(&observations, &history, Utc::now());
+                db.finalize_check_result(&run_id, &check_id, &bookmark_id, &url, verdict)
+                    .map_err(|error| format!("DB verdict finalize failed: {error}"))?;
+                finalized.push((bookmark_id, url, verdict, observations));
+            }
+            finalized
+        } else {
+            probe_results
+                .into_iter()
+                .map(
+                    |(bookmark_id, url, _check_id, _single_run_verdict, observations)| {
+                        let verdict = StateMachine::resolve_final_verdict(
+                            &observations,
+                            &BookmarkHistoryStats::default(),
+                            Utc::now(),
+                        );
+                        (bookmark_id, url, verdict, observations)
+                    },
+                )
+                .collect()
+        };
 
         let duration_secs = start_time.elapsed().as_secs_f64();
         let out_dir = self
