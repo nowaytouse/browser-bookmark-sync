@@ -203,12 +203,19 @@ impl DedupeEngine {
                     .iter()
                     .position(|s| current_best.source.browser.to_string().contains(s));
 
-                if let (Some(cp), Some(bp)) = (cand_p, best_p) {
-                    if cp < bp {
+                match (cand_p, best_p) {
+                    (Some(cp), Some(bp)) if cp < bp => {
                         best_idx = i;
                         reasons = vec![SelectionReason::PreferredSource];
                         continue;
                     }
+                    (Some(_), None) => {
+                        best_idx = i;
+                        reasons = vec![SelectionReason::PreferredSource];
+                        continue;
+                    }
+                    (None, Some(_)) => continue,
+                    _ => {}
                 }
             }
 
@@ -246,6 +253,22 @@ impl DedupeEngine {
                     reasons = vec![SelectionReason::EarliestDateAdded];
                     continue;
                 }
+            }
+
+            // Stable final tie-breaker independent of input traversal order.
+            let stable_key = |item: &BookmarkOccurrence| {
+                (
+                    item.source.browser.to_string(),
+                    item.source.browser_channel.clone(),
+                    item.source.profile_id.clone(),
+                    item.folder_path.clone(),
+                    item.original_position,
+                    item.id.clone(),
+                )
+            };
+            if stable_key(candidate) < stable_key(current_best) {
+                best_idx = i;
+                reasons = vec![SelectionReason::DeterministicFallback];
             }
         }
 
@@ -317,5 +340,24 @@ mod tests {
             "Chromium(Chrome)"
         );
         assert_eq!(example_canonical.duplicates.len(), 1);
+    }
+
+    #[test]
+    fn primary_selection_honors_priority_and_is_order_independent() {
+        let mut brave = make_sample_occurrence("https://example.com", "Same", "Brave");
+        let mut chrome = make_sample_occurrence("https://example.com", "Same", "Chrome");
+        brave.id = "b".into();
+        chrome.id = "a".into();
+        chrome.date_added = brave.date_added;
+        chrome.date_modified = brave.date_modified;
+
+        let forward = vec![brave.clone(), chrome.clone()];
+        let reverse = vec![chrome.clone(), brave.clone()];
+        let (preferred, _) = DedupeEngine::select_primary_index(&forward, &["Chrome".into()]);
+        assert_eq!(forward[preferred].id, "a");
+
+        let (forward_index, _) = DedupeEngine::select_primary_index(&forward, &[]);
+        let (reverse_index, _) = DedupeEngine::select_primary_index(&reverse, &[]);
+        assert_eq!(forward[forward_index].id, reverse[reverse_index].id);
     }
 }

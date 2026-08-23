@@ -2,18 +2,86 @@
 
 use crate::health::backends::ProbeBackend;
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
-use crate::health::security::{validate_url_parsed, validate_url_security, SecurityCheckResult};
+use crate::health::security::{
+    is_ip_allowed, validate_url_parsed, validate_url_security, SecurityCheckResult,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::Client;
+use std::fmt;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone)]
+pub struct NativeReqwestBackend {
+    client: Option<Client>,
+    client_config: Option<(Option<String>, u64, bool)>,
+}
+
+#[derive(Debug)]
+struct DnsSecurityError(String);
+
+impl fmt::Display for DnsSecurityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DnsSecurityError {}
+
+fn validate_resolved_addresses(
+    addresses: &[SocketAddr],
+    allow_private: bool,
+) -> Result<(), String> {
+    for address in addresses {
+        if let Err(reason) = is_ip_allowed(address.ip(), allow_private) {
+            return Err(format!("SecurityBlocked: {reason}"));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
-pub struct NativeReqwestBackend;
+struct SecureSystemResolver {
+    allow_private: bool,
+}
+
+impl reqwest::dns::Resolve for SecureSystemResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        let allow_private = self.allow_private;
+        Box::pin(async move {
+            let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?
+                .collect();
+            validate_resolved_addresses(&addresses, allow_private)
+                .map_err(|reason| Box::new(DnsSecurityError(reason)))?;
+            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
 
 impl NativeReqwestBackend {
     pub const fn new() -> Self {
-        Self
+        Self {
+            client: None,
+            client_config: None,
+        }
+    }
+
+    pub fn configured(context: &ProbeContext) -> Result<Self, String> {
+        let config = (
+            context.proxy_url.clone(),
+            context.timeout_secs,
+            context.allow_private_ips,
+        );
+        let client = Self::build_client(config.0.as_deref(), config.1, config.2)?;
+        Ok(Self {
+            client: Some(client),
+            client_config: Some(config),
+        })
     }
 
     fn build_client(
@@ -44,11 +112,27 @@ impl NativeReqwestBackend {
         if let Some(proxy) = proxy_url {
             let p = reqwest::Proxy::all(proxy).map_err(|e| format!("Proxy config error: {e}"))?;
             builder = builder.proxy(p);
+        } else {
+            builder = builder.dns_resolver(Arc::new(SecureSystemResolver { allow_private }));
         }
 
         builder
             .build()
             .map_err(|e| format!("Reqwest build error: {e}"))
+    }
+
+    fn client_for(&self, context: &ProbeContext) -> Result<Client, String> {
+        let config = (
+            context.proxy_url.clone(),
+            context.timeout_secs,
+            context.allow_private_ips,
+        );
+        if self.client_config.as_ref() == Some(&config) {
+            if let Some(client) = &self.client {
+                return Ok(client.clone());
+            }
+        }
+        Self::build_client(config.0.as_deref(), config.1, config.2)
     }
 
     /// Check if initial deep URL was redirected to root homepage
@@ -112,11 +196,7 @@ impl ProbeBackend for NativeReqwestBackend {
         } else {
             "direct"
         };
-        let client = Self::build_client(
-            context.proxy_url.as_deref(),
-            context.timeout_secs,
-            context.allow_private_ips,
-        )?;
+        let client = self.client_for(context)?;
 
         let start_time = Instant::now();
 
@@ -196,21 +276,52 @@ impl ProbeBackend for NativeReqwestBackend {
                 // If GET was performed, read body with max 256 KiB limit
                 if method == "GET" || fell_back {
                     let mut buffer = Vec::new();
-                    // Read up to 256 KiB
                     let max_bytes = 256 * 1024;
+                    let mut body_issue = if obs
+                        .content_length
+                        .is_some_and(|length| length > max_bytes as u64)
+                    {
+                        Some("BodyTooLarge".to_string())
+                    } else {
+                        None
+                    };
 
-                    while let Ok(Some(chunk)) = resp.chunk().await {
-                        let available = max_bytes - buffer.len();
-                        if available == 0 {
-                            break;
+                    while body_issue.is_none() {
+                        match resp.chunk().await {
+                            Ok(Some(chunk)) => {
+                                let available = max_bytes - buffer.len();
+                                if available == 0 {
+                                    body_issue = Some("BodyTooLarge".to_string());
+                                    break;
+                                }
+                                let to_take = chunk.len().min(available);
+                                buffer.extend_from_slice(&chunk[..to_take]);
+                                if to_take < chunk.len() {
+                                    body_issue = Some("BodyTooLarge".to_string());
+                                    break;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                body_issue = Some(format!("BodyReadError: {error}"));
+                                break;
+                            }
                         }
-                        let to_take = chunk.len().min(available);
-                        buffer.extend_from_slice(&chunk[..to_take]);
+                    }
+
+                    if obs.content_length.is_none() || !buffer.is_empty() {
+                        obs.content_length = Some(buffer.len() as u64);
+                    }
+                    if let Some(issue) = body_issue {
+                        obs.actual_request = "unknown".to_string();
+                        obs.error_kind = Some(issue);
+                        return Ok(obs);
+                    }
+                    if buffer.is_empty() {
+                        return Ok(obs);
                     }
 
                     let text = String::from_utf8_lossy(&buffer);
-                    obs.content_length = Some(buffer.len() as u64);
-
                     let raw_preview: String = text.chars().take(500).collect();
                     obs.body_preview = Some(raw_preview);
 
@@ -256,7 +367,9 @@ impl ProbeBackend for NativeReqwestBackend {
             }
             Err(err) => {
                 let err_str = err.to_string();
-                if err.is_timeout() {
+                if let Some(index) = err_str.find("SecurityBlocked:") {
+                    obs.error_kind = Some(err_str[index..].to_string());
+                } else if err.is_timeout() {
                     obs.error_kind = Some("Timeout".to_string());
                 } else if err.is_connect() {
                     if err_str.to_lowercase().contains("dns")
@@ -279,7 +392,27 @@ impl ProbeBackend for NativeReqwestBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn resolved_private_or_mixed_addresses_are_blocked() {
+        let private = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80);
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80);
+        let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 80);
+
+        assert!(validate_resolved_addresses(&[private], false)
+            .unwrap_err()
+            .starts_with("SecurityBlocked:"));
+        assert!(validate_resolved_addresses(&[loopback], false)
+            .unwrap_err()
+            .starts_with("SecurityBlocked:"));
+        assert!(validate_resolved_addresses(&[public], false).is_ok());
+        assert!(validate_resolved_addresses(&[public, private], false)
+            .unwrap_err()
+            .starts_with("SecurityBlocked:"));
+        assert!(validate_resolved_addresses(&[private], true).is_ok());
+    }
 
     async fn probe_html(path: &str, html: &str) -> BackendObservation {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -297,7 +430,7 @@ mod tests {
                 );
                 socket.write_all(headers.as_bytes()).await.unwrap();
                 if !is_head {
-                    socket.write_all(body.as_bytes()).await.unwrap();
+                    let _ = socket.write_all(body.as_bytes()).await;
                 }
             }
         });
@@ -336,5 +469,18 @@ mod tests {
         .await;
         assert_eq!(removed_video.request_method, "GET");
         assert_eq!(removed_video.error_kind.as_deref(), Some("ContentMissing"));
+    }
+
+    #[tokio::test]
+    async fn empty_or_oversized_html_cannot_be_content_success() {
+        let empty = probe_html("/empty", "").await;
+        assert_eq!(empty.content_length, Some(0));
+        assert!(empty.body_hash.is_none());
+
+        let oversized_html = format!("<html>{}</html>", "x".repeat(300 * 1024));
+        let oversized = probe_html("/large", &oversized_html).await;
+        assert_eq!(oversized.actual_request, "unknown");
+        assert_eq!(oversized.error_kind.as_deref(), Some("BodyTooLarge"));
+        assert!(oversized.body_hash.is_none());
     }
 }

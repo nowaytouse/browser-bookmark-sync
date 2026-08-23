@@ -58,16 +58,20 @@ pub enum HealthCommands {
         #[arg(long, default_value = "needs_review")]
         state: String,
         /// Secondary backends to run (comma separated)
-        #[arg(long, default_value = "lychee,httpx")]
+        #[arg(long, default_value = "curl")]
         secondary: String,
         /// SQLite database path
         #[arg(long, default_value = "./bookmark-health.sqlite")]
         db: PathBuf,
-        /// Number of separate completed probe runs before manual review
-        #[arg(long, default_value = "2", value_parser = clap::value_parser!(u8).range(1..=5))]
+        /// Maximum completed probe runs before manual review
+        #[arg(long, default_value = "3", value_parser = clap::value_parser!(u8).range(1..=5))]
         attempts: u8,
-        /// Delay between probe runs in seconds
-        #[arg(long, default_value = "30")]
+        /// Delay between probe runs in seconds (maximum 60)
+        #[arg(
+            long,
+            default_value = "5",
+            value_parser = clap::value_parser!(u64).range(0..=60)
+        )]
         interval_secs: u64,
     },
     /// Display quarantine review candidates eligible for multi-run deletion
@@ -183,24 +187,16 @@ impl HealthCommands {
                     concurrency: 5,
                     history_db_path: Some(db.clone()),
                     secondary_backends: sec_list,
+                    max_attempts: attempts,
+                    retry_interval_secs: interval_secs,
                     ..Default::default()
                 })
                 .map_err(|e| format!("Engine initialization failed: {e}"))?;
 
-                let mut report = None;
-                for attempt in 1..=attempts {
-                    println!("   Probe run {attempt}/{attempts}");
-                    report = Some(
-                        engine
-                            .run_probes(targets.clone(), |_cur, _total, _url| {})
-                            .await
-                            .map_err(|e| format!("Retry probe error: {e}"))?,
-                    );
-                    if attempt < attempts {
-                        tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
-                    }
-                }
-                let report = report.expect("attempt count is constrained to at least one");
+                let report = engine
+                    .run_probes(targets, |_cur, _total, _url| {})
+                    .await
+                    .map_err(|e| format!("Retry probe error: {e}"))?;
 
                 println!("✅ Retry completed:");
                 println!("   Checked:           {}", report.total_checked);

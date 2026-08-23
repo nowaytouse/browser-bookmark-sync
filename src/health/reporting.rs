@@ -3,8 +3,8 @@
 use crate::health::models::{BackendObservation, HealthVerdict};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
-use std::io::Write;
+use std::fs::create_dir_all;
+use std::io::{self, Write};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -31,7 +31,7 @@ impl ReportExporter {
         run_id: &str,
         duration_secs: f64,
         results: &[(String, String, HealthVerdict, Vec<BackendObservation>)], // (bookmark_id, url, verdict, observations)
-    ) -> std::io::Result<HealthRunSummaryReport> {
+    ) -> io::Result<HealthRunSummaryReport> {
         let dir = out_dir.as_ref();
         create_dir_all(dir)?;
 
@@ -118,8 +118,7 @@ impl ReportExporter {
 
         // Export health-summary.json
         let json_data = serde_json::to_string_pretty(&summary)?;
-        let mut json_file = File::create(dir.join("health-summary.json"))?;
-        json_file.write_all(json_data.as_bytes())?;
+        write_atomic(dir.join("health-summary.json"), json_data.as_bytes())?;
 
         // Export health-observations.csv
         Self::write_csv_observations(dir.join("health-observations.csv"), results)?;
@@ -131,12 +130,12 @@ impl ReportExporter {
         path: impl AsRef<Path>,
         title: &str,
         items: &[(&str, &str, &[BackendObservation])],
-    ) -> std::io::Result<()> {
-        let mut file = File::create(path)?;
-        writeln!(file, "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{title}</title><style>body{{font-family:sans-serif;margin:2em}} table{{border-collapse:collapse;width:100%}} th,td{{border:1px solid #ccc;padding:8px}} th{{background:#f4f4f4}}</style></head><body>")?;
-        writeln!(file, "<h1>{title} (Total: {})</h1>", items.len())?;
+    ) -> io::Result<()> {
+        let mut output = Vec::new();
+        writeln!(output, "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{title}</title><style>body{{font-family:sans-serif;margin:2em}} table{{border-collapse:collapse;width:100%}} th,td{{border:1px solid #ccc;padding:8px}} th{{background:#f4f4f4}}</style></head><body>")?;
+        writeln!(output, "<h1>{title} (Total: {})</h1>", items.len())?;
         writeln!(
-            file,
+            output,
             "<table><tr><th>Bookmark ID</th><th>URL</th><th>Observations</th></tr>"
         )?;
 
@@ -153,7 +152,7 @@ impl ReportExporter {
                 .join(" | ");
 
             writeln!(
-                file,
+                output,
                 "<tr><td>{}</td><td><a href=\"{}\" target=\"_blank\">{}</a></td><td>{}</td></tr>",
                 html_escape(bm_id),
                 html_escape(url),
@@ -162,75 +161,79 @@ impl ReportExporter {
             )?;
         }
 
-        writeln!(file, "</table></body></html>")?;
-        Ok(())
+        writeln!(output, "</table></body></html>")?;
+        write_atomic(path, &output)
     }
 
     fn write_main_report_html(
         path: impl AsRef<Path>,
         summary: &HealthRunSummaryReport,
-    ) -> std::io::Result<()> {
-        let mut file = File::create(path)?;
-        writeln!(file, "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Bookmark Health Report</title><style>body{{font-family:sans-serif;margin:2em}} ul{{line-height:1.8}} .dead{{color:red;font-weight:bold}} .live{{color:green;font-weight:bold}}</style></head><body>")?;
+    ) -> io::Result<()> {
+        let mut output = Vec::new();
+        writeln!(output, "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Bookmark Health Report</title><style>body{{font-family:sans-serif;margin:2em}} ul{{line-height:1.8}} .dead{{color:red;font-weight:bold}} .live{{color:green;font-weight:bold}}</style></head><body>")?;
         writeln!(
-            file,
+            output,
             "<h1>🔍 Bookmark Health Comprehensive Audit Report</h1>"
         )?;
-        writeln!(file, "<p>Run ID: <code>{}</code></p>", summary.run_id)?;
+        writeln!(output, "<p>Run ID: <code>{}</code></p>", summary.run_id)?;
         writeln!(
-            file,
+            output,
             "<p>Total URLs Checked: <strong>{}</strong> (Duration: {:.2}s)</p>",
             summary.total_checked, summary.duration_secs
         )?;
-        writeln!(file, "<ul>")?;
-        writeln!(file, "<li class=\"live\">Live: {}</li>", summary.live_count)?;
-        writeln!(file, "<li>Recovered: {}</li>", summary.recovered_count)?;
+        writeln!(output, "<ul>")?;
         writeln!(
-            file,
+            output,
+            "<li class=\"live\">Live: {}</li>",
+            summary.live_count
+        )?;
+        writeln!(output, "<li>Recovered: {}</li>", summary.recovered_count)?;
+        writeln!(
+            output,
             "<li>Protected / WAF: {}</li>",
             summary.protected_count
         )?;
         writeln!(
-            file,
+            output,
             "<li>Temporary Failures: {}</li>",
             summary.temp_failure_count
         )?;
         writeln!(
-            file,
+            output,
             "<li>Probable Dead: {}</li>",
             summary.probable_dead_count
         )?;
         writeln!(
-            file,
+            output,
             "<li class=\"dead\">Confirmed Dead: {}</li>",
             summary.confirmed_dead_count
         )?;
         writeln!(
-            file,
+            output,
             "<li>Needs Review: {}</li>",
             summary.needs_review_count
         )?;
-        writeln!(file, "</ul>")?;
-        writeln!(file, "<h2>Quarantine & Safety Guidelines</h2>")?;
-        writeln!(file, "<p>⚠️ Single-run check results CANNOT be used for destructive deletion. Only <code>ConfirmedDead</code> items (verified across 3 runs over 7 days by independent tools) are eligible for quarantine review.</p>")?;
-        writeln!(file, "</body></html>")?;
-        Ok(())
+        writeln!(output, "</ul>")?;
+        writeln!(output, "<h2>Quarantine & Safety Guidelines</h2>")?;
+        writeln!(output, "<p>⚠️ Single-run check results CANNOT be used for destructive deletion. Only <code>ConfirmedDead</code> items verified by 3 runs in the latest 24 hours, with independent verifier families or dual-resolver NXDOMAIN agreement, are eligible for quarantine review.</p>")?;
+        writeln!(output, "</body></html>")?;
+        write_atomic(path, &output)
     }
 
     fn write_csv_observations(
         path: impl AsRef<Path>,
         results: &[(String, String, HealthVerdict, Vec<BackendObservation>)],
-    ) -> std::io::Result<()> {
-        let mut file = File::create(path)?;
+    ) -> io::Result<()> {
+        let mut output = Vec::new();
         writeln!(
-            file,
+            output,
             "bookmark_id,url,verdict,backend,status_code,error_kind,response_time_ms"
         )?;
 
         for (bm_id, url, verdict, observations) in results {
             for obs in observations {
                 writeln!(
-                    file,
+                    output,
                     "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{}",
                     csv_escape(bm_id),
                     csv_escape(url),
@@ -242,7 +245,7 @@ impl ReportExporter {
                 )?;
             }
         }
-        Ok(())
+        write_atomic(path, &output)
     }
 
     /// Only multi-run `ConfirmedDead` verdicts are eligible for deletion.
@@ -273,6 +276,11 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn write_atomic(path: impl AsRef<Path>, data: &[u8]) -> io::Result<()> {
+    crate::browser_utils::atomic_write_file(path.as_ref(), data)
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))
 }
 
 fn csv_escape(s: &str) -> String {
@@ -319,5 +327,21 @@ mod tests {
             true
         )
         .is_ok());
+    }
+
+    #[test]
+    fn export_all_replaces_reports_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("health-summary.json"), "stale").unwrap();
+
+        let report = ReportExporter::export_all(dir.path(), "run-1", 0.5, &[]).unwrap();
+
+        assert_eq!(report.total_checked, 0);
+        assert_ne!(
+            std::fs::read_to_string(dir.path().join("health-summary.json")).unwrap(),
+            "stale"
+        );
+        assert!(dir.path().join("health-report.html").exists());
+        assert!(dir.path().join("health-observations.csv").exists());
     }
 }

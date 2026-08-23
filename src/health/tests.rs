@@ -5,8 +5,8 @@ mod tests {
 
     fn mock_evidences_one_family(
         count: usize,
-        first: Option<chrono::DateTime<chrono::Utc>>,
-        last: Option<chrono::DateTime<chrono::Utc>>,
+        first: Option<DateTime<Utc>>,
+        last: Option<DateTime<Utc>>,
     ) -> Vec<crate::health::models::QualifyingRunEvidence> {
         use crate::health::models::{QualifyingRunEvidence, StrongFailureKind};
         use std::collections::BTreeSet;
@@ -14,8 +14,8 @@ mod tests {
         if count == 0 {
             return evs;
         }
-        let first_dt = first.unwrap_or_else(|| chrono::Utc::now());
-        let last_dt = last.unwrap_or_else(|| chrono::Utc::now());
+        let first_dt = first.unwrap_or_else(Utc::now);
+        let last_dt = last.unwrap_or_else(Utc::now);
         let span = last_dt.signed_duration_since(first_dt).num_seconds();
         let step = if count > 1 {
             span / (count as i64 - 1)
@@ -23,7 +23,7 @@ mod tests {
             0
         };
         for i in 0..count {
-            let dt = first_dt + chrono::Duration::seconds(step * i as i64);
+            let dt = first_dt + Duration::seconds(step * i as i64);
             let mut families = BTreeSet::new();
             families.insert("native".to_string());
             let mut kinds = BTreeSet::new();
@@ -41,8 +41,8 @@ mod tests {
 
     fn mock_evidences(
         count: usize,
-        first: Option<chrono::DateTime<chrono::Utc>>,
-        last: Option<chrono::DateTime<chrono::Utc>>,
+        first: Option<DateTime<Utc>>,
+        last: Option<DateTime<Utc>>,
     ) -> Vec<crate::health::models::QualifyingRunEvidence> {
         use crate::health::models::{QualifyingRunEvidence, StrongFailureKind};
         use std::collections::BTreeSet;
@@ -50,8 +50,8 @@ mod tests {
         if count == 0 {
             return evs;
         }
-        let first_dt = first.unwrap_or_else(|| chrono::Utc::now());
-        let last_dt = last.unwrap_or_else(|| chrono::Utc::now());
+        let first_dt = first.unwrap_or_else(Utc::now);
+        let last_dt = last.unwrap_or_else(Utc::now);
 
         // Spread the dates
         let span = last_dt.signed_duration_since(first_dt).num_seconds();
@@ -62,7 +62,7 @@ mod tests {
         };
 
         for i in 0..count {
-            let dt = first_dt + chrono::Duration::seconds(step * i as i64);
+            let dt = first_dt + Duration::seconds(step * i as i64);
             let mut families = BTreeSet::new();
             // Make the first one have 'native', second 'lychee', others 'native'
             // This ensures if count >= 2, we have at least 2 families!
@@ -92,7 +92,7 @@ mod tests {
     use crate::health::security::{validate_url_security, SecurityCheckResult};
     use crate::health::state_machine::{BookmarkHistoryStats, StateMachine};
     use crate::url_checker::{HttpResult, ValidationStatus};
-    use chrono::{Duration, Utc};
+    use chrono::{DateTime, Duration, Utc};
 
     #[test]
     fn test_tier0_security_blocking() {
@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn test_three_runs_under_seven_days_remains_probable_dead() {
+    fn test_two_same_day_runs_remain_probable_dead() {
         let now = Utc::now();
         let obs1 = BackendObservation {
             backend: "native_reqwest".to_string(),
@@ -297,14 +297,14 @@ mod tests {
         let history_insufficient = BookmarkHistoryStats {
             total_runs: 3,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(5)), // Only 5 days!
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(5)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(5)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(5)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -329,7 +329,6 @@ mod tests {
             first_failed_at: Some(now - Duration::days(30)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ConfirmedDead),
             qualifying_evidences: mock_evidences(
                 9,
@@ -459,7 +458,7 @@ mod tests {
     #[test]
     fn test_single_backend_cannot_confirmed_dead() {
         let now = Utc::now();
-        // Only one distinct non-cached backend — even with 3 runs over 7 days
+        // Only one verifier family, even across repeated same-day runs.
         let obs = BackendObservation {
             backend: "native_reqwest".to_string(),
             status_code: Some(404),
@@ -469,14 +468,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 3,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(8)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(8)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(8)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(8)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -605,14 +604,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 5,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(20)),
-            last_failed_at: Some(now - Duration::days(1)),
-            last_success_at: Some(now - Duration::days(10)), // success AFTER first failure
+            first_failed_at: Some(now - Duration::hours(20)),
+            last_failed_at: Some(now - Duration::hours(1)),
+            last_success_at: Some(now - Duration::hours(10)), // success AFTER first failure
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(20)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(20)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -908,15 +907,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 3,
             consecutive_failures: 3,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 3,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1036,15 +1034,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 5,
             consecutive_failures: 4,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences_one_family(
                 4,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1068,14 +1065,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 4,
             consecutive_failures: 3,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 3,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1099,14 +1096,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 5,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(20)),
-            last_failed_at: Some(now - Duration::days(1)),
-            last_success_at: Some(now - Duration::days(5)),
+            first_failed_at: Some(now - Duration::hours(20)),
+            last_failed_at: Some(now - Duration::hours(1)),
+            last_success_at: Some(now - Duration::hours(5)),
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(20)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(20)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1216,7 +1213,6 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 4,
@@ -1243,7 +1239,6 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ConfirmedDead),
             qualifying_evidences: mock_evidences(
                 0,
@@ -1276,15 +1271,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 2,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1308,14 +1302,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 2,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1339,11 +1333,11 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 3,
             consecutive_failures: 3,
-            first_failed_at: Some(now - Duration::days(7)),
+            first_failed_at: Some(now - Duration::hours(7)),
             last_failed_at: Some(now),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
-            qualifying_evidences: mock_evidences(3, Some(now - Duration::days(7)), Some(now)),
+            qualifying_evidences: mock_evidences(3, Some(now - Duration::hours(7)), Some(now)),
             ..Default::default()
         };
         let verdict = StateMachine::resolve_final_verdict(&[obs1, obs2], &history, now);
@@ -1393,14 +1387,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 2,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1421,8 +1415,7 @@ mod tests {
             status_code: Some(404),
             ..Default::default()
         };
-        // 3 completed runs, but first and last failure were on the same day (0 days diff < 7 days)
-        // Even if now is 10 days later, must NOT be ConfirmedDead!
+        // These failures are ten days old and therefore outside the rolling 24-hour window.
         let history = BookmarkHistoryStats {
             total_runs: 3,
             consecutive_failures: 3,
@@ -1442,7 +1435,7 @@ mod tests {
     }
 
     #[test]
-    fn probable_dead_requires_a_full_twenty_four_hour_span() {
+    fn same_day_failures_need_no_long_delay_and_old_evidence_expires() {
         let now = Utc::now();
         let observation = BackendObservation {
             backend: "native_reqwest".to_string(),
@@ -1458,17 +1451,17 @@ mod tests {
         };
 
         assert_eq!(
-            verdict_after(Duration::hours(24) - Duration::seconds(1)),
-            HealthVerdict::NeedsReview
+            verdict_after(Duration::seconds(1)),
+            HealthVerdict::ProbableDead
         );
         assert_eq!(
-            verdict_after(Duration::hours(24)),
-            HealthVerdict::ProbableDead
+            verdict_after(Duration::hours(24) + Duration::seconds(1)),
+            HealthVerdict::NeedsReview
         );
     }
 
     #[test]
-    fn failure_span_uses_latest_failure_not_now() {
+    fn expired_failure_span_is_ignored() {
         let now = Utc::now();
         let obs1 = BackendObservation {
             backend: "native_reqwest".to_string(),
@@ -1495,7 +1488,7 @@ mod tests {
             ..Default::default()
         };
         let verdict = StateMachine::resolve_final_verdict(&[obs1, obs2], &history, now);
-        assert_eq!(verdict, HealthVerdict::ProbableDead);
+        assert_eq!(verdict, HealthVerdict::NeedsReview);
     }
 
     #[test]
@@ -1538,7 +1531,6 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
@@ -1743,7 +1735,6 @@ mod tests {
             first_failed_at: Some(now - Duration::days(10)),
             last_failed_at: Some(now - Duration::days(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ConfirmedDead),
             qualifying_evidences: mock_evidences(
                 0,
@@ -1814,18 +1805,18 @@ mod tests {
             status_code: Some(404),
             ..Default::default()
         };
-        // Even with 4 runs over 10 days, if both observations belong to "native" family, cannot be ConfirmedDead
+        // Repeated same-day runs from only the native family cannot be ConfirmedDead.
         let history = BookmarkHistoryStats {
             total_runs: 4,
             consecutive_failures: 3,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences_one_family(
                 3,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1849,14 +1840,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 4,
             consecutive_failures: 3,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences_one_family(
                 3,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1880,14 +1871,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 4,
             consecutive_failures: 3,
-            first_failed_at: Some(now - Duration::days(10)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::hours(10)),
+            last_failed_at: Some(now - Duration::hours(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 3,
-                Some(now - Duration::days(10)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::hours(10)),
+                Some(now - Duration::hours(1)),
             ),
             ..Default::default()
         };
@@ -1913,7 +1904,7 @@ mod tests {
         dns_rcode: Option<&str>,
         resolver_id: Option<&str>,
         backend: &str,
-        started_at_offset_days: i64, // relative to now (negative = past)
+        started_at_offset_hours: i64, // relative to now (negative = past)
         config_hash: &str,
     ) -> (String, String) {
         use rusqlite::params;
@@ -1921,14 +1912,12 @@ mod tests {
         let run_id = format!("run-{}-{}", bookmark_id, uuid::Uuid::new_v4());
         let check_id = format!("chk-{}", uuid::Uuid::new_v4());
         let attempt_id = format!("att-{}", uuid::Uuid::new_v4());
-        let started_at =
-            (chrono::Utc::now() + chrono::Duration::days(started_at_offset_days)).to_rfc3339();
-        let finished_at =
-            (chrono::Utc::now() + chrono::Duration::days(started_at_offset_days)).to_rfc3339();
+        let started_at = (Utc::now() + Duration::hours(started_at_offset_hours)).to_rfc3339();
+        let finished_at = (Utc::now() + Duration::hours(started_at_offset_hours)).to_rfc3339();
 
         conn.execute(
             "INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version)
-             VALUES (?1, ?2, ?3, ?4, 'standard', ?5, '4', '0.0.0')",
+             VALUES (?1, ?2, ?3, ?4, 'standard', ?5, '5', '0.0.0')",
             params![
                 run_id,
                 started_at,
@@ -2083,8 +2072,8 @@ mod tests {
         let run_id = "run-bm3-1".to_string();
         let check_id = "chk-bm3-1".to_string();
         let conn = db.raw_conn_for_test();
-        let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id, t, t]).unwrap();
+        let t = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id, t, t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, finished_at, run_verdict) VALUES (?1,?2,'bm3','http://x.com',?3,?4,'needs_review')", rusqlite::params![check_id, run_id, t, t]).unwrap();
         for i in 0..3 {
             let aid = format!("att-bm3-{i}");
@@ -2169,8 +2158,8 @@ mod tests {
         let run_id = "run-bm6-1".to_string();
         let check_id = "chk-bm6-1".to_string();
         let conn = db.raw_conn_for_test();
-        let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id, t, t]).unwrap();
+        let t = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id, t, t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, finished_at, run_verdict) VALUES (?1,?2,'bm6','http://x.com',?3,?4,'live')", rusqlite::params![check_id, run_id, t, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence,started_at,finished_at) VALUES ('a1',?1,'native_reqwest','0','direct',0,'yes',0,'GET',404,'http://x.com',0,0,1.0,?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence,started_at,finished_at) VALUES ('a2',?1,'lychee','0','direct',1,'yes',0,'GET',200,'http://x.com',0,0,1.0,?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2381,8 +2370,7 @@ mod tests {
     }
 
     #[test]
-    fn three_failures_same_day_query_ten_days_later_not_confirmed() {
-        // All 3 runs completed on same day → span = 0 days → not ConfirmedDead
+    fn three_failures_in_one_day_are_confirmed() {
         let db = HealthDatabase::in_memory().unwrap();
         insert_run_and_attempt(
             &db,
@@ -2449,17 +2437,11 @@ mod tests {
             ..Default::default()
         };
         let verdict = StateMachine::resolve_final_verdict(&[obs], &history, Utc::now());
-        // span < 7 days → ProbableDead (not ConfirmedDead)
-        assert_ne!(
-            verdict,
-            HealthVerdict::ConfirmedDead,
-            "same-day runs cannot confirm"
-        );
+        assert_eq!(verdict, HealthVerdict::ConfirmedDead);
     }
 
     #[test]
-    fn three_unique_runs_exactly_seven_days_can_confirm() {
-        // Runs at day-8, day-4, day-1 with two different families → span=7, confirmed
+    fn three_unique_runs_within_one_day_can_confirm() {
         let db = HealthDatabase::in_memory().unwrap();
         insert_run_and_attempt(
             &db,
@@ -2527,10 +2509,9 @@ mod tests {
             "need 2+ families for confirmed dead"
         );
 
-        let earliest = evidences.iter().map(|e| e.strong_failure_at).min().unwrap();
-        let latest = evidences.iter().map(|e| e.strong_failure_at).max().unwrap();
-        let span = (latest - earliest).num_days();
-        assert!(span >= 7, "span must be >= 7 days, got {span}");
+        assert!(evidences
+            .iter()
+            .all(|evidence| Utc::now() - evidence.strong_failure_at < Duration::hours(24)));
 
         let obs = BackendObservation {
             backend: "native_reqwest".to_string(),
@@ -2721,8 +2702,8 @@ mod tests {
         let run_id = "run-dns2-1".to_string();
         let check_id = "chk-dns2-1".to_string();
         let conn = db.raw_conn_for_test();
-        let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
+        let t = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns2','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2754,8 +2735,8 @@ mod tests {
         let run_id = "run-dns3".to_string();
         let check_id = "chk-dns3".to_string();
         let conn = db.raw_conn_for_test();
-        let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
+        let t = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns3','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','resolver-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2776,8 +2757,8 @@ mod tests {
         let run_id = "run-dns4".to_string();
         let check_id = "chk-dns4".to_string();
         let conn = db.raw_conn_for_test();
-        let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
+        let t = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns4','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','r-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NOERROR','r-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2799,8 +2780,8 @@ mod tests {
         let run_id = "run-dns5".to_string();
         let check_id = "chk-dns5".to_string();
         let conn = db.raw_conn_for_test();
-        let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
+        let t = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns5','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','r-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','r-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2822,8 +2803,8 @@ mod tests {
         let run_id = "run-dns6".to_string();
         let check_id = "chk-dns6".to_string();
         let conn = db.raw_conn_for_test();
-        let t = chrono::Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','4','0')", rusqlite::params![run_id,t,t]).unwrap();
+        let t = Utc::now().to_rfc3339();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns6','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2897,12 +2878,12 @@ mod tests {
     #[test]
     fn matching_rule_version_uses_or_rebuilds_valid_summary() {
         use crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
-        assert_eq!(CURRENT_HEALTH_RULE_VERSION, "4");
+        assert_eq!(CURRENT_HEALTH_RULE_VERSION, "5");
     }
 
     #[test]
     fn stale_rule_version_forces_rebuild() {
-        // Simulate: summary stored with rule_version "1", current is "4"
+        // Simulate: summary stored with rule_version "1", current is "5"
         // State machine should not trust the cached summary → rebuild from evidences
         let db = HealthDatabase::in_memory().unwrap();
         // No evidence in DB → qualifying_evidences will be empty regardless of summary
@@ -2938,7 +2919,7 @@ mod tests {
         };
         let history = BookmarkHistoryStats {
             qualifying_evidences: evidences,
-            rule_version: "4".to_string(), // current version
+            rule_version: "5".to_string(), // current version
             consecutive_failures: 99,      // stale summary would say 99, but evidences override
             ..Default::default()
         };
@@ -3001,7 +2982,7 @@ mod tests {
             rule_version: CURRENT_HEALTH_RULE_VERSION.to_string(),
             ..Default::default()
         };
-        assert_eq!(history.rule_version, "4");
+        assert_eq!(history.rule_version, "5");
     }
 
     #[test]
@@ -3153,8 +3134,54 @@ mod tests {
     }
 
     #[test]
+    fn success_from_another_config_does_not_truncate_current_evidence() {
+        let db = HealthDatabase::in_memory().unwrap();
+        for (offset, backend) in [(-3, "native_reqwest"), (-2, "lychee")] {
+            insert_run_and_attempt(
+                &db,
+                "cfg-success",
+                "http://dead.example.com",
+                true,
+                "yes",
+                false,
+                Some(404),
+                None,
+                None,
+                None,
+                backend,
+                offset,
+                "current_hash",
+            );
+        }
+        insert_run_and_attempt(
+            &db,
+            "cfg-success",
+            "http://dead.example.com",
+            true,
+            "yes",
+            false,
+            Some(200),
+            None,
+            None,
+            None,
+            "native_reqwest",
+            -1,
+            "other_hash",
+        );
+
+        let evidences = db
+            .get_qualifying_run_evidences(
+                "cfg-success",
+                Some("current_hash"),
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+            )
+            .unwrap();
+        assert_eq!(evidences.len(), 2);
+    }
+
+    #[test]
     fn summary_config_mismatch_forces_rebuild() {
-        // Summary rule_version "1" vs current "4" → qualifying_evidences must be rebuilt fresh
+        // Summary rule_version "1" vs current "5" → qualifying_evidences must be rebuilt fresh
         let db = HealthDatabase::in_memory().unwrap();
         insert_run_and_attempt(
             &db,

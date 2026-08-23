@@ -1,9 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
 
 use browser_bookmark_sync::{
-    browsers, data_types, expand_path, gui,
+    browser_utils, browsers, data_types, expand_path, gui,
     health::{
         reporting::ReportExporter, HealthEngine, HealthEngineOptions, HealthVerdict, ProbeTarget,
     },
@@ -11,6 +11,17 @@ use browser_bookmark_sync::{
     sync_flags::SyncFlags,
     url_checker,
 };
+
+fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|error| format!("invalid positive integer: {error}"))?;
+    if parsed == 0 {
+        Err("value must be at least 1".to_string())
+    } else {
+        Ok(parsed)
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "bsync")]
@@ -165,7 +176,11 @@ enum Commands {
         validate_content: bool,
 
         /// Concurrency limit for validity checking (default: 10, max: 10)
-        #[arg(long, default_value = "10")]
+        #[arg(
+            long,
+            default_value = "10",
+            value_parser = parse_positive_usize
+        )]
         validate_concurrency: usize,
 
         /// Limit number of URLs to check during copy validation (default: 0 = all)
@@ -276,7 +291,7 @@ enum Commands {
         #[arg(short, long)]
         file: Option<String>,
 
-        /// Output file path (required when using --file, saves valid bookmarks)
+        /// Separate output path used for the cleaned HTML copy
         #[arg(short, long)]
         output: Option<String>,
 
@@ -285,11 +300,21 @@ enum Commands {
         proxy: Option<String>,
 
         /// Request timeout in seconds
-        #[arg(short, long, default_value = "10")]
+        #[arg(
+            short,
+            long,
+            default_value = "10",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
         timeout: u64,
 
         /// Number of concurrent requests (max 5 to prevent system overload)
-        #[arg(short, long, default_value = "5")]
+        #[arg(
+            short,
+            long,
+            default_value = "5",
+            value_parser = parse_positive_usize
+        )]
         concurrency: usize,
 
         /// Delete confirmed invalid bookmarks
@@ -308,8 +333,8 @@ enum Commands {
         #[arg(short, long, default_value = "all")]
         browsers: String,
 
-        /// Limit number of URLs to check (default: 100, 0 = no limit - USE WITH CAUTION!)
-        #[arg(short = 'L', long, default_value = "100")]
+        /// Limit number of URLs to check (0 = check all)
+        #[arg(short = 'L', long, default_value = "0")]
         limit: usize,
 
         /// Export invalid bookmarks to HTML file before deletion
@@ -329,11 +354,11 @@ enum Commands {
         slow: bool,
 
         /// Path to SQLite health history database
-        #[arg(long)]
+        #[arg(long, default_value = "./bookmark-health.sqlite")]
         history_db: Option<String>,
 
-        /// Secondary probe backends (comma separated, e.g., lychee,httpx)
-        #[arg(long)]
+        /// Secondary probe backends (comma separated, e.g., curl,lychee,httpx)
+        #[arg(long, default_value = "curl")]
         secondary: Option<String>,
     },
 
@@ -406,11 +431,21 @@ enum Commands {
         limit: usize,
 
         /// Concurrent check tasks
-        #[arg(short = 'c', long, default_value = "10")]
+        #[arg(
+            short = 'c',
+            long,
+            default_value = "10",
+            value_parser = parse_positive_usize
+        )]
         concurrency: usize,
 
         /// HTTP timeout in seconds
-        #[arg(short, long, default_value = "15")]
+        #[arg(
+            short,
+            long,
+            default_value = "15",
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
         timeout: u64,
     },
 
@@ -993,7 +1028,10 @@ async fn main() -> Result<()> {
                                     if let Ok(updated_json) =
                                         serde_json::to_string_pretty(&json_val)
                                     {
-                                        if let Err(e) = std::fs::write(&report_path, updated_json) {
+                                        if let Err(e) = browser_utils::atomic_write_file(
+                                            std::path::Path::new(&report_path),
+                                            updated_json.as_bytes(),
+                                        ) {
                                             error!("❌ 更新报告 JSON 失败: {}", e);
                                         } else {
                                             info!(
@@ -1211,28 +1249,11 @@ async fn main() -> Result<()> {
             }
             info!("并发: {}", safe_concurrency);
 
-            // 安全警告：无限制检查
+            // 默认完整检查；需要快速抽样时由用户显式传入 --limit。
             if limit == 0 {
-                warn!("⚠️  警告: 无限制检查模式！大量书签可能导致系统过载");
-                warn!("   建议使用 --limit 100 限制检查数量");
+                info!("📚 完整检查模式：扫描全部唯一 URL");
             }
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-            // 创建检查器
-            let config = CheckerConfig {
-                proxy_url: proxy.clone(),
-                timeout_secs: timeout,
-                concurrency: safe_concurrency,
-                retry_count: 1,
-            };
-
-            let checker = match UrlChecker::new(config) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("❌ 创建检查器失败: {}", e);
-                    return Ok(());
-                }
-            };
 
             // 读取收藏夹 - 支持从文件或浏览器读取
             let mut all_bookmarks: Vec<(browsers::BrowserType, Vec<browsers::Bookmark>)> =
@@ -1244,19 +1265,13 @@ async fn main() -> Result<()> {
                 // 从文件读取
                 let expanded = expand_path(input_file);
                 info!("📖 从文件读取: {}", expanded);
-                match sync::import_bookmarks_from_html(&expanded) {
-                    Ok(bookmarks) => {
-                        let urls = collect_urls_from_bookmarks(&bookmarks);
-                        let bookmark_count: usize = bookmarks.iter().map(count_tree).sum();
-                        info!("   {} 个书签, {} 个URL", bookmark_count, urls.len());
-                        all_urls.extend(urls);
-                        file_bookmarks = Some(bookmarks);
-                    }
-                    Err(e) => {
-                        error!("❌ 读取文件失败: {}", e);
-                        return Ok(());
-                    }
-                }
+                let bookmarks = sync::import_bookmarks_from_html(&expanded)
+                    .with_context(|| format!("读取收藏夹文件失败: {expanded}"))?;
+                let urls = collect_urls_from_bookmarks(&bookmarks);
+                let bookmark_count: usize = bookmarks.iter().map(count_tree).sum();
+                info!("   {} 个书签, {} 个URL", bookmark_count, urls.len());
+                all_urls.extend(urls);
+                file_bookmarks = Some(bookmarks);
             } else {
                 // 从浏览器读取
                 let _engine = SyncEngine::new()?;
@@ -1305,23 +1320,30 @@ async fn main() -> Result<()> {
                 // Edge, Chromium, Vivaldi, beta channels, and named profiles are not missed.
                 if browsers == "all" && (history_db.is_some() || slow) {
                     let temp = tempfile::tempdir()?;
-                    match sync::collector::BookmarkCollector::collect_all(temp.path()) {
-                        Ok((tree, inventory, _)) => {
-                            let (canonical, _, _, _, _) =
-                                sync::dedupe::DedupeEngine::deduplicate_tree(&tree, &[]);
-                            info!(
-                                "📚 全面 Profile 采集: {} 个浏览器安装 / {} 个 Profile / {} 个唯一 URL",
-                                inventory.total_installations,
-                                inventory.total_profiles,
-                                canonical.len()
-                            );
-                            for warning in inventory.warnings {
-                                warn!("⚠️  {warning}");
-                            }
-                            all_urls.extend(canonical.into_iter().map(|item| item.exact_url));
-                        }
-                        Err(error) => warn!("⚠️  全面 Profile 采集失败，保留适配器结果: {error}"),
+                    let (tree, inventory, _) =
+                        sync::collector::BookmarkCollector::collect_all(temp.path())?;
+                    let harvested_profiles: usize = inventory
+                        .installations
+                        .iter()
+                        .map(|installation| installation.profiles.len())
+                        .sum();
+                    anyhow::ensure!(
+                        harvested_profiles == inventory.total_profiles,
+                        "全面 Profile 采集不完整：成功 {harvested_profiles}/{}，拒绝静默漏扫",
+                        inventory.total_profiles
+                    );
+                    let (canonical, _, _, _, _) =
+                        sync::dedupe::DedupeEngine::deduplicate_tree(&tree, &[]);
+                    info!(
+                        "📚 全面 Profile 采集: {} 个浏览器安装 / {} 个 Profile / {} 个唯一 URL",
+                        inventory.total_installations,
+                        inventory.total_profiles,
+                        canonical.len()
+                    );
+                    for warning in inventory.warnings {
+                        warn!("⚠️  {warning}");
                     }
+                    all_urls.extend(canonical.into_iter().map(|item| item.exact_url));
                 }
             }
 
@@ -1336,6 +1358,7 @@ async fn main() -> Result<()> {
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect();
+            unique_urls.sort();
 
             // 应用限制
             if limit > 0 && unique_urls.len() > limit {
@@ -1372,7 +1395,7 @@ async fn main() -> Result<()> {
                     .as_ref()
                     .map(|d| std::path::PathBuf::from(expand_path(d)));
 
-                let engine = match HealthEngine::new(HealthEngineOptions {
+                let engine = HealthEngine::new(HealthEngineOptions {
                     proxy_url: proxy.clone(),
                     timeout_secs: timeout,
                     concurrency: safe_concurrency,
@@ -1381,13 +1404,10 @@ async fn main() -> Result<()> {
                     history_db_path: db_path,
                     secondary_backends: sec_list,
                     output_dir: out_path,
-                }) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        error!("❌ 健康引擎初始化失败: {}", e);
-                        return Ok(());
-                    }
-                };
+                    max_attempts: 3,
+                    retry_interval_secs: 5,
+                })
+                .map_err(anyhow::Error::msg)?;
 
                 let pb = ProgressBar::new(targets.len() as u64);
                 pb.set_style(
@@ -1450,11 +1470,9 @@ async fn main() -> Result<()> {
                         let temp = format!("{out}.tmp-{}", uuid::Uuid::new_v4());
                         sync::export_bookmarks_to_html(&cleaned, &temp)?;
                         if std::path::Path::new(&out).exists() {
-                            let backup = format!(
-                                "{out}.backup-{}",
-                                chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
-                            );
+                            let backup = format!("{out}.backup-{}", uuid::Uuid::new_v4());
                             std::fs::copy(&out, &backup)?;
+                            std::fs::File::open(&backup)?.sync_all()?;
                             println!("  🛟 原输出已备份: {backup}");
                         }
                         std::fs::rename(&temp, &out)?;
@@ -1468,6 +1486,13 @@ async fn main() -> Result<()> {
             }
 
             // ── 旧引擎路径 (无 --history-db / --slow) ─────────────────────────────
+            let checker = UrlChecker::new(CheckerConfig {
+                proxy_url: proxy.clone(),
+                timeout_secs: timeout,
+                concurrency: safe_concurrency,
+                retry_count: 1,
+            })?;
+
             // 创建进度条
             let pb = ProgressBar::new(unique_urls.len() as u64);
             pb.set_style(ProgressStyle::default_bar()
@@ -2100,4 +2125,23 @@ fn count_tree(bookmark: &browsers::Bookmark) -> usize {
         count += count_tree(child);
     }
     count
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn network_commands_reject_zero_timeout_or_concurrency() {
+        for args in [
+            &["bsync", "check", "--timeout", "0"][..],
+            &["bsync", "check", "--concurrency", "0"][..],
+            &["bsync", "pipeline", "--timeout", "0"][..],
+            &["bsync", "pipeline", "--concurrency", "0"][..],
+            &["bsync", "export", "--validate-concurrency", "0"][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "accepted {args:?}");
+        }
+    }
 }

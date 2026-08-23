@@ -1,6 +1,6 @@
 //! ffuf CLI Probe Backend Adapter (Tier 5)
 
-use crate::health::backends::ProbeBackend;
+use crate::health::backends::{reject_unsafe_target, run_command_output, ProbeBackend};
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -55,6 +55,10 @@ impl ProbeBackend for FfufCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
+        if reject_unsafe_target(target, context, &mut obs) {
+            return Ok(obs);
+        }
+
         let bin_path = if let Some(b) = Self::find_binary() {
             b
         } else {
@@ -67,14 +71,15 @@ impl ProbeBackend for FfufCliBackend {
 
         obs.backend_version = "2.1.0".to_string();
 
-        let output = Command::new(&bin_path)
+        let mut command = Command::new(&bin_path);
+        command
             .arg("-u")
             .arg(&target.original_url)
             .arg("-s")
             .arg("-json")
             .arg("-timeout")
-            .arg(format!("{}", context.timeout_secs))
-            .output();
+            .arg(format!("{}", context.timeout_secs));
+        let output = run_command_output(command).await;
 
         obs.finished_at = Utc::now();
 

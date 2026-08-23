@@ -1,6 +1,6 @@
 //! Lychee CLI Probe Backend Adapter (Tier 2)
 
-use crate::health::backends::ProbeBackend;
+use crate::health::backends::{reject_unsafe_target, run_command_output, ProbeBackend};
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -60,6 +60,10 @@ impl ProbeBackend for LycheeCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
+        if reject_unsafe_target(target, context, &mut obs) {
+            return Ok(obs);
+        }
+
         let bin_path = if let Some(b) = Self::find_binary() {
             b
         } else {
@@ -80,15 +84,16 @@ impl ProbeBackend for LycheeCliBackend {
 
         let temp_path = temp_file.path().to_string_lossy().to_string();
 
-        let output = Command::new(&bin_path)
+        let mut command = Command::new(&bin_path);
+        command
             .arg("--format")
             .arg("json")
             .arg("--max-redirects")
-            .arg("10")
+            .arg("0")
             .arg("--timeout")
             .arg(format!("{}", context.timeout_secs))
-            .arg(&temp_path)
-            .output();
+            .arg(&temp_path);
+        let output = run_command_output(command).await;
 
         obs.finished_at = Utc::now();
 

@@ -61,17 +61,16 @@ impl HostScheduler {
 
     /// Acquire permission to probe target keys (host and/or registrable domain), respecting interval and cooldown
     pub async fn acquire_keys(&self, keys: &[&str]) -> tokio::sync::OwnedSemaphorePermit {
-        let permit = self
-            .global_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("Semaphore closed");
-
         if keys.is_empty() {
-            return permit;
+            return self
+                .global_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("Semaphore closed");
         }
 
+        let mut permit = None;
         loop {
             let max_delay = {
                 let mut guard = self.hosts.lock().await;
@@ -110,25 +109,39 @@ impl HostScheduler {
                         delay = key_delay;
                     }
                 }
+
+                if delay.is_zero() {
+                    let ready_permit = permit
+                        .take()
+                        .or_else(|| self.global_semaphore.clone().try_acquire_owned().ok());
+                    if let Some(permit) = ready_permit {
+                        let now = Instant::now();
+                        for &k in keys {
+                            if let Some(state) = guard.get_mut(k) {
+                                state.active_requests += 1;
+                                state.last_request = Some(now);
+                            }
+                        }
+                        return permit;
+                    }
+                }
+
                 delay
             };
 
             if max_delay.is_zero() {
-                let mut guard = self.hosts.lock().await;
-                let now = Instant::now();
-                for &k in keys {
-                    if let Some(state) = guard.get_mut(k) {
-                        state.active_requests += 1;
-                        state.last_request = Some(now);
-                    }
-                }
-                break;
+                permit = Some(
+                    self.global_semaphore
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .expect("Semaphore closed"),
+                );
+            } else {
+                drop(permit.take());
+                sleep(max_delay).await;
             }
-
-            sleep(max_delay).await;
         }
-
-        permit
     }
 
     /// Single key helper for acquire
@@ -191,5 +204,35 @@ mod tests {
             HostScheduler::parse_retry_after("invalid", 45),
             Duration::from_secs(45)
         );
+    }
+
+    #[tokio::test]
+    async fn cooldown_does_not_hold_global_permit_for_other_hosts() {
+        let scheduler = HostScheduler::new(SchedulerConfig {
+            max_global_concurrency: 1,
+            per_host_concurrency: 1,
+            host_interval_ms: 0,
+            default_429_cooldown_secs: 1,
+        });
+
+        let permit = scheduler.acquire("a").await;
+        scheduler
+            .release("a", Some(Duration::from_millis(200)))
+            .await;
+        drop(permit);
+
+        let waiting_scheduler = scheduler.clone();
+        let waiting = tokio::spawn(async move {
+            let permit = waiting_scheduler.acquire("a").await;
+            sleep(Duration::from_millis(1)).await;
+            drop(permit);
+        });
+        sleep(Duration::from_millis(10)).await;
+
+        let other = tokio::time::timeout(Duration::from_millis(50), scheduler.acquire("b"))
+            .await
+            .expect("cooldown for host a blocked host b");
+        drop(other);
+        waiting.abort();
     }
 }

@@ -10,6 +10,7 @@
 //!   4. 本地网络/代理IO错误（超时/本地故障）→ Uncertain（本地原因，不判死链）
 //!   5. 服务器暂时维护（5xx / 503）→ Uncertain（存疑保留）
 
+use crate::health::security::{validate_url_security, SecurityCheckResult};
 use anyhow::Result;
 use hickory_resolver::{
     config::{NameServerConfig, ResolverConfig, ResolverOpts, CLOUDFLARE},
@@ -885,6 +886,51 @@ impl UrlChecker {
         }
     }
 
+    async fn check_url_with_clients(
+        url: &str,
+        proxy_client: Option<&Client>,
+        direct_client: &Client,
+        retry_count: u32,
+        allow_private_ips: bool,
+    ) -> UrlCheckResult {
+        if let SecurityCheckResult::Denied(reason) = validate_url_security(url, allow_private_ips) {
+            return UrlCheckResult::skipped(
+                url.to_string(),
+                &format!("Security blocked: {reason}"),
+            );
+        }
+        if let Some(reason) = Self::should_skip(url) {
+            if !(allow_private_ips && reason == "Local address") {
+                return UrlCheckResult::skipped(url.to_string(), reason);
+            }
+        }
+
+        let request_once = || async {
+            let (proxy_result, direct_result) = if let Some(proxy_client) = proxy_client {
+                let proxy_fut = Self::do_request(proxy_client, url);
+                let direct_fut = Self::do_request(direct_client, url);
+                let (pr, dr) = tokio::join!(proxy_fut, direct_fut);
+                (Some(pr), Some(dr))
+            } else {
+                (None, Some(Self::do_request(direct_client, url).await))
+            };
+            UrlCheckResult::from_results(url.to_string(), proxy_result, direct_result)
+        };
+
+        let mut result = request_once().await;
+        let mut retries_left = retry_count;
+        while retries_left > 0
+            && !matches!(
+                result.status,
+                ValidationStatus::Valid | ValidationStatus::Redirected
+            )
+        {
+            retries_left -= 1;
+            result = request_once().await;
+        }
+        result
+    }
+
     /// 将 reqwest 错误分类为五维度标志位
     fn classify_request_error(e: reqwest::Error, latency_ms: u64) -> HttpResult {
         let err_str = e.to_string();
@@ -939,25 +985,14 @@ impl UrlChecker {
 
     /// 检查单个URL
     pub async fn check_url(&self, url: &str) -> UrlCheckResult {
-        // 检查是否应该跳过
-        if let Some(reason) = Self::should_skip(url) {
-            return UrlCheckResult::skipped(url.to_string(), reason);
-        }
-
-        // 并行发起代理和直连请求
-        let (proxy_result, direct_result) = if let Some(ref proxy_client) = self.proxy_client {
-            let proxy_fut = Self::do_request(proxy_client, url);
-            let direct_fut = Self::do_request(&self.direct_client, url);
-
-            let (pr, dr) = tokio::join!(proxy_fut, direct_fut);
-            (Some(pr), Some(dr))
-        } else {
-            // 无代理，仅直连
-            let dr = Self::do_request(&self.direct_client, url).await;
-            (None, Some(dr))
-        };
-
-        UrlCheckResult::from_results(url.to_string(), proxy_result, direct_result)
+        Self::check_url_with_clients(
+            url,
+            self.proxy_client.as_ref(),
+            &self.direct_client,
+            self.config.retry_count,
+            false,
+        )
+        .await
     }
 
     /// 提取 URL 的主域名根地址 (e.g. "<https://www.youtube.com/watch?v=1>" -> "<https://www.youtube.com>")
@@ -1028,28 +1063,29 @@ impl UrlChecker {
                 .map(|(i, origin)| {
                     let proxy_client = self.proxy_client.clone();
                     let direct_client = self.direct_client.clone();
+                    let retry_count = self.config.retry_count;
 
                     async move {
-                        let result = if let Some(reason) = Self::should_skip(&origin) {
+                        let result = if let SecurityCheckResult::Denied(reason) =
+                            validate_url_security(&origin, false)
+                        {
+                            UrlCheckResult::skipped(
+                                origin.clone(),
+                                &format!("Security blocked: {reason}"),
+                            )
+                        } else if let Some(reason) = Self::should_skip(&origin) {
                             UrlCheckResult::skipped(origin.clone(), reason)
                         } else {
                             let jitter_ms = 300 + ((i as u64 * 137) % 700);
                             tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
-
-                            let (proxy_result, direct_result) = if let Some(ref pc) = proxy_client {
-                                let proxy_fut = Self::do_request(pc, &origin);
-                                let direct_fut = Self::do_request(&direct_client, &origin);
-                                let (pr, dr) = tokio::join!(proxy_fut, direct_fut);
-                                (Some(pr), Some(dr))
-                            } else {
-                                let dr = Self::do_request(&direct_client, &origin).await;
-                                (None, Some(dr))
-                            };
-                            UrlCheckResult::from_results(
-                                origin.clone(),
-                                proxy_result,
-                                direct_result,
+                            Self::check_url_with_clients(
+                                &origin,
+                                proxy_client.as_ref(),
+                                &direct_client,
+                                retry_count,
+                                false,
                             )
+                            .await
                         };
                         (i, origin, result)
                     }
@@ -1110,24 +1146,26 @@ impl UrlChecker {
             .map(|(i, url)| {
                 let proxy_client = self.proxy_client.clone();
                 let direct_client = self.direct_client.clone();
+                let retry_count = self.config.retry_count;
 
                 async move {
-                    let result = if let Some(reason) = Self::should_skip(&url) {
+                    let result = if let SecurityCheckResult::Denied(reason) =
+                        validate_url_security(&url, false)
+                    {
+                        UrlCheckResult::skipped(url.clone(), &format!("Security blocked: {reason}"))
+                    } else if let Some(reason) = Self::should_skip(&url) {
                         UrlCheckResult::skipped(url.clone(), reason)
                     } else {
                         let jitter_ms = 300 + ((i as u64 * 137) % 700);
                         tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
-
-                        let (proxy_result, direct_result) = if let Some(ref pc) = proxy_client {
-                            let proxy_fut = Self::do_request(pc, &url);
-                            let direct_fut = Self::do_request(&direct_client, &url);
-                            let (pr, dr) = tokio::join!(proxy_fut, direct_fut);
-                            (Some(pr), Some(dr))
-                        } else {
-                            let dr = Self::do_request(&direct_client, &url).await;
-                            (None, Some(dr))
-                        };
-                        UrlCheckResult::from_results(url.clone(), proxy_result, direct_result)
+                        Self::check_url_with_clients(
+                            &url,
+                            proxy_client.as_ref(),
+                            &direct_client,
+                            retry_count,
+                            false,
+                        )
+                        .await
                     };
                     (i, url, result)
                 }
@@ -1151,6 +1189,55 @@ impl UrlChecker {
     /// 是否配置了代理
     pub const fn has_proxy(&self) -> bool {
         self.proxy_client.is_some()
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn retries_transient_failure_until_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for (status, reason) in [(503, "Service Unavailable"), (200, "OK")] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = socket.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = Client::builder().build().unwrap();
+        let result = UrlChecker::check_url_with_clients(
+            &format!("http://{address}/"),
+            None,
+            &client,
+            1,
+            true,
+        )
+        .await;
+
+        assert_eq!(result.status, ValidationStatus::Valid);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn blocks_non_http_and_private_urls_before_request() {
+        let client = Client::new();
+        for url in [
+            "file:///etc/passwd",
+            "http://127.0.0.1:1",
+            "http://192.168.1.1",
+        ] {
+            let result = UrlChecker::check_url_with_clients(url, None, &client, 1, false).await;
+            assert_eq!(result.status, ValidationStatus::Skipped, "{url}");
+        }
     }
 }
 

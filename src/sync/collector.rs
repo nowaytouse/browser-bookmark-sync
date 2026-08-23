@@ -1,6 +1,6 @@
 //! Comprehensive Browser and Profile Harvester with Snapshot Isolation
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
 use std::fs;
@@ -168,7 +168,77 @@ impl BookmarkCollector {
             }
         }
 
+        // Pick up Chromium/Gecko forks not present in the static name list. Search only
+        // application-support roots and one vendor nesting level to keep discovery bounded.
+        let app_support = PathBuf::from(format!("{home}/Library/Application Support"));
+        if let Ok(entries) = fs::read_dir(&app_support) {
+            for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+                let top = entry.path();
+                let top_matches =
+                    Self::looks_like_chromium_root(&top) || Self::looks_like_firefox_root(&top);
+                let mut roots = vec![top.clone()];
+                if !top_matches {
+                    if let Ok(children) = fs::read_dir(&top) {
+                        roots.extend(children.flatten().map(|entry| entry.path()).filter(|path| {
+                            path.is_dir()
+                                && (Self::looks_like_chromium_root(path)
+                                    || Self::looks_like_firefox_root(path))
+                        }));
+                    }
+                }
+
+                for root in roots {
+                    if discovered
+                        .iter()
+                        .any(|installation| installation.root_path == root)
+                    {
+                        continue;
+                    }
+                    let name = root
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let kind = if Self::looks_like_firefox_root(&root) {
+                        Some(BrowserKind::Firefox(name.clone()))
+                    } else if Self::looks_like_chromium_root(&root) {
+                        Some(BrowserKind::Chromium(name.clone()))
+                    } else {
+                        None
+                    };
+                    if let Some(kind) = kind {
+                        discovered.push(BrowserInstallation {
+                            name,
+                            kind,
+                            channel: None,
+                            root_path: root,
+                        });
+                    }
+                }
+            }
+        }
+
+        discovered.sort_by(|left, right| left.name.cmp(&right.name));
+
         discovered
+    }
+
+    fn looks_like_chromium_root(path: &Path) -> bool {
+        path.join("Bookmarks").is_file()
+            || fs::read_dir(path).is_ok_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.path().is_dir() && entry.path().join("Bookmarks").is_file())
+            })
+    }
+
+    fn looks_like_firefox_root(path: &Path) -> bool {
+        path.join("profiles.ini").is_file()
+            || fs::read_dir(path.join("Profiles")).is_ok_and(|entries| {
+                entries.flatten().any(|entry| {
+                    entry.path().is_dir() && entry.path().join("places.sqlite").is_file()
+                })
+            })
     }
 
     /// Discover profiles for a given installation
@@ -210,6 +280,19 @@ impl BookmarkCollector {
             }
         }
 
+        // Some Chromium browsers (notably single-profile layouts) store Bookmarks
+        // directly in their application-support root.
+        if user_data_dir.join("Bookmarks").is_file() {
+            profiles.push(BrowserProfile {
+                id: "Default".into(),
+                name: name_map
+                    .get("Default")
+                    .cloned()
+                    .unwrap_or_else(|| "Default Profile".into()),
+                path: user_data_dir.clone(),
+            });
+        }
+
         // Scan directories for Bookmarks file
         if let Ok(entries) = fs::read_dir(user_data_dir) {
             for entry in entries.flatten() {
@@ -247,7 +330,7 @@ impl BookmarkCollector {
     }
 
     fn discover_firefox_profiles(installation: &BrowserInstallation) -> Vec<BrowserProfile> {
-        let mut profiles = Vec::new();
+        let mut profiles = BTreeMap::new();
         let profiles_dir = if installation.root_path.join("Profiles").exists() {
             installation.root_path.join("Profiles")
         } else {
@@ -262,18 +345,63 @@ impl BookmarkCollector {
                     if sqlite.exists() {
                         let id = entry.file_name().to_string_lossy().to_string();
                         let name = id.split('.').nth(1).unwrap_or(&id).to_string();
-                        profiles.push(BrowserProfile {
-                            id: id.clone(),
-                            name,
-                            path,
-                        });
+                        profiles
+                            .entry(path.clone())
+                            .or_insert(BrowserProfile { id, name, path });
                     }
                 }
             }
         }
 
-        profiles.sort_by(|a, b| a.id.cmp(&b.id));
-        profiles
+        // profiles.ini is authoritative and may point outside the conventional
+        // Profiles directory via IsRelative=0.
+        if let Ok(contents) = fs::read_to_string(installation.root_path.join("profiles.ini")) {
+            let mut sections = Vec::new();
+            let mut current: Option<BTreeMap<String, String>> = None;
+            for line in contents.lines().map(str::trim) {
+                if line.starts_with('[') && line.ends_with(']') {
+                    if let Some(section) = current.take() {
+                        sections.push(section);
+                    }
+                    current = line[1..line.len() - 1]
+                        .starts_with("Profile")
+                        .then(BTreeMap::new);
+                } else if let Some(section) = current.as_mut() {
+                    if let Some((key, value)) = line.split_once('=') {
+                        section.insert(key.trim().to_string(), value.trim().to_string());
+                    }
+                }
+            }
+            if let Some(section) = current {
+                sections.push(section);
+            }
+
+            for section in sections {
+                let Some(configured_path) = section.get("Path") else {
+                    continue;
+                };
+                let path = if section.get("IsRelative").is_some_and(|value| value == "0") {
+                    PathBuf::from(configured_path)
+                } else {
+                    installation.root_path.join(configured_path)
+                };
+                if !path.join("places.sqlite").is_file() {
+                    continue;
+                }
+                let id = configured_path.clone();
+                let name = section.get("Name").cloned().unwrap_or_else(|| {
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                });
+                profiles
+                    .entry(path.clone())
+                    .or_insert(BrowserProfile { id, name, path });
+            }
+        }
+
+        profiles.into_values().collect()
     }
 
     /// Harvest all bookmarks from discovered installations with snapshot isolation
@@ -305,16 +433,13 @@ impl BookmarkCollector {
 
             for prof in &profiles {
                 let snapshot_root = snapshots_dir.join(inst.name.replace(['/', ':'], "_"));
-                let snapshot = match create_profile_snapshot(prof, &snapshot_root) {
-                    Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        warnings.push(format!(
-                            "Profile '{}' in '{}' could not be snapshotted: {error}",
+                let snapshot =
+                    create_profile_snapshot(prof, &snapshot_root).with_context(|| {
+                        format!(
+                            "Cannot collect every profile: failed to snapshot '{}' in '{}'",
                             prof.name, inst.name
-                        ));
-                        continue;
-                    }
-                };
+                        )
+                    })?;
                 for (k, v) in &snapshot.blake3_hashes {
                     snapshot_hashes.insert(format!("{}/{}/{}", inst.name, prof.id, k), v.clone());
                 }
@@ -329,16 +454,13 @@ impl BookmarkCollector {
                 sources.push(source_desc.clone());
 
                 let (prof_nodes, bm_count, folder_count) =
-                    match Self::harvest_snapshot_bookmarks(inst, prof, &snapshot, &source_desc) {
-                        Ok(result) => result,
-                        Err(error) => {
-                            warnings.push(format!(
-                                "Profile '{}' in '{}' could not be harvested: {error}",
+                    Self::harvest_snapshot_bookmarks(inst, prof, &snapshot, &source_desc)
+                        .with_context(|| {
+                            format!(
+                                "Cannot collect every profile: failed to harvest '{}' in '{}'",
                                 prof.name, inst.name
-                            ));
-                            continue;
-                        }
-                    };
+                            )
+                        })?;
 
                 if bm_count == 0 {
                     warnings.push(format!("Profile '{}' (`{}`) in '{}' was scanned but contained 0 valid bookmark occurrences.", prof.name, prof.id, inst.name));
@@ -573,93 +695,170 @@ impl BookmarkCollector {
         db_path: &Path,
         source: &SourceDescriptor,
     ) -> Result<(Vec<BookmarkNode>, usize, usize)> {
+        #[derive(Clone)]
+        struct FirefoxRow {
+            id: i64,
+            kind: i64,
+            title: String,
+            url: Option<String>,
+            date_added: Option<i64>,
+            date_modified: Option<i64>,
+            parent: i64,
+            position: usize,
+        }
+
+        fn parse_time(value: i64) -> DateTime<Utc> {
+            DateTime::from_timestamp_micros(value).unwrap_or_else(|| {
+                tracing::warn!("Firefox Places timestamp {value} is out of range");
+                DateTime::UNIX_EPOCH
+            })
+        }
+
+        fn build_node(
+            id: i64,
+            rows: &mut BTreeMap<i64, FirefoxRow>,
+            children: &BTreeMap<i64, Vec<i64>>,
+            source: &SourceDescriptor,
+            root_kind: &BookmarkRootKind,
+            parent_path: &[String],
+            bookmark_count: &mut usize,
+            folder_count: &mut usize,
+        ) -> Option<BookmarkNode> {
+            let row = rows.remove(&id)?;
+            match row.kind {
+                1 => {
+                    let raw_url = row.url?;
+                    *bookmark_count += 1;
+                    Some(BookmarkNode::Bookmark(BookmarkOccurrence {
+                        id: row.id.to_string(),
+                        title: row.title,
+                        raw_url,
+                        source: source.clone(),
+                        root_kind: root_kind.clone(),
+                        folder_path: parent_path.to_vec(),
+                        original_position: row.position,
+                        date_added: row.date_added.map(parse_time),
+                        date_modified: row.date_modified.map(parse_time),
+                        metadata: BTreeMap::new(),
+                    }))
+                }
+                2 => {
+                    *folder_count += 1;
+                    let mut child_path = parent_path.to_vec();
+                    child_path.push(row.title.clone());
+                    let nested = children
+                        .get(&row.id)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|child_id| {
+                            build_node(
+                                *child_id,
+                                rows,
+                                children,
+                                source,
+                                root_kind,
+                                &child_path,
+                                bookmark_count,
+                                folder_count,
+                            )
+                        })
+                        .collect();
+                    Some(BookmarkNode::Folder(FolderNode {
+                        id: row.id.to_string(),
+                        title: row.title,
+                        children: nested,
+                        source: source.clone(),
+                        root_kind: root_kind.clone(),
+                        original_position: row.position,
+                        date_added: row.date_added.map(parse_time),
+                        date_modified: row.date_modified.map(parse_time),
+                    }))
+                }
+                3 => Some(BookmarkNode::Separator(SeparatorNode {
+                    id: row.id.to_string(),
+                    source: source.clone(),
+                    original_position: row.position,
+                })),
+                _ => None,
+            }
+        }
+
         let conn = rusqlite::Connection::open_with_flags(
             db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
 
         let mut stmt = conn.prepare(
-            "SELECT b.id, b.type, b.title, p.url, b.dateAdded, b.lastModified, b.parent
+            "SELECT b.id, b.type, b.title, p.url, b.dateAdded, b.lastModified, b.parent, b.position
              FROM moz_bookmarks b
              LEFT JOIN moz_places p ON b.fk = p.id
-             WHERE b.type IN (1, 2, 3)",
+             WHERE b.type IN (1, 2, 3)
+             ORDER BY b.parent, b.position",
         )?;
 
-        let mut bm_count = 0;
-        let mut folder_count = 0;
-        let mut nodes = Vec::new();
-
         let rows = stmt.query_map([], |row| {
-            let id: i64 = row.get(0)?;
-            let btype: i64 = row.get(1)?;
-            let title: Option<String> = row.get(2)?;
-            let url: Option<String> = row.get(3)?;
-            let date_added: Option<i64> = row.get(4)?;
-            let date_modified: Option<i64> = row.get(5)?;
-            Ok((id, btype, title, url, date_added, date_modified))
+            Ok(FirefoxRow {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                title: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                url: row.get(3)?,
+                date_added: row.get(4)?,
+                date_modified: row.get(5)?,
+                parent: row.get(6)?,
+                position: row.get::<_, i64>(7)?.max(0) as usize,
+            })
         })?;
 
-        let parse_ts = |t: i64| {
-            if let Some(dt) = DateTime::from_timestamp_micros(t) {
-                dt
-            } else {
-                tracing::warn!("Firefox Places 时间戳 '{}' 微秒超出范围，回退至纪元零点", t);
-                DateTime::UNIX_EPOCH
-            }
-        };
+        let mut by_id = BTreeMap::new();
+        let mut by_parent: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+        for row in rows {
+            let row = row?;
+            by_parent.entry(row.parent).or_default().push(row.id);
+            by_id.insert(row.id, row);
+        }
 
-        for (idx, r) in rows.flatten().enumerate() {
-            let (id, btype, title_opt, url_opt, d_add, d_mod) = r;
-            let title = if let Some(t) = title_opt {
-                t
-            } else {
-                if btype == 1 {
-                    tracing::debug!("Firefox 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
-                }
-                String::new()
-            };
-
-            if btype == 1 {
-                // URL Bookmark
-                if let Some(raw_url) = url_opt {
-                    bm_count += 1;
-                    nodes.push(BookmarkNode::Bookmark(BookmarkOccurrence {
-                        id: id.to_string(),
-                        title,
-                        raw_url,
-                        source: source.clone(),
-                        root_kind: BookmarkRootKind::BookmarkMenu,
-                        folder_path: vec!["Firefox Places".into()],
-                        original_position: idx,
-                        date_added: d_add.map(parse_ts),
-                        date_modified: d_mod.map(parse_ts),
-                        metadata: BTreeMap::new(),
-                    }));
-                }
-            } else if btype == 2 {
-                // Folder
-                folder_count += 1;
+        let mut bookmark_count = 0;
+        let mut folder_count = 0;
+        let mut nodes = Vec::new();
+        for (root_id, title, root_kind) in [
+            (3, "Bookmarks Toolbar", BookmarkRootKind::Toolbar),
+            (2, "Bookmarks Menu", BookmarkRootKind::BookmarkMenu),
+            (5, "Other Bookmarks", BookmarkRootKind::Unfiled),
+            (6, "Mobile Bookmarks", BookmarkRootKind::MobileBookmarks),
+        ] {
+            let root_children: Vec<_> = by_parent
+                .get(&root_id)
+                .into_iter()
+                .flatten()
+                .filter_map(|child_id| {
+                    build_node(
+                        *child_id,
+                        &mut by_id,
+                        &by_parent,
+                        source,
+                        &root_kind,
+                        &[title.to_string()],
+                        &mut bookmark_count,
+                        &mut folder_count,
+                    )
+                })
+                .collect();
+            if !root_children.is_empty() {
                 nodes.push(BookmarkNode::Folder(FolderNode {
-                    id: id.to_string(),
-                    title,
-                    children: vec![],
+                    id: format!("firefox-root-{root_id}"),
+                    title: title.to_string(),
+                    children: root_children,
                     source: source.clone(),
-                    root_kind: BookmarkRootKind::BookmarkMenu,
-                    original_position: idx,
-                    date_added: d_add.map(parse_ts),
-                    date_modified: d_mod.map(parse_ts),
+                    root_kind,
+                    original_position: nodes.len(),
+                    date_added: None,
+                    date_modified: None,
                 }));
-            } else if btype == 3 {
-                // Separator
-                nodes.push(BookmarkNode::Separator(SeparatorNode {
-                    id: id.to_string(),
-                    source: source.clone(),
-                    original_position: idx,
-                }));
+                folder_count += 1;
             }
         }
 
-        Ok((nodes, bm_count, folder_count))
+        Ok((nodes, bookmark_count, folder_count))
     }
 
     fn parse_safari_plist(
@@ -813,5 +1012,98 @@ mod tests {
         let profiles = BookmarkCollector::discover_profiles(&installation);
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].id, "Work Account");
+    }
+
+    #[test]
+    fn discovers_root_chromium_and_external_firefox_profiles() {
+        let temp = tempfile::tempdir().unwrap();
+        let chromium_root = temp.path().join("Opera");
+        fs::create_dir(&chromium_root).unwrap();
+        fs::write(chromium_root.join("Bookmarks"), "{}").unwrap();
+        let chromium = BrowserInstallation {
+            name: "Test Chromium".into(),
+            kind: BrowserKind::Chromium("Chromium".into()),
+            channel: None,
+            root_path: chromium_root,
+        };
+        let profiles = BookmarkCollector::discover_profiles(&chromium);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].path, chromium.root_path);
+
+        let firefox_root = temp.path().join("Firefox");
+        let external = temp.path().join("External Profile");
+        fs::create_dir_all(&firefox_root).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        rusqlite::Connection::open(external.join("places.sqlite")).unwrap();
+        fs::write(
+            firefox_root.join("profiles.ini"),
+            format!(
+                "[Profile0]\nName=External Work\nIsRelative=0\nPath={}\n",
+                external.display()
+            ),
+        )
+        .unwrap();
+        let firefox = BrowserInstallation {
+            name: "Test Firefox".into(),
+            kind: BrowserKind::Firefox("Firefox".into()),
+            channel: None,
+            root_path: firefox_root,
+        };
+        let profiles = BookmarkCollector::discover_profiles(&firefox);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "External Work");
+        assert_eq!(profiles[0].path, external);
+    }
+
+    #[test]
+    fn firefox_parser_preserves_nested_and_mobile_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("places.sqlite");
+        let db = rusqlite::Connection::open(&db_path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT);
+             CREATE TABLE moz_bookmarks (
+                 id INTEGER PRIMARY KEY, type INTEGER NOT NULL, fk INTEGER,
+                 parent INTEGER NOT NULL, position INTEGER NOT NULL, title TEXT,
+                 dateAdded INTEGER, lastModified INTEGER
+             );
+             INSERT INTO moz_places VALUES (1, 'https://nested.example');
+             INSERT INTO moz_places VALUES (2, 'https://mobile.example');
+             INSERT INTO moz_bookmarks VALUES (10, 2, NULL, 3, 0, 'Projects', NULL, NULL);
+             INSERT INTO moz_bookmarks VALUES (11, 1, 1, 10, 0, 'Nested', NULL, NULL);
+             INSERT INTO moz_bookmarks VALUES (12, 1, 2, 6, 0, 'Mobile', NULL, NULL);",
+        )
+        .unwrap();
+        drop(db);
+        let source = SourceDescriptor {
+            browser: BrowserKind::Firefox("Firefox".into()),
+            browser_channel: None,
+            profile_id: "test".into(),
+            profile_name: "Test".into(),
+            source_path: db_path.clone(),
+        };
+
+        let (nodes, bookmark_count, _) =
+            BookmarkCollector::parse_firefox_sqlite(&db_path, &source).unwrap();
+        let mut paths = BTreeMap::new();
+        fn collect(nodes: &[BookmarkNode], paths: &mut BTreeMap<String, Vec<String>>) {
+            for node in nodes {
+                match node {
+                    BookmarkNode::Bookmark(bookmark) => {
+                        paths.insert(bookmark.raw_url.clone(), bookmark.folder_path.clone());
+                    }
+                    BookmarkNode::Folder(folder) => collect(&folder.children, paths),
+                    BookmarkNode::Separator(_) => {}
+                }
+            }
+        }
+        collect(&nodes, &mut paths);
+
+        assert_eq!(bookmark_count, 2);
+        assert_eq!(
+            paths["https://nested.example"],
+            ["Bookmarks Toolbar", "Projects"]
+        );
+        assert_eq!(paths["https://mobile.example"], ["Mobile Bookmarks"]);
     }
 }

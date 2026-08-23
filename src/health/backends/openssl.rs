@@ -1,6 +1,6 @@
 //! OpenSSL CLI Probe Backend Adapter (Tier 5)
 
-use crate::health::backends::ProbeBackend;
+use crate::health::backends::{reject_unsafe_target, ProbeBackend};
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -53,6 +53,10 @@ impl ProbeBackend for OpenSslCliBackend {
         obs.check_id = context.check_id.clone();
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
+
+        if reject_unsafe_target(target, context, &mut obs) {
+            return Ok(obs);
+        }
 
         if target.scheme != "https" {
             obs.actual_request = "no".to_string();

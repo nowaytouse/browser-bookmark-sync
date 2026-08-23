@@ -18,7 +18,7 @@ pub enum HealthVerdict {
     TemporaryFailure,
     /// High probability of dead URL (e.g. single run 404/DNS error)
     ProbableDead,
-    /// Confirmed dead URL (meets 3 runs over 7 days criteria across multiple tools)
+    /// Confirmed dead URL (three current-day runs across multiple verifier families)
     ConfirmedDead,
     /// Ambiguous / contradicting results requiring human inspection
     NeedsReview,

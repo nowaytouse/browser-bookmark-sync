@@ -1,10 +1,14 @@
-//! Multi-Run Historical State Machine for Health Verdicts
+//! Same-day multi-run state machine for health verdicts
 
 use crate::health::models::{BackendObservation, HealthVerdict, QualifyingRunEvidence};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 
 /// Current rule version. Increment this when evidence semantics change.
-pub const CURRENT_HEALTH_RULE_VERSION: &str = "4";
+pub const CURRENT_HEALTH_RULE_VERSION: &str = "5";
+
+/// Failure evidence expires after one rolling day. This avoids calendar-timezone
+/// edge cases while ensuring routine health decisions finish in one scan day.
+const EVIDENCE_WINDOW: Duration = Duration::hours(24);
 
 /// Historical summary stats used by state machine transition decisions.
 /// `qualifying_evidences` is the authoritative source; aggregate fields are for display only.
@@ -15,8 +19,6 @@ pub struct BookmarkHistoryStats {
     pub first_failed_at: Option<DateTime<Utc>>,
     pub last_failed_at: Option<DateTime<Utc>>,
     pub last_success_at: Option<DateTime<Utc>>,
-    /// Consecutive completed runs with a real, non-cached 2xx and no semantic-missing signal.
-    pub consecutive_successes: usize,
     pub previous_verdict: Option<HealthVerdict>,
     pub rule_version: String,
     pub config_hash: String,
@@ -26,6 +28,11 @@ pub struct BookmarkHistoryStats {
 pub struct StateMachine;
 
 impl StateMachine {
+    fn is_current_evidence(at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        let age = now.signed_duration_since(at);
+        age >= Duration::zero() && age <= EVIDENCE_WINDOW
+    }
+
     /// Map backend string to verifier family.
     /// Returns `None` for unknown backends — they do NOT contribute to family count.
     pub fn verifier_family_opt(backend: &str) -> Option<&'static str> {
@@ -105,6 +112,7 @@ impl StateMachine {
         let mut has_probable_dead = false;
         let mut has_missing_content = false;
         let mut has_suspicious_content = false;
+        let mut has_content_success = false;
 
         for obs in observations {
             // Rule 0: Onion websites (.onion) and special internal domains are EXEMPT
@@ -128,11 +136,13 @@ impl StateMachine {
             }
 
             if let Some(ref err) = obs.error_kind {
-                if err == "RedirectedToHomepage" || err == "ContentMissing" {
+                if err.starts_with("SecurityBlocked:") {
+                    has_protected = true;
+                } else if err == "RedirectedToHomepage" || err == "ContentMissing" {
                     if !obs.cache_hit {
                         has_missing_content = true;
                     }
-                } else if err == "Soft404Candidate" {
+                } else if err == "Soft404Candidate" || err == "BodyTooLarge" {
                     if !obs.cache_hit {
                         has_suspicious_content = true;
                     }
@@ -154,6 +164,17 @@ impl StateMachine {
             if let Some(code) = obs.status_code {
                 if (200..300).contains(&code) {
                     has_success = true;
+                    if obs.actual_request == "yes"
+                        && !obs.cache_hit
+                        && obs.error_kind.is_none()
+                        && obs
+                            .body_hash
+                            .as_deref()
+                            .is_some_and(|hash| !hash.is_empty())
+                        && obs.content_length.is_some_and(|length| length > 0)
+                    {
+                        has_content_success = true;
+                    }
                 } else if matches!(code, 401 | 403 | 407 | 423 | 429 | 451 | 503 | 520..=527) {
                     has_protected = true;
                 } else if matches!(code, 404 | 410) {
@@ -168,14 +189,16 @@ impl StateMachine {
 
         // A 200 response only proves transport success. A content-aware probe can still prove
         // that the requested deep resource was removed or replaced by an unavailable page.
-        if has_missing_content {
+        if has_protected {
+            HealthVerdict::Protected
+        } else if has_content_success {
+            HealthVerdict::Live
+        } else if has_missing_content {
             HealthVerdict::ProbableDead
         } else if has_suspicious_content {
             HealthVerdict::NeedsReview
         } else if has_success {
             HealthVerdict::Live
-        } else if has_protected {
-            HealthVerdict::Protected
         } else if has_probable_dead {
             HealthVerdict::ProbableDead
         } else if has_temp_fail {
@@ -193,19 +216,13 @@ impl StateMachine {
     pub fn resolve_final_verdict(
         current_obs: &[BackendObservation],
         history: &BookmarkHistoryStats,
-        _now: DateTime<Utc>,
+        now: DateTime<Utc>,
     ) -> HealthVerdict {
         let single_verdict = Self::compute_single_run_verdict(current_obs);
 
-        // A previously doubtful/dead bookmark needs two independent completed successful runs.
+        // A successful retry is enough to preserve the bookmark. Historical failures are
+        // relevant only inside the same rolling-day evidence window.
         if single_verdict == HealthVerdict::Live {
-            // Recovered iff:
-            //   (a) previous_verdict was an explicitly failing/uncertain state, OR
-            //   (b) raw qualifying_evidences is non-empty (there is real DB-backed failure history)
-            //       under the current rule_version + config_hash
-            //
-            // Forbidden: do NOT use consecutive_failures, total_runs, or last_failed_at
-            // as the decision input — those are stale summary counters.
             let had_prior_failure = matches!(
                 history.previous_verdict,
                 Some(
@@ -215,50 +232,59 @@ impl StateMachine {
                         | HealthVerdict::NeedsReview
                 )
             );
-            let has_raw_failure_evidence = !history.qualifying_evidences.is_empty();
+            let has_current_failure = history
+                .last_failed_at
+                .is_some_and(|at| Self::is_current_evidence(at, now))
+                || history
+                    .qualifying_evidences
+                    .iter()
+                    .any(|evidence| Self::is_current_evidence(evidence.strong_failure_at, now));
 
-            if had_prior_failure || has_raw_failure_evidence {
-                return if history.consecutive_successes >= 2 {
-                    HealthVerdict::Recovered
-                } else {
-                    HealthVerdict::NeedsReview
-                };
+            if had_prior_failure && has_current_failure {
+                return HealthVerdict::Recovered;
             }
             return HealthVerdict::Live;
         }
 
         if single_verdict == HealthVerdict::ProbableDead {
-            let evidences = &history.qualifying_evidences;
+            let mut evidences: Vec<_> = history
+                .qualifying_evidences
+                .iter()
+                .filter(|evidence| Self::is_current_evidence(evidence.strong_failure_at, now))
+                .collect();
+            evidences.sort_by_key(|evidence| evidence.completed_at);
 
-            // ConfirmedDead: 3+ unique qualifying completed runs, 7+ day span, 2+ verifier families
+            // ConfirmedDead: three current-day completed runs and two verifier families.
             if evidences.len() >= 3 {
-                let earliest = evidences.iter().map(|e| e.strong_failure_at).min();
-                let latest = evidences.iter().map(|e| e.strong_failure_at).max();
-                let span_days = match (earliest, latest) {
-                    (Some(e), Some(l)) => (l - e).num_days(),
-                    _ => 0,
-                };
-
                 let all_families: std::collections::BTreeSet<&str> = evidences
                     .iter()
                     .flat_map(|e| e.verifier_families.iter().map(String::as_str))
                     .collect();
                 let is_multi_family = all_families.len() >= 2;
+                let all_runs_confirmed_nxdomain = evidences.iter().all(|evidence| {
+                    evidence
+                        .strong_failure_kinds
+                        .contains(&crate::health::models::StrongFailureKind::ConfirmedNxDomain)
+                });
+                let last_three_confirmed_content_missing =
+                    evidences.iter().rev().take(3).all(|evidence| {
+                        evidence
+                            .strong_failure_kinds
+                            .contains(&crate::health::models::StrongFailureKind::ContentMissing)
+                    });
 
-                if span_days >= 7 && is_multi_family {
+                if is_multi_family
+                    || all_runs_confirmed_nxdomain
+                    || last_three_confirmed_content_missing
+                {
                     return HealthVerdict::ConfirmedDead;
                 }
             }
 
-            // ProbableDead: 2+ unique completed runs whose real strong-failure attempts
-            // span at least 24 hours.
+            // Two current-day completed strong-failure runs are probable, regardless of
+            // spacing. A later success immediately moves the bookmark back to the live set.
             if evidences.len() >= 2 {
-                let earliest = evidences.iter().map(|e| e.strong_failure_at).min();
-                let latest = evidences.iter().map(|e| e.strong_failure_at).max();
-                if matches!((earliest, latest), (Some(first), Some(last)) if last - first >= chrono::Duration::hours(24))
-                {
-                    return HealthVerdict::ProbableDead;
-                }
+                return HealthVerdict::ProbableDead;
             }
 
             // Fewer than 2 qualifying runs — not yet probable.
@@ -274,17 +300,17 @@ mod tests {
 
     fn mock_evidences(
         count: usize,
-        first: Option<chrono::DateTime<chrono::Utc>>,
-        last: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Vec<crate::health::models::QualifyingRunEvidence> {
+        first: Option<DateTime<Utc>>,
+        last: Option<DateTime<Utc>>,
+    ) -> Vec<QualifyingRunEvidence> {
         use crate::health::models::{QualifyingRunEvidence, StrongFailureKind};
         use std::collections::BTreeSet;
         let mut evs = Vec::new();
         if count == 0 {
             return evs;
         }
-        let first_dt = first.unwrap_or_else(|| chrono::Utc::now());
-        let last_dt = last.unwrap_or_else(|| chrono::Utc::now());
+        let first_dt = first.unwrap_or_else(Utc::now);
+        let last_dt = last.unwrap_or_else(Utc::now);
 
         // Spread the dates
         let span = last_dt.signed_duration_since(first_dt).num_seconds();
@@ -295,7 +321,7 @@ mod tests {
         };
 
         for i in 0..count {
-            let dt = first_dt + chrono::Duration::seconds(step * i as i64);
+            let dt = first_dt + Duration::seconds(step * i as i64);
             let mut families = BTreeSet::new();
             // Make the first one have 'native', second 'lychee', others 'native'
             // This ensures if count >= 2, we have at least 2 families!
@@ -318,6 +344,42 @@ mod tests {
         evs
     }
 
+    fn mock_dns_evidences(
+        count: usize,
+        first: DateTime<Utc>,
+        last: DateTime<Utc>,
+    ) -> Vec<QualifyingRunEvidence> {
+        use crate::health::models::StrongFailureKind;
+        let mut evs = mock_evidences(count, Some(first), Some(last));
+        for evidence in &mut evs {
+            evidence.verifier_families.clear();
+            evidence.verifier_families.insert("dns".to_string());
+            evidence.strong_failure_kinds.clear();
+            evidence
+                .strong_failure_kinds
+                .insert(StrongFailureKind::ConfirmedNxDomain);
+        }
+        evs
+    }
+
+    fn mock_content_missing_evidences(
+        count: usize,
+        first: DateTime<Utc>,
+        last: DateTime<Utc>,
+    ) -> Vec<QualifyingRunEvidence> {
+        use crate::health::models::StrongFailureKind;
+        let mut evidences = mock_evidences(count, Some(first), Some(last));
+        for evidence in &mut evidences {
+            evidence.verifier_families.clear();
+            evidence.verifier_families.insert("native".to_string());
+            evidence.strong_failure_kinds.clear();
+            evidence
+                .strong_failure_kinds
+                .insert(StrongFailureKind::ContentMissing);
+        }
+        evidences
+    }
+
     use super::*;
     use chrono::Duration;
 
@@ -330,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_confirmed_dead_requires_7_days_and_3_runs() {
+    fn test_confirmed_dead_requires_three_same_day_runs() {
         let mut obs1 = BackendObservation::default();
         obs1.backend = "native_reqwest".to_string();
         obs1.error_kind = Some("RedirectedToHomepage".to_string());
@@ -343,19 +405,19 @@ mod tests {
         let history_insufficient = BookmarkHistoryStats {
             total_runs: 2,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(2)),
-            last_failed_at: Some(now - Duration::days(2)),
+            first_failed_at: Some(now - Duration::minutes(2)),
+            last_failed_at: Some(now - Duration::minutes(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(3)),
-                Some(now - Duration::days(2)),
+                Some(now - Duration::minutes(2)),
+                Some(now - Duration::minutes(1)),
             ),
             ..Default::default()
         };
 
-        // Insufficient days -> ProbableDead
+        // Two completed failures are probable, but not deletion-eligible.
         let v1 = StateMachine::resolve_final_verdict(
             &[obs1.clone(), obs2.clone()],
             &history_insufficient,
@@ -366,19 +428,19 @@ mod tests {
         let history_sufficient = BookmarkHistoryStats {
             total_runs: 3,
             consecutive_failures: 3,
-            first_failed_at: Some(now - Duration::days(8)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::minutes(3)),
+            last_failed_at: Some(now - Duration::minutes(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 3,
-                Some(now - Duration::days(8)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::minutes(3)),
+                Some(now - Duration::minutes(1)),
             ),
             ..Default::default()
         };
 
-        // 3 runs + 7+ days span + multi-family -> ConfirmedDead
+        // Three same-day runs plus multiple verifier families -> ConfirmedDead.
         let v2 = StateMachine::resolve_final_verdict(&[obs1, obs2], &history_sufficient, now);
         assert_eq!(v2, HealthVerdict::ConfirmedDead);
     }
@@ -397,19 +459,19 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 2,
             consecutive_failures: 2,
-            first_failed_at: Some(now - Duration::days(1)),
-            last_failed_at: Some(now - Duration::days(1)),
+            first_failed_at: Some(now - Duration::minutes(2)),
+            last_failed_at: Some(now - Duration::minutes(1)),
             last_success_at: None,
             previous_verdict: Some(HealthVerdict::ProbableDead),
             qualifying_evidences: mock_evidences(
                 2,
-                Some(now - Duration::days(2)),
-                Some(now - Duration::days(1)),
+                Some(now - Duration::minutes(2)),
+                Some(now - Duration::minutes(1)),
             ),
             ..Default::default()
         };
 
-        // Explicit 404 without 7 days and 3 completed runs cannot be promoted to ConfirmedDead
+        // Two runs remain probable and cannot be deleted.
         let verdict = StateMachine::resolve_final_verdict(&[obs1, obs2], &history, now);
         assert_eq!(verdict, HealthVerdict::ProbableDead);
     }
@@ -426,6 +488,208 @@ mod tests {
     }
 
     #[test]
+    fn security_blocked_is_protected_without_retry_eligible_failure() {
+        let obs = BackendObservation {
+            error_kind: Some("SecurityBlocked: private IP address".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[obs]),
+            HealthVerdict::Protected
+        );
+    }
+
+    #[test]
+    fn three_same_day_dns_agreements_can_confirm_without_second_family() {
+        let now = Utc::now();
+        let obs = BackendObservation {
+            error_kind: Some("DnsNxdomain".to_string()),
+            dns_rcode: Some("NXDOMAIN".to_string()),
+            ..Default::default()
+        };
+        let history = BookmarkHistoryStats {
+            previous_verdict: Some(HealthVerdict::ProbableDead),
+            qualifying_evidences: mock_dns_evidences(
+                3,
+                now - Duration::minutes(3),
+                now - Duration::minutes(1),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(
+            StateMachine::resolve_final_verdict(&[obs], &history, now),
+            HealthVerdict::ConfirmedDead
+        );
+    }
+
+    #[test]
+    fn three_same_day_high_confidence_content_missing_runs_can_confirm_one_family() {
+        let now = Utc::now();
+        let evidences = mock_content_missing_evidences(
+            3,
+            now - Duration::minutes(3),
+            now - Duration::minutes(1),
+        );
+        let observation = BackendObservation {
+            status_code: Some(200),
+            error_kind: Some("ContentMissing".to_string()),
+            ..Default::default()
+        };
+        let history = BookmarkHistoryStats {
+            previous_verdict: Some(HealthVerdict::ProbableDead),
+            qualifying_evidences: evidences,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            StateMachine::resolve_final_verdict(&[observation], &history, now),
+            HealthVerdict::ConfirmedDead
+        );
+    }
+
+    #[test]
+    fn content_aware_success_after_three_failures_is_recovered_not_deleted() {
+        let now = Utc::now();
+        let missing = BackendObservation {
+            status_code: Some(200),
+            error_kind: Some("ContentMissing".to_string()),
+            body_hash: Some("missing".to_string()),
+            ..Default::default()
+        };
+        let content_success = BackendObservation {
+            status_code: Some(200),
+            body_hash: Some("live-content".to_string()),
+            content_length: Some(16),
+            ..Default::default()
+        };
+        let history = BookmarkHistoryStats {
+            previous_verdict: Some(HealthVerdict::ProbableDead),
+            last_failed_at: Some(now - Duration::minutes(1)),
+            qualifying_evidences: mock_content_missing_evidences(
+                3,
+                now - Duration::minutes(3),
+                now - Duration::minutes(1),
+            ),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[missing.clone(), content_success.clone()]),
+            HealthVerdict::Live
+        );
+        assert_eq!(
+            StateMachine::resolve_final_verdict(&[missing, content_success], &history, now),
+            HealthVerdict::Recovered
+        );
+    }
+
+    #[test]
+    fn header_only_or_empty_content_success_does_not_override_content_missing() {
+        let missing = BackendObservation {
+            status_code: Some(200),
+            error_kind: Some("ContentMissing".to_string()),
+            body_hash: Some("missing".to_string()),
+            ..Default::default()
+        };
+        let header_only_success = BackendObservation {
+            status_code: Some(200),
+            request_method: "HEAD".to_string(),
+            body_hash: None,
+            ..Default::default()
+        };
+        let empty_hash_success = BackendObservation {
+            status_code: Some(200),
+            body_hash: Some(String::new()),
+            content_length: Some(16),
+            ..Default::default()
+        };
+        let empty_body_success = BackendObservation {
+            status_code: Some(200),
+            body_hash: Some("blake3-empty-body".to_string()),
+            content_length: Some(0),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[
+                missing,
+                header_only_success,
+                empty_hash_success,
+                empty_body_success,
+            ]),
+            HealthVerdict::ProbableDead
+        );
+    }
+
+    #[test]
+    fn protected_signal_precedes_content_aware_success() {
+        let protected = BackendObservation {
+            status_code: Some(403),
+            ..Default::default()
+        };
+        let content_success = BackendObservation {
+            status_code: Some(200),
+            body_hash: Some("live-content".to_string()),
+            content_length: Some(16),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[protected, content_success]),
+            HealthVerdict::Protected
+        );
+    }
+
+    #[test]
+    fn single_family_homepage_redirects_do_not_use_content_missing_exception() {
+        use crate::health::models::StrongFailureKind;
+
+        let now = Utc::now();
+        let mut evidences = mock_evidences(
+            3,
+            Some(now - Duration::minutes(3)),
+            Some(now - Duration::minutes(1)),
+        );
+        for evidence in &mut evidences {
+            evidence.verifier_families.clear();
+            evidence.verifier_families.insert("native".to_string());
+            evidence.strong_failure_kinds.clear();
+            evidence
+                .strong_failure_kinds
+                .insert(StrongFailureKind::RedirectedToHomepage);
+        }
+        let observation = BackendObservation {
+            status_code: Some(200),
+            error_kind: Some("RedirectedToHomepage".to_string()),
+            ..Default::default()
+        };
+        let history = BookmarkHistoryStats {
+            previous_verdict: Some(HealthVerdict::ProbableDead),
+            qualifying_evidences: evidences,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            StateMachine::resolve_final_verdict(&[observation], &history, now),
+            HealthVerdict::ProbableDead
+        );
+    }
+
+    #[test]
+    fn truncated_content_is_review_only_even_with_http_success() {
+        let observation = BackendObservation {
+            status_code: Some(200),
+            error_kind: Some("BodyTooLarge".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[observation]),
+            HealthVerdict::NeedsReview
+        );
+    }
+
+    #[test]
     fn test_recovery_on_success() {
         let mut obs = BackendObservation::default();
         obs.status_code = Some(200);
@@ -433,15 +697,14 @@ mod tests {
         let history = BookmarkHistoryStats {
             total_runs: 5,
             consecutive_failures: 4,
-            first_failed_at: Some(Utc::now() - Duration::days(10)),
-            last_failed_at: Some(Utc::now() - Duration::days(1)),
+            first_failed_at: Some(Utc::now() - Duration::minutes(10)),
+            last_failed_at: Some(Utc::now() - Duration::minutes(1)),
             last_success_at: None,
-            consecutive_successes: 2,
             previous_verdict: Some(HealthVerdict::ConfirmedDead),
             qualifying_evidences: mock_evidences(
                 4,
-                Some(Utc::now() - Duration::days(10)),
-                Some(Utc::now() - Duration::days(1)),
+                Some(Utc::now() - Duration::minutes(10)),
+                Some(Utc::now() - Duration::minutes(1)),
             ),
             ..Default::default()
         };
@@ -451,19 +714,41 @@ mod tests {
     }
 
     #[test]
-    fn one_success_after_failure_stays_in_review() {
+    fn one_success_after_failure_is_recovered() {
         let obs = BackendObservation {
             status_code: Some(200),
             ..Default::default()
         };
         let history = BookmarkHistoryStats {
             previous_verdict: Some(HealthVerdict::ConfirmedDead),
-            consecutive_successes: 1,
+            last_failed_at: Some(Utc::now() - Duration::minutes(1)),
             ..Default::default()
         };
 
         assert_eq!(
             StateMachine::resolve_final_verdict(&[obs], &history, Utc::now()),
+            HealthVerdict::Recovered
+        );
+    }
+
+    #[test]
+    fn prior_day_failure_does_not_affect_today() {
+        let now = Utc::now();
+        let obs = BackendObservation {
+            status_code: Some(404),
+            ..Default::default()
+        };
+        let history = BookmarkHistoryStats {
+            qualifying_evidences: mock_evidences(
+                3,
+                Some(now - Duration::hours(30)),
+                Some(now - Duration::hours(25)),
+            ),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            StateMachine::resolve_final_verdict(&[obs], &history, now),
             HealthVerdict::NeedsReview
         );
     }
