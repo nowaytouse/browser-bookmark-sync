@@ -248,7 +248,6 @@ mod tests {
     #[test]
     fn concurrent_writer_cannot_commit_during_safe_transaction() {
         use std::sync::mpsc::sync_channel;
-        use std::sync::{Arc, Mutex};
         use std::thread;
 
         let temp = tempfile::tempdir().unwrap();
@@ -263,34 +262,42 @@ mod tests {
         drop(conn);
 
         let (start_writer, wait_for_start) = sync_channel(0);
-        let writer_result = Arc::new(Mutex::new(None));
-        let writer_result_copy = Arc::clone(&writer_result);
+        let (writer_done, wait_for_writer) = sync_channel(0);
         let writer_path = db_path.clone();
         let writer = thread::spawn(move || {
             wait_for_start.recv().unwrap();
             let writer_conn = Connection::open(writer_path).unwrap();
-            writer_conn
-                .busy_timeout(Duration::from_millis(250))
-                .unwrap();
-            let succeeded = writer_conn
-                .execute(
-                    "INSERT INTO bookmarks VALUES ('https://concurrent.example')",
-                    [],
-                )
-                .is_ok();
-            *writer_result_copy.lock().unwrap() = Some(succeeded);
+            writer_conn.busy_timeout(Duration::ZERO).unwrap();
+            let outcome = match writer_conn.execute(
+                "INSERT INTO bookmarks VALUES ('https://concurrent.example')",
+                [],
+            ) {
+                Ok(_) => Err("concurrent writer unexpectedly committed".to_string()),
+                Err(rusqlite::Error::SqliteFailure(error, _))
+                    if matches!(
+                        error.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(format!("concurrent writer failed unexpectedly: {error}")),
+            };
+            writer_done.send(outcome).unwrap();
         });
 
         safe_write_transaction(&db_path, |copy| {
             start_writer.send(()).unwrap();
-            thread::sleep(Duration::from_millis(300));
+            wait_for_writer
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| anyhow!("concurrent writer did not finish: {error}"))?
+                .map_err(anyhow::Error::msg)?;
             copy.execute("INSERT INTO bookmarks VALUES ('https://after.example')", [])?;
             Ok(())
         })
         .unwrap();
         writer.join().unwrap();
 
-        assert_eq!(*writer_result.lock().unwrap(), Some(false));
         let updated = Connection::open(&db_path).unwrap();
         let mut statement = updated
             .prepare("SELECT url FROM bookmarks ORDER BY url")
