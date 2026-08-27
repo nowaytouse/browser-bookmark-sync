@@ -60,14 +60,17 @@ impl HostScheduler {
     }
 
     /// Acquire permission to probe target keys (host and/or registrable domain), respecting interval and cooldown
-    pub async fn acquire_keys(&self, keys: &[&str]) -> tokio::sync::OwnedSemaphorePermit {
+    pub async fn acquire_keys(
+        &self,
+        keys: &[&str],
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, &'static str> {
         if keys.is_empty() {
             return self
                 .global_semaphore
                 .clone()
                 .acquire_owned()
                 .await
-                .expect("Semaphore closed");
+                .map_err(|_| "scheduler semaphore closed");
         }
 
         let mut permit = None;
@@ -97,7 +100,7 @@ impl HostScheduler {
                         let interval = Duration::from_millis(self.config.host_interval_ms);
                         let elapsed = now.duration_since(last);
                         if elapsed < interval {
-                            interval.checked_sub(elapsed).unwrap()
+                            interval.checked_sub(elapsed).unwrap_or_default()
                         } else {
                             Duration::ZERO
                         }
@@ -122,7 +125,7 @@ impl HostScheduler {
                                 state.last_request = Some(now);
                             }
                         }
-                        return permit;
+                        return Ok(permit);
                     }
                 }
 
@@ -130,13 +133,13 @@ impl HostScheduler {
             };
 
             if max_delay.is_zero() {
-                permit = Some(
-                    self.global_semaphore
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .expect("Semaphore closed"),
-                );
+                let acquired = self
+                    .global_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "scheduler semaphore closed")?;
+                permit = Some(acquired);
             } else {
                 drop(permit.take());
                 sleep(max_delay).await;
@@ -145,7 +148,10 @@ impl HostScheduler {
     }
 
     /// Single key helper for acquire
-    pub async fn acquire(&self, host_key: &str) -> tokio::sync::OwnedSemaphorePermit {
+    pub async fn acquire(
+        &self,
+        host_key: &str,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, &'static str> {
         self.acquire_keys(&[host_key]).await
     }
 
@@ -174,18 +180,20 @@ impl HostScheduler {
 
     /// Parse Retry-After header string into Duration
     pub fn parse_retry_after(header_val: &str, default_secs: u64) -> Duration {
+        const MAX_COOLDOWN_SECS: u64 = 60;
+        let bounded = |seconds: u64| Duration::from_secs(seconds.min(MAX_COOLDOWN_SECS));
         if let Ok(secs) = header_val.trim().parse::<u64>() {
-            Duration::from_secs(secs)
+            bounded(secs)
         } else if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(header_val.trim()) {
             let now = chrono::Utc::now();
             let target = dt.with_timezone(&chrono::Utc);
             if target > now {
-                Duration::from_secs((target - now).num_seconds().max(1) as u64)
+                bounded((target - now).num_seconds().max(1) as u64)
             } else {
-                Duration::from_secs(default_secs)
+                bounded(default_secs)
             }
         } else {
-            Duration::from_secs(default_secs)
+            bounded(default_secs)
         }
     }
 }
@@ -198,11 +206,15 @@ mod tests {
     fn test_retry_after_parsing() {
         assert_eq!(
             HostScheduler::parse_retry_after("120", 30),
-            Duration::from_secs(120)
+            Duration::from_secs(60)
         );
         assert_eq!(
             HostScheduler::parse_retry_after("invalid", 45),
             Duration::from_secs(45)
+        );
+        assert_eq!(
+            HostScheduler::parse_retry_after("18446744073709551615", 30),
+            Duration::from_secs(60)
         );
     }
 

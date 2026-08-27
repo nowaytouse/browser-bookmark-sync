@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic,))]
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing::{error, info, warn};
@@ -5,7 +7,10 @@ use tracing::{error, info, warn};
 use browser_bookmark_sync::{
     browser_utils, browsers, data_types, expand_path, gui,
     health::{
-        reporting::ReportExporter, HealthEngine, HealthEngineOptions, HealthVerdict, ProbeTarget,
+        build_probe_plan, models::BackendObservation, reporting::HealthRunSummaryReport,
+        reporting::ReportExporter, BookmarkTargetInput, DnsPolicy, HealthEngine,
+        HealthEngineOptions, HealthVerdict, ProbePlan, ProbeScope, ProbeTarget, SkippedTarget,
+        TrustedSiteSkipList,
     },
     sync::{self, SyncEngine},
     sync_flags::SyncFlags,
@@ -23,16 +28,49 @@ fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
     }
 }
 
+fn parse_probe_scope(value: &str) -> std::result::Result<ProbeScope, String> {
+    match value {
+        "site" => Ok(ProbeScope::Site),
+        "content" => Ok(ProbeScope::Content),
+        _ => Err("scope must be site or content".to_string()),
+    }
+}
+
+fn is_disabled_non_core_command(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::History { .. }
+            | Commands::ExportData { .. }
+            | Commands::Gui { .. }
+            | Commands::Organize { .. }
+            | Commands::Pipeline { .. }
+            | Commands::WaterfoxCleanup { .. }
+    )
+}
+
+const DEFAULT_TRUSTED_SITE_SKIP_LIST: &str = include_str!("../trusted_site_skip_list.json");
+
+const MAX_HEALTH_CONCURRENCY: usize = 128;
+
+const fn bounded_health_concurrency(requested: usize) -> usize {
+    if requested > MAX_HEALTH_CONCURRENCY {
+        MAX_HEALTH_CONCURRENCY
+    } else {
+        requested
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "bsync")]
-#[command(about = "Cross-browser bookmark sync tool - merge, deduplicate, export")]
+#[command(
+    about = "Cross-browser bookmark cleanup: collect all profiles, deduplicate, check health, quarantine"
+)]
 #[command(version)]
 #[command(after_help = "EXAMPLES:
-    bsync list                              # List detected browsers
-    bsync export -d --merge                 # Export all, deduplicated, merged
-    bsync export -b safari --reading-list   # Export Safari with reading list
-    bsync analyze                           # Analyze bookmarks for issues
-    bsync organize --dry-run                # Preview smart organization")]
+    bsync inventory                          # Discover every browser profile
+    bsync export -d --merge                 # Export and exactly deduplicate bookmarks
+    bsync check --file ./bookmarks.html --slow --history-db ./bookmark-health.sqlite
+    bsync health quarantine --db ./bookmark-health.sqlite")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -93,7 +131,7 @@ enum Commands {
         bookmarks: bool,
 
         /// Include browsing history
-        #[arg(long)]
+        #[arg(long, hide = true)]
         history: bool,
 
         /// Include reading list (Safari, Firefox)
@@ -101,19 +139,19 @@ enum Commands {
         reading_list: bool,
 
         /// Include cookies (⚠️  affects sessions)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         cookies: bool,
 
         /// Include passwords (⚠️  SECURITY RISK - BLOCKED)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         passwords: bool,
 
         /// Include extensions (⚠️  NOT SUPPORTED - BLOCKED)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         extensions: bool,
 
         /// Days of history to export (default: 30, 0 = all)
-        #[arg(long, default_value = "30")]
+        #[arg(long, default_value = "30", hide = true)]
         history_days: i32,
 
         /// Remove duplicate bookmarks/URLs (default: true)
@@ -132,12 +170,16 @@ enum Commands {
         #[arg(long, num_args = 0..)]
         include: Vec<String>,
 
+        /// Exclude URLs whose hostname is onion or ends in .onion before aggregation
+        #[arg(long, default_value = "true")]
+        exclude_onion: bool,
+
         /// Clear source browsers after export (⚠️  DANGEROUS!)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         clear_after: bool,
 
         /// Enable unsafe database writes (required for `clear_after`)
-        #[arg(long)]
+        #[arg(long, hide = true)]
         unsafe_write: bool,
 
         /// Verbose output
@@ -190,6 +232,7 @@ enum Commands {
 
     /// Analyze bookmarks (duplicates, empty folders, NSFW)
     #[command(alias = "a")]
+    #[command(hide = true)]
     Analyze {
         /// Target browsers
         #[arg(short, long)]
@@ -198,6 +241,7 @@ enum Commands {
 
     /// Smart organize bookmarks by URL patterns
     #[command(alias = "org", alias = "o")]
+    #[command(hide = true)]
     Organize {
         /// Target browsers (ignored if --file is specified)
         #[arg(short, long)]
@@ -213,7 +257,7 @@ enum Commands {
         output: Option<String>,
 
         /// Custom rules file (JSON)
-        #[arg(short, long)]
+        #[arg(short, long, required = true)]
         rules: Option<String>,
 
         /// Remove duplicate bookmarks by URL (default: true)
@@ -236,8 +280,8 @@ enum Commands {
         #[arg(short = 'V', long)]
         verbose: bool,
 
-        /// Classifier backend: auto (try Ollama then fallback), ollama, or rules
-        #[arg(long, default_value = "auto")]
+        /// Template/rules backend (only `rules` is supported)
+        #[arg(long, default_value = "rules", hide = true)]
         classifier: String,
 
         /// Ollama model name
@@ -263,6 +307,7 @@ enum Commands {
 
     /// Sync browsing history between browsers
     #[command(alias = "hist")]
+    #[command(hide = true)]
     History {
         /// Target browsers
         #[arg(short, long, default_value = "waterfox,brave-nightly")]
@@ -282,6 +327,7 @@ enum Commands {
     },
 
     /// Show available classification rules
+    #[command(hide = true)]
     Rules,
 
     /// Check bookmark URL validity (dual-network validation)
@@ -308,7 +354,7 @@ enum Commands {
         )]
         timeout: u64,
 
-        /// Number of concurrent requests (max 5 to prevent system overload)
+        /// Number of concurrent requests (max 128; each host remains limited to 1)
         #[arg(
             short,
             long,
@@ -318,7 +364,7 @@ enum Commands {
         concurrency: usize,
 
         /// Delete confirmed invalid bookmarks
-        #[arg(long)]
+        #[arg(long, hide = true)]
         delete: bool,
 
         /// Preview mode, no actual changes
@@ -360,6 +406,22 @@ enum Commands {
         /// Secondary probe backends (comma separated, e.g., curl,lychee,httpx)
         #[arg(long, default_value = "curl")]
         secondary: Option<String>,
+
+        /// Probe scope: site groups URLs by registrable domain; content checks full URLs
+        #[arg(long, value_parser = parse_probe_scope, default_value = "content")]
+        scope: ProbeScope,
+
+        /// Optional trusted-site skip-list JSON path (site scope only)
+        #[arg(long)]
+        trusted_site_skip_list: Option<String>,
+
+        /// Disable trusted-site skipping in site scope
+        #[arg(long)]
+        no_trusted_site_skip: bool,
+
+        /// Optional DNS resolver policy JSON path
+        #[arg(long)]
+        dns_policy: Option<String>,
     },
 
     /// Manage multi-run bookmark health history, audit tools, and quarantine reports
@@ -369,6 +431,7 @@ enum Commands {
     },
 
     /// Create full backup of all browser data
+    #[command(hide = true)]
     Backup {
         /// Output directory
         #[arg(short, long, default_value = "~/Desktop/BookmarkBackup")]
@@ -377,6 +440,7 @@ enum Commands {
 
     /// Export sensitive browser data (passwords, cookies, downloads)
     #[command(alias = "data")]
+    #[command(hide = true)]
     ExportData {
         /// Browser to export from
         #[arg(short, long, default_value = "chrome")]
@@ -407,8 +471,9 @@ enum Commands {
         format: String,
     },
 
-    /// Run full bookmark processing pipeline (Export -> Organize -> Check -> Merge)
+    /// Run hidden export -> health check pipeline without organization or browser writes
     #[command(alias = "full-process", alias = "process", alias = "pipe")]
+    #[command(hide = true)]
     Pipeline {
         /// Output directory path
         #[arg(short, long, default_value = "~/Downloads/pipeline_results")]
@@ -463,6 +528,7 @@ enum Commands {
 
     /// Run full Waterfox bookmark cleanup process
     #[command(alias = "wc")]
+    #[command(hide = true)]
     WaterfoxCleanup {
         /// Output file path
         #[arg(short, long, default_value = "~/Downloads/waterfox_cleaned.html")]
@@ -471,6 +537,7 @@ enum Commands {
 
     /// Launch local web GUI in browser (default: <http://127.0.0.1:7890>)
     #[command(alias = "ui", alias = "dashboard")]
+    #[command(hide = true)]
     Gui {
         /// Port number for the local web server
         #[arg(short, long, default_value = "7890")]
@@ -488,25 +555,29 @@ fn print_sync_warning() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
+    let log_filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive(tracing::Level::INFO.into())
+        .add_directive("html5ever=error".parse()?);
+    tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     let cli = Cli::parse();
+
+    if is_disabled_non_core_command(&cli.command) {
+        anyhow::bail!(
+            "This legacy command is disabled: use the core collect/export/check/quarantine workflow; history, organization, legacy pipelines, sensitive export, and GUI are unsupported"
+        );
+    }
 
     match cli.command {
         Commands::Inventory { .. } => {
             use sync::collector::BookmarkCollector;
-            let installations = BookmarkCollector::discover_installations();
+            let installations = BookmarkCollector::discover_installations()?;
             info!(
                 "🔍 Discovered {} browser installation(s)",
                 installations.len()
             );
             for inst in &installations {
-                let profiles = BookmarkCollector::discover_profiles(inst);
+                let profiles = BookmarkCollector::discover_profiles(inst)?;
                 info!(
                     "  🌐 {} ({} profile(s)): {:?}",
                     inst.name,
@@ -589,6 +660,7 @@ async fn main() -> Result<()> {
             merge,
             clean,
             include,
+            exclude_onion,
             clear_after,
             unsafe_write,
             passwords,
@@ -604,6 +676,13 @@ async fn main() -> Result<()> {
             validate_concurrency,
             validate_limit,
         } => {
+            if history || cookies || passwords || extensions || clear_after || unsafe_write {
+                println!(
+                    "Non-bookmark export options are disabled: history, cookies, passwords, extensions, and browser write-back are unavailable."
+                );
+                return Ok(());
+            }
+
             // Create sync flags from arguments
             let sync_flags = SyncFlags {
                 bookmarks,
@@ -642,6 +721,9 @@ async fn main() -> Result<()> {
             if clean {
                 info!("  ✓ Clean empty folders");
             }
+            if exclude_onion {
+                info!("  ✓ Exclude onion hostnames before aggregation");
+            }
             if clear_after {
                 warn!("  ⚠️  Clear after export");
             }
@@ -656,15 +738,42 @@ async fn main() -> Result<()> {
                 let expanded = expand_path(source_path);
                 info!("📥 导入外部数据源: {}", expanded);
                 match sync::import_bookmarks_from_source_with_report(&expanded) {
-                    Ok((bookmarks, report)) => {
+                    Ok((mut bookmarks, mut report)) => {
+                        let excluded_onion = if exclude_onion {
+                            sync::remove_onion_bookmarks(&mut bookmarks)
+                        } else {
+                            0
+                        };
                         let count: usize = bookmarks.iter().map(count_tree).sum();
                         info!("   ✅ 成功从 '{}' 导入 {} 条书签节点", expanded, count);
+                        if excluded_onion > 0 {
+                            info!("   🧅 已排除 {excluded_onion} 条 onion 书签");
+                        }
+                        if let Some(report) = report.as_object_mut() {
+                            report.insert(
+                                "excluded_onion_bookmarks".into(),
+                                serde_json::json!(excluded_onion),
+                            );
+                            report.insert(
+                                "bookmark_count_after_filters".into(),
+                                serde_json::json!(count),
+                            );
+                        }
                         external_source_reports.push(report);
                         extra_bookmarks.extend(bookmarks);
                     }
                     Err(e) => {
                         error!("❌ 无法从外部数据源 '{}' 导入书签: {}", expanded, e);
-                        return Err(e.context(format!("从源 '{expanded}' 导入书签失败")));
+                        // Keep the remaining sources usable, but make the failure explicit in
+                        // the export report so a partial input can never look complete.
+                        external_source_reports.push(serde_json::json!({
+                            "source_path": expanded,
+                            "source_type": "unreadable",
+                            "status": "failed",
+                            "error": e.to_string(),
+                            "bookmark_count": 0,
+                            "folder_count": 0,
+                        }));
                     }
                 }
             }
@@ -780,6 +889,7 @@ async fn main() -> Result<()> {
                 wrap_folder: wrap.clone(),
                 no_wrap,
                 all_profiles,
+                exclude_onion,
             };
 
             // Show folder filter info
@@ -822,6 +932,12 @@ async fn main() -> Result<()> {
                             Vec::new()
                         }
                     };
+                if exclude_onion {
+                    let removed = sync::remove_onion_bookmarks(&mut existing_bookmarks);
+                    if removed > 0 {
+                        info!("🧅 Removed {removed} onion bookmark(s) from update input");
+                    }
+                }
                 let existing_count = existing_bookmarks.iter().map(count_tree).sum::<usize>();
 
                 // Get new bookmarks from browsers
@@ -1066,7 +1182,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Organize {
-            browsers,
+            browsers: _,
             file,
             output,
             rules,
@@ -1080,76 +1196,63 @@ async fn main() -> Result<()> {
             ollama_url,
             ollama_batch_size,
         } => {
-            if let Some(input_files) = file {
-                // 从本地文件整理（支持多个文件合并）
-                let output_path = output.unwrap_or_else(|| {
-                    let first_file = &input_files[0];
-                    let path = std::path::Path::new(first_file);
-                    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-                    let ext = path.extension().unwrap_or_default().to_string_lossy();
-                    if input_files.len() > 1 {
-                        format!(
-                            "merged_organized.{}",
-                            if ext.is_empty() { "html" } else { &ext }
-                        )
-                    } else {
-                        format!(
-                            "{}_organized.{}",
-                            stem,
-                            if ext.is_empty() { "html" } else { &ext }
-                        )
-                    }
-                });
+            if rules.is_none() || classifier != "rules" {
+                println!(
+                    "Template organization is disabled unless --rules is provided with --classifier rules."
+                );
+                return Ok(());
+            }
+            let Some(input_files) = file else {
+                println!(
+                    "Browser organization is disabled; pass exported bookmark files with --file."
+                );
+                return Ok(());
+            };
+
+            let output_path = output.unwrap_or_else(|| {
+                let first_file = &input_files[0];
+                let path = std::path::Path::new(first_file);
+                let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                let ext = path.extension().unwrap_or_default().to_string_lossy();
                 if input_files.len() > 1 {
-                    info!("🧠 Organizing bookmarks from {} files:", input_files.len());
-                    for f in &input_files {
-                        info!("   📄 {}", f);
-                    }
+                    format!(
+                        "merged_organized.{}",
+                        if ext.is_empty() { "html" } else { &ext }
+                    )
                 } else {
-                    info!("🧠 Organizing bookmarks from file: {}", input_files[0]);
+                    format!(
+                        "{}_organized.{}",
+                        stem,
+                        if ext.is_empty() { "html" } else { &ext }
+                    )
                 }
-                info!("   📤 Output: {}", output_path);
-                // 文件模式不需要初始化浏览器引擎
-                sync::smart_organize_files(
-                    &input_files.iter().map(String::as_str).collect::<Vec<_>>(),
-                    &output_path,
-                    rules.as_deref(),
-                    &classifier,
-                    &ollama_model,
-                    &ollama_url,
-                    ollama_batch_size,
-                    deduplicate,
-                    clean,
-                    stats,
-                    dry_run,
-                    verbose,
-                )
-                .await?;
-                if !dry_run {
-                    info!("✅ Organized bookmarks saved to: {}", output_path);
+            });
+            if input_files.len() > 1 {
+                info!("🧠 Organizing bookmarks from {} files:", input_files.len());
+                for f in &input_files {
+                    info!("   📄 {}", f);
                 }
             } else {
-                // 从浏览器整理
-                if !dry_run {
-                    print_sync_warning();
-                }
-                info!("🧠 Smart organizing bookmarks...");
-                let mut engine = SyncEngine::new()?;
-                engine
-                    .smart_organize(
-                        browsers.as_deref(),
-                        rules.as_deref(),
-                        &classifier,
-                        &ollama_model,
-                        &ollama_url,
-                        ollama_batch_size,
-                        false,
-                        stats,
-                        dry_run,
-                        verbose,
-                    )
-                    .await?;
-                info!("✅ Organization complete!");
+                info!("🧠 Organizing bookmarks from file: {}", input_files[0]);
+            }
+            info!("   📤 Output: {}", output_path);
+            sync::smart_organize_files(
+                &input_files.iter().map(String::as_str).collect::<Vec<_>>(),
+                &output_path,
+                rules.as_deref(),
+                &classifier,
+                &ollama_model,
+                &ollama_url,
+                ollama_batch_size,
+                deduplicate,
+                clean,
+                stats,
+                dry_run,
+                verbose,
+            )
+            .await?;
+            if !dry_run {
+                info!("✅ Organized bookmarks saved to: {}", output_path);
             }
         }
 
@@ -1199,6 +1302,10 @@ async fn main() -> Result<()> {
             slow,
             history_db,
             secondary,
+            scope,
+            trusted_site_skip_list,
+            no_trusted_site_skip,
+            dns_policy,
         } => {
             use indicatif::{ProgressBar, ProgressStyle};
             use std::collections::HashSet;
@@ -1211,21 +1318,20 @@ async fn main() -> Result<()> {
             // 从文件模式
             let from_file = file.is_some();
 
-            if delete && history_db.is_none() {
-                println!("Deletion requires --history-db and a multi-run ConfirmedDead verdict.");
+            if delete {
+                println!(
+                    "--delete is disabled. Use `bsync health quarantine` for review, then the approved `bsync health apply-quarantine` workflow."
+                );
                 return Ok(());
             }
-            if delete && !from_file {
-                println!("Direct browser mutation is disabled: current adapters cannot identify every source profile safely.");
-                println!("Use --file and --output to create an exact, backed-up cleaned copy.");
-                return Ok(());
-            }
-            if delete && output.is_none() {
-                println!("Deletion from an HTML input requires a separate --output path.");
-                return Ok(());
-            }
-
             info!("🔍 检查收藏夹URL有效性");
+            info!(
+                "健康检查阶段: {}（站点与内容是独立阶段；Check 不删除）",
+                match scope {
+                    ProbeScope::Site => "site",
+                    ProbeScope::Content => "content",
+                }
+            );
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             if from_file {
                 if let Some(ref file_path) = file {
@@ -1242,10 +1348,14 @@ async fn main() -> Result<()> {
             }
             info!("超时: {}秒", timeout);
 
-            // 安全限制：并发数最大 10，防止系统过载
-            let safe_concurrency = concurrency.min(10);
-            if concurrency > 10 {
-                warn!("⚠️  并发数已限制为 10（原请求: {}）", concurrency);
+            // Across-host parallelism is safe because the health engine still permits only one
+            // in-flight request per host.
+            let safe_concurrency = bounded_health_concurrency(concurrency);
+            if concurrency > MAX_HEALTH_CONCURRENCY {
+                warn!(
+                    "⚠️  并发数已限制为 {}（原请求: {}）",
+                    MAX_HEALTH_CONCURRENCY, concurrency
+                );
             }
             info!("并发: {}", safe_concurrency);
 
@@ -1258,7 +1368,7 @@ async fn main() -> Result<()> {
             // 读取收藏夹 - 支持从文件或浏览器读取
             let mut all_bookmarks: Vec<(browsers::BrowserType, Vec<browsers::Bookmark>)> =
                 Vec::new();
-            let mut all_urls = Vec::new();
+            let mut target_inputs = Vec::new();
             let mut file_bookmarks: Option<Vec<browsers::Bookmark>> = None;
 
             if let Some(ref input_file) = file {
@@ -1270,7 +1380,7 @@ async fn main() -> Result<()> {
                 let urls = collect_urls_from_bookmarks(&bookmarks);
                 let bookmark_count: usize = bookmarks.iter().map(count_tree).sum();
                 info!("   {} 个书签, {} 个URL", bookmark_count, urls.len());
-                all_urls.extend(urls);
+                target_inputs.extend(collect_bookmark_target_inputs(&bookmarks, "file"));
                 file_bookmarks = Some(bookmarks);
             } else {
                 // 从浏览器读取
@@ -1305,7 +1415,10 @@ async fn main() -> Result<()> {
                                     adapter.browser_type().name(),
                                     urls.len()
                                 );
-                                all_urls.extend(urls);
+                                target_inputs.extend(collect_bookmark_target_inputs(
+                                    &bookmarks,
+                                    adapter.browser_type().name(),
+                                ));
                                 all_bookmarks.push((adapter.browser_type(), bookmarks));
                             }
                             Err(e) => {
@@ -1343,41 +1456,108 @@ async fn main() -> Result<()> {
                     for warning in inventory.warnings {
                         warn!("⚠️  {warning}");
                     }
-                    all_urls.extend(canonical.into_iter().map(|item| item.exact_url));
+                    for item in canonical {
+                        target_inputs.push(BookmarkTargetInput {
+                            bookmark_id: format!(
+                                "{}:{}:{}",
+                                item.primary.source.browser,
+                                item.primary.source.profile_id,
+                                item.primary.id
+                            ),
+                            original_url: item.exact_url,
+                        });
+                    }
                 }
             }
 
-            if all_urls.is_empty() {
-                info!("没有找到收藏夹");
+            if target_inputs.is_empty() {
+                info!("没有找到收藏夹URL");
                 return Ok(());
             }
 
-            // 去重URL
-            let mut unique_urls: Vec<String> = all_urls
-                .into_iter()
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect();
-            unique_urls.sort();
-
-            // 应用限制
-            if limit > 0 && unique_urls.len() > limit {
+            let trusted_list = load_trusted_site_skip_list(trusted_site_skip_list.as_deref())?;
+            let dns_policy_config = load_dns_policy(dns_policy.as_deref())?;
+            let mut plan = build_probe_plan(&target_inputs, scope);
+            let site_preflight_plan = if scope == ProbeScope::Content {
+                let mut site_plan = build_probe_plan(&target_inputs, ProbeScope::Site);
+                site_plan.apply_trusted_site_skip(&trusted_list, no_trusted_site_skip);
+                let site_targets = probe_targets_from_plan(&site_plan)?;
+                let live_site_ids = if site_targets.is_empty() {
+                    HashSet::new()
+                } else {
+                    info!(
+                        "🌐 先执行站点预检：{} 个站点；仅 Live/Recovered 或 trusted 站点进入内容阶段",
+                        site_targets.len()
+                    );
+                    let (_site_report, site_results) = run_health_stage(
+                        site_targets.clone(),
+                        ProbeScope::Site,
+                        proxy.clone(),
+                        timeout,
+                        safe_concurrency,
+                        slow,
+                        history_db.as_deref(),
+                        secondary_backends(secondary.as_deref()),
+                        scoped_export_dir(export_dir.as_deref(), ProbeScope::Site)?,
+                        dns_policy_config.clone(),
+                    )
+                    .await?;
+                    site_results
+                        .into_iter()
+                        .filter_map(|(bookmark_id, _, verdict, _)| {
+                            matches!(verdict, HealthVerdict::Live | HealthVerdict::Recovered)
+                                .then_some(bookmark_id)
+                        })
+                        .collect()
+                };
+                apply_content_site_gate(
+                    &mut plan,
+                    &live_site_ids,
+                    &trusted_list,
+                    no_trusted_site_skip,
+                );
+                Some(site_plan)
+            } else {
+                plan.apply_trusted_site_skip(&trusted_list, no_trusted_site_skip);
+                None
+            };
+            let partial_run = limit > 0;
+            if limit > 0 && plan.targets.len() > limit {
                 info!(
-                    "📊 共 {} 个唯一URL，限制检查前 {} 个",
-                    unique_urls.len(),
+                    "📊 计划目标 {} 个，限制检查前 {} 个",
+                    plan.targets.len(),
                     limit
                 );
-                unique_urls.truncate(limit);
+                plan.targets.truncate(limit);
             } else {
-                info!("\n📊 共 {} 个唯一URL待检查", unique_urls.len());
+                info!("\n📊 计划目标 {} 个待检查", plan.targets.len());
+            }
+            write_probe_plan_artifact(
+                &plan,
+                export_dir.as_deref(),
+                &trusted_list,
+                trusted_site_skip_list.as_deref(),
+                no_trusted_site_skip,
+                &dns_policy_config,
+                dns_policy.as_deref(),
+                limit,
+                site_preflight_plan.as_ref(),
+            )?;
+            let scoped_export_dir = scoped_export_dir(export_dir.as_deref(), scope)?;
+            let planned_targets = probe_targets_from_plan(&plan)?;
+            if planned_targets.is_empty() {
+                info!("计划中没有可检查目标（invalid/skipped 已写入 probe-plan.json）");
+                return Ok(());
             }
 
             // ── 新引擎路径: 提供 --history-db 或 --slow 时走 HealthEngine ──────────
-            if history_db.is_some() || slow {
-                let targets: Vec<ProbeTarget> = unique_urls
-                    .iter()
-                    .filter_map(|url| ProbeTarget::from_url(url.as_str(), url.as_str()).ok())
-                    .collect();
+            if scope == ProbeScope::Content || history_db.is_some() || slow {
+                // Deterministic interleaving prevents thousands of URLs from one host from
+                // monopolizing the scheduler window while preserving the selected URL set.
+                let mut targets = planned_targets.clone();
+                targets.sort_by_cached_key(|target| {
+                    *blake3::hash(target.original_url.as_bytes()).as_bytes()
+                });
 
                 let sec_list: Vec<String> = secondary
                     .as_deref()
@@ -1391,10 +1571,6 @@ async fn main() -> Result<()> {
                     .as_ref()
                     .map(|s| std::path::PathBuf::from(expand_path(s)));
 
-                let out_path = export_dir
-                    .as_ref()
-                    .map(|d| std::path::PathBuf::from(expand_path(d)));
-
                 let engine = HealthEngine::new(HealthEngineOptions {
                     proxy_url: proxy.clone(),
                     timeout_secs: timeout,
@@ -1403,9 +1579,12 @@ async fn main() -> Result<()> {
                     allow_private_ips: false,
                     history_db_path: db_path,
                     secondary_backends: sec_list,
-                    output_dir: out_path,
+                    output_dir: scoped_export_dir.clone(),
+                    partial_run,
                     max_attempts: 3,
                     retry_interval_secs: 5,
+                    probe_scope: scope,
+                    dns_policy: dns_policy_config.clone(),
                 })
                 .map_err(anyhow::Error::msg)?;
 
@@ -1449,12 +1628,12 @@ async fn main() -> Result<()> {
                 if delete {
                     ReportExporter::verify_delete_safety(HealthVerdict::ConfirmedDead, true)
                         .map_err(anyhow::Error::msg)?;
-                    let confirmed: HashSet<String> =
-                        report.confirmed_dead_urls.iter().cloned().collect();
+                    let extreme_confirmed: HashSet<String> =
+                        report.extreme_confirmed_dead_urls.iter().cloned().collect();
                     let mut cleaned = file_bookmarks.clone().unwrap_or_default();
                     let stats = remove_invalid_bookmarks_preserve_structure(
                         &mut cleaned,
-                        &confirmed,
+                        &extreme_confirmed,
                         &RemoveConfig {
                             keep_empty_folders: keep_empty,
                         },
@@ -1462,7 +1641,7 @@ async fn main() -> Result<()> {
 
                     if dry_run {
                         println!(
-                            "\n🧪 预览：将精确删除 {} 个历史确认失效书签；未写入文件。",
+                            "\n🧪 预览：将精确删除 {} 个极强确认失效书签；未写入文件。",
                             stats.bookmarks_removed
                         );
                     } else if let Some(out) = output.as_ref() {
@@ -1486,6 +1665,10 @@ async fn main() -> Result<()> {
             }
 
             // ── 旧引擎路径 (无 --history-db / --slow) ─────────────────────────────
+            let unique_urls: Vec<String> = planned_targets
+                .into_iter()
+                .map(|target| target.original_url)
+                .collect();
             let checker = UrlChecker::new(CheckerConfig {
                 proxy_url: proxy.clone(),
                 timeout_secs: timeout,
@@ -1586,8 +1769,8 @@ async fn main() -> Result<()> {
             }
 
             // 导出所有分类到目录
-            if let Some(ref dir) = export_dir {
-                let dir_path = expand_path(dir);
+            if let Some(ref dir) = scoped_export_dir {
+                let dir_path = dir.to_string_lossy().to_string();
                 if let Err(e) = std::fs::create_dir_all(&dir_path) {
                     tracing::error!(
                         "无法创建导出目录 '{}': {}，后续导出文件可能会失败",
@@ -1960,6 +2143,7 @@ async fn main() -> Result<()> {
                 wrap_folder: Some("📁镜像文件夹".to_string()),
                 no_wrap: false,
                 all_profiles: true,
+                exclude_onion: true,
             };
 
             let engine = SyncEngine::new()?;
@@ -1973,32 +2157,7 @@ async fn main() -> Result<()> {
                 .await?;
             info!("   ✅ Step 1: Exported {} bookmarks", exported_count);
 
-            // Step 2: Organize
-            let organized_file = format!("{expanded_out_dir}/02_organized.html");
-            if let Err(e) = sync::smart_organize_files(
-                &[&export_file],
-                &organized_file,
-                None,
-                "auto",
-                "qwen2.5:7b",
-                "http://127.0.0.1:11434",
-                20,
-                true,
-                true,
-                true,
-                false,
-                true,
-            )
-            .await
-            {
-                tracing::error!(
-                    "智能书签组织 (Step 2: smart_organize_files) 执行失败: {}",
-                    e
-                );
-            }
-            info!("   ✅ Step 2: Organized bookmarks");
-
-            // Step 3: Check
+            // Step 2: Check the exported copy without changing its structure.
             let results_dir = format!("{expanded_out_dir}/03_check_results");
             std::fs::create_dir_all(&results_dir)?;
 
@@ -2009,7 +2168,7 @@ async fn main() -> Result<()> {
                 retry_count: 1,
             })?;
 
-            if let Ok(imported_org) = sync::import_bookmarks_from_html(&organized_file) {
+            if let Ok(imported_org) = sync::import_bookmarks_from_html(&export_file) {
                 let urls = url_checker::collect_urls_from_bookmarks(&imported_org);
                 let mut unique_urls: Vec<String> = urls
                     .into_iter()
@@ -2079,7 +2238,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Step 4: Merge check results
+            // Step 3: Merge check results
             let final_file = format!("{expanded_out_dir}/FINAL_VALID.html");
             sync::merge_check_result_files(&results_dir, &final_file)?;
             info!("   ✅ Step 4: Final results saved to {}", final_file);
@@ -2104,6 +2263,7 @@ async fn main() -> Result<()> {
                 wrap_folder: Some("📁镜像文件夹".to_string()),
                 no_wrap: false,
                 all_profiles: true,
+                exclude_onion: true,
             };
             engine
                 .export_to_html_with_extra(Some("waterfox"), &expanded_output, &config, vec![])
@@ -2127,10 +2287,225 @@ fn count_tree(bookmark: &browsers::Bookmark) -> usize {
     count
 }
 
+fn collect_bookmark_target_inputs(
+    bookmarks: &[browsers::Bookmark],
+    source_prefix: &str,
+) -> Vec<BookmarkTargetInput> {
+    fn visit(
+        bookmarks: &[browsers::Bookmark],
+        source_prefix: &str,
+        output: &mut Vec<BookmarkTargetInput>,
+    ) {
+        for bookmark in bookmarks {
+            if bookmark.folder {
+                visit(&bookmark.children, source_prefix, output);
+            } else if let Some(url) = bookmark.url.as_deref() {
+                let source_id = if bookmark.id.is_empty() {
+                    format!("{source_prefix}:{url}")
+                } else {
+                    format!("{source_prefix}:{}", bookmark.id)
+                };
+                output.push(BookmarkTargetInput {
+                    bookmark_id: source_id,
+                    original_url: url.to_string(),
+                });
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(bookmarks, source_prefix, &mut output);
+    output
+}
+
+fn probe_targets_from_plan(plan: &ProbePlan) -> Result<Vec<ProbeTarget>> {
+    plan.targets
+        .iter()
+        .map(|target| {
+            let bookmark_id = match plan.scope {
+                ProbeScope::Site => format!("site:{}", target.site_key),
+                ProbeScope::Content => target
+                    .source_bookmark_ids
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| format!("content:{}", target.original_url)),
+            };
+            ProbeTarget::from_url(bookmark_id, &target.probe_url).map_err(anyhow::Error::msg)
+        })
+        .collect()
+}
+
+fn secondary_backends(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|backend| !backend.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+async fn run_health_stage(
+    targets: Vec<ProbeTarget>,
+    scope: ProbeScope,
+    proxy: Option<String>,
+    timeout: u64,
+    concurrency: usize,
+    slow: bool,
+    history_db: Option<&str>,
+    secondary: Vec<String>,
+    output_dir: Option<std::path::PathBuf>,
+    dns_policy: DnsPolicy,
+) -> Result<(
+    HealthRunSummaryReport,
+    Vec<(String, String, HealthVerdict, Vec<BackendObservation>)>,
+)> {
+    let db_path = history_db.map(|path| std::path::PathBuf::from(expand_path(path)));
+    let engine = HealthEngine::new(HealthEngineOptions {
+        proxy_url: proxy,
+        timeout_secs: timeout,
+        concurrency,
+        slow_mode: slow,
+        probe_scope: scope,
+        dns_policy,
+        allow_private_ips: false,
+        history_db_path: db_path,
+        secondary_backends: secondary,
+        output_dir,
+        partial_run: false,
+        max_attempts: 3,
+        retry_interval_secs: 5,
+    })
+    .map_err(anyhow::Error::msg)?;
+    engine
+        .run_probes_with_results(targets, |_current, _total, _url| {})
+        .await
+        .map_err(anyhow::Error::msg)
+}
+
+fn content_site_key(target: &browser_bookmark_sync::health::SiteTarget) -> String {
+    format!(
+        "{}://{}:{}",
+        target.scheme, target.registrable_domain, target.effective_port
+    )
+}
+
+fn apply_content_site_gate(
+    content_plan: &mut ProbePlan,
+    live_site_ids: &std::collections::HashSet<String>,
+    trusted_list: &TrustedSiteSkipList,
+    no_trusted_site_skip: bool,
+) {
+    let mut retained = Vec::with_capacity(content_plan.targets.len());
+    for target in content_plan.targets.drain(..) {
+        let site_key = content_site_key(&target);
+        let trusted = !no_trusted_site_skip
+            && trusted_list
+                .matches_host(&target.normalized_host)
+                .unwrap_or(false);
+        if trusted || live_site_ids.contains(&format!("site:{site_key}")) {
+            retained.push(target);
+        } else {
+            content_plan.skipped.push(SkippedTarget {
+                original_url: target.probe_url.clone(),
+                reason: format!("SkippedSitePreflight:{site_key}"),
+                site_key: Some(site_key),
+                bookmark_count: target.bookmark_count,
+                source_bookmark_ids: target.source_bookmark_ids,
+            });
+        }
+    }
+    content_plan.targets = retained;
+}
+
+fn load_trusted_site_skip_list(path: Option<&str>) -> Result<TrustedSiteSkipList> {
+    if let Some(path) = path {
+        return TrustedSiteSkipList::load(expand_path(path)).map_err(anyhow::Error::msg);
+    }
+    serde_json::from_str(DEFAULT_TRUSTED_SITE_SKIP_LIST).map_err(anyhow::Error::msg)
+}
+
+fn load_dns_policy(path: Option<&str>) -> Result<DnsPolicy> {
+    path.map_or_else(
+        || Ok(DnsPolicy::default()),
+        |path| DnsPolicy::load(expand_path(path)).map_err(anyhow::Error::msg),
+    )
+}
+
+fn scoped_export_dir(
+    export_dir: Option<&str>,
+    scope: ProbeScope,
+) -> Result<Option<std::path::PathBuf>> {
+    export_dir
+        .map(|dir| {
+            let path = std::path::PathBuf::from(expand_path(dir)).join(match scope {
+                ProbeScope::Site => "site",
+                ProbeScope::Content => "content",
+            });
+            std::fs::create_dir_all(&path)?;
+            Ok(path)
+        })
+        .transpose()
+}
+
+fn write_probe_plan_artifact(
+    plan: &ProbePlan,
+    export_dir: Option<&str>,
+    trusted_list: &TrustedSiteSkipList,
+    trusted_list_path: Option<&str>,
+    no_trusted_site_skip: bool,
+    dns_policy: &DnsPolicy,
+    dns_policy_path: Option<&str>,
+    limit: usize,
+    site_preflight_plan: Option<&ProbePlan>,
+) -> Result<()> {
+    let Some(export_dir) = export_dir else {
+        return Ok(());
+    };
+    let export_dir = expand_path(export_dir);
+    std::fs::create_dir_all(&export_dir)?;
+    let artifact = serde_json::json!({
+        "scope": plan.scope,
+        "output_scope": match plan.scope {
+            ProbeScope::Site => "site",
+            ProbeScope::Content => "content",
+        },
+        "targets": plan.targets,
+        "invalid": plan.invalid,
+        "skipped": plan.skipped,
+        "target_limit": limit,
+        "partial": limit > 0,
+        "content_requires_live_site": plan.scope == ProbeScope::Content,
+        "site_preflight": site_preflight_plan,
+        "trusted_site_skip": {
+            "enabled": (matches!(plan.scope, ProbeScope::Site) || site_preflight_plan.is_some())
+                && !no_trusted_site_skip,
+            "path": trusted_list_path,
+            "version": trusted_list.version,
+            "hash": trusted_list.hash(),
+        },
+        "dns_policy": {
+            "path": dns_policy_path,
+            "config": dns_policy,
+        },
+    });
+    let bytes = serde_json::to_vec_pretty(&artifact)?;
+    browser_utils::atomic_write_file(
+        &std::path::Path::new(&export_dir).join("probe-plan.json"),
+        &bytes,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod cli_tests {
-    use super::Cli;
+    use super::{
+        apply_content_site_gate, bounded_health_concurrency, build_probe_plan, content_site_key,
+        is_disabled_non_core_command, parse_probe_scope, probe_targets_from_plan,
+        BookmarkTargetInput, Cli, Commands, ProbeScope, TrustedSiteSkipList,
+    };
     use clap::Parser;
+    use std::collections::HashSet;
 
     #[test]
     fn network_commands_reject_zero_timeout_or_concurrency() {
@@ -2143,5 +2518,112 @@ mod cli_tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err(), "accepted {args:?}");
         }
+    }
+
+    #[test]
+    fn sensitive_and_gui_legacy_commands_are_disabled() {
+        for args in [
+            &["bsync", "history"][..],
+            &["bsync", "export-data"][..],
+            &["bsync", "gui"][..],
+            &[
+                "bsync",
+                "organize",
+                "--file",
+                "bookmarks.html",
+                "--rules",
+                "rules.json",
+            ][..],
+            &["bsync", "pipeline"][..],
+            &["bsync", "waterfox-cleanup"][..],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(is_disabled_non_core_command(&cli.command));
+        }
+    }
+
+    #[test]
+    fn health_concurrency_is_bounded_at_128() {
+        assert_eq!(bounded_health_concurrency(64), 64);
+        assert_eq!(bounded_health_concurrency(128), 128);
+        assert_eq!(bounded_health_concurrency(256), 128);
+    }
+
+    #[test]
+    fn check_scope_parser_accepts_only_site_or_content() {
+        assert_eq!(parse_probe_scope("site").unwrap(), ProbeScope::Site);
+        assert_eq!(parse_probe_scope("content").unwrap(), ProbeScope::Content);
+        assert!(parse_probe_scope("auto").is_err());
+        assert!(Cli::try_parse_from(["bsync", "check", "--scope", "site"]).is_ok());
+        assert!(Cli::try_parse_from(["bsync", "check", "--scope", "auto"]).is_err());
+        let cli = Cli::try_parse_from(["bsync", "check"]).unwrap();
+        let Commands::Check { scope, .. } = cli.command else {
+            panic!("expected check command");
+        };
+        assert_eq!(scope, ProbeScope::Content);
+    }
+
+    #[test]
+    fn planned_target_identity_matches_scope() {
+        let site_plan = build_probe_plan(
+            &[BookmarkTargetInput {
+                bookmark_id: "chrome:bookmark-1".to_string(),
+                original_url: "https://www.example.com/article".to_string(),
+            }],
+            ProbeScope::Site,
+        );
+        let site_target = probe_targets_from_plan(&site_plan).unwrap().remove(0);
+        assert_eq!(site_target.bookmark_id, "site:https://example.com:443");
+        assert_eq!(site_target.original_url, "https://example.com/");
+
+        let content_plan = build_probe_plan(
+            &[BookmarkTargetInput {
+                bookmark_id: "chrome:bookmark-1".to_string(),
+                original_url: "https://www.example.com/article".to_string(),
+            }],
+            ProbeScope::Content,
+        );
+        let content_target = probe_targets_from_plan(&content_plan).unwrap().remove(0);
+        assert_eq!(content_target.bookmark_id, "chrome:bookmark-1");
+        assert_eq!(
+            content_target.original_url,
+            "https://www.example.com/article"
+        );
+    }
+
+    #[test]
+    fn content_gate_requires_live_site_or_trusted_site() {
+        let inputs = [
+            BookmarkTargetInput {
+                bookmark_id: "trusted".to_string(),
+                original_url: "https://www.example.com/article".to_string(),
+            },
+            BookmarkTargetInput {
+                bookmark_id: "unverified".to_string(),
+                original_url: "https://www.example.net/article".to_string(),
+            },
+        ];
+        let mut plan = build_probe_plan(&inputs, ProbeScope::Content);
+        let trusted = TrustedSiteSkipList {
+            version: "test".to_string(),
+            domains: vec!["example.com".to_string()],
+        };
+
+        apply_content_site_gate(&mut plan, &HashSet::new(), &trusted, false);
+
+        assert_eq!(plan.targets.len(), 1);
+        assert_eq!(plan.targets[0].normalized_host, "www.example.com");
+        assert!(plan.skipped.iter().any(|item| item.original_url
+            == "https://www.example.net/article"
+            && item.reason.starts_with("SkippedSitePreflight:")));
+
+        let mut live = HashSet::new();
+        let mut second_plan = build_probe_plan(&inputs, ProbeScope::Content);
+        live.insert(format!(
+            "site:{}",
+            content_site_key(&second_plan.targets[1])
+        ));
+        apply_content_site_gate(&mut second_plan, &live, &trusted, false);
+        assert_eq!(second_plan.targets.len(), 2);
     }
 }

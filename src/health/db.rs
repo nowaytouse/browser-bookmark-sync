@@ -612,14 +612,28 @@ impl HealthDatabase {
         current_config_hash: Option<&str>,
         current_rule_version: &str,
     ) -> SqlResult<Vec<crate::health::models::QualifyingRunEvidence>> {
+        Self::get_qualifying_run_evidences_from(
+            &self.conn,
+            bookmark_id,
+            current_config_hash,
+            current_rule_version,
+        )
+    }
+
+    fn get_qualifying_run_evidences_from(
+        conn: &Connection,
+        bookmark_id: &str,
+        current_config_hash: Option<&str>,
+        current_rule_version: &str,
+    ) -> SqlResult<Vec<crate::health::models::QualifyingRunEvidence>> {
         use crate::health::models::{QualifyingRunEvidence, StrongFailureKind};
         use chrono::DateTime;
         use std::collections::{BTreeMap, BTreeSet};
+        let site_scope = bookmark_id.starts_with("site:");
 
         // 1. Find the last real success timestamp for this bookmark.
         //    Pre-v3 rows have no attempt timestamp and cannot be promoted into evidence.
-        let last_real_success: Option<String> = self
-            .conn
+        let last_real_success: Option<String> = conn
             .query_row(
                 "SELECT MAX(a.started_at)
              FROM health_attempts a
@@ -632,28 +646,39 @@ impl HealthDatabase {
                AND a.started_at IS NOT NULL
                AND a.actual_request = 'yes'
                AND a.cache_hit = 0
-               AND a.status_code >= 200
-               AND a.status_code < 300
-               AND a.error_kind IS NULL
                AND (
-                   (
-                       a.body_hash IS NOT NULL
-                       AND a.body_hash != ''
-                       AND a.content_length > 0
-                   )
-                   OR NOT EXISTS (
-                       SELECT 1
-                       FROM health_attempts semantic_attempt
-                       JOIN health_checks semantic_check
-                         ON semantic_check.check_id = semantic_attempt.check_id
-                       WHERE semantic_check.run_id = r.run_id
-                         AND semantic_check.bookmark_id = c.bookmark_id
-                         AND semantic_attempt.error_kind IN (
-                             'ContentMissing', 'RedirectedToHomepage', 'Soft404Candidate'
-                         )
+                   (?4 = 1 AND a.status_code >= 100 AND a.status_code < 600)
+                   OR (
+                       ?4 = 0
+                       AND a.status_code >= 200
+                       AND a.status_code < 300
+                       AND a.error_kind IS NULL
+                       AND (
+                           (
+                               a.body_hash IS NOT NULL
+                               AND a.body_hash != ''
+                               AND a.content_length > 0
+                           )
+                           OR NOT EXISTS (
+                               SELECT 1
+                               FROM health_attempts semantic_attempt
+                               JOIN health_checks semantic_check
+                                 ON semantic_check.check_id = semantic_attempt.check_id
+                               WHERE semantic_check.run_id = r.run_id
+                                 AND semantic_check.bookmark_id = c.bookmark_id
+                                 AND semantic_attempt.error_kind IN (
+                                     'ContentMissing', 'RedirectedToHomepage', 'Soft404Candidate'
+                                 )
+                           )
+                       )
                    )
                )",
-                params![bookmark_id, current_config_hash, current_rule_version],
+                params![
+                    bookmark_id,
+                    current_config_hash,
+                    current_rule_version,
+                    site_scope
+                ],
                 |row| row.get(0),
             )
             .optional()?
@@ -700,7 +725,7 @@ impl HealthDatabase {
              ORDER BY r.run_id, a.attempt_id"
         );
 
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
 
         struct AttemptRow {
             run_id: String,
@@ -777,22 +802,24 @@ impl HealthDatabase {
                 && a.content_length.is_some_and(|length| length > 0)
         }
 
-        fn strong_failure_kind(a: &AttemptRow) -> Option<StrongFailureKind> {
+        fn strong_failure_kind(a: &AttemptRow, site_scope: bool) -> Option<StrongFailureKind> {
             if a.actual_request != "yes" || a.cache_hit != 0 {
                 return None;
             }
-            if let Some(code) = a.status_code {
-                match code {
-                    404 => return Some(StrongFailureKind::Http404),
-                    410 => return Some(StrongFailureKind::Http410),
-                    _ => {}
+            if !site_scope {
+                if let Some(code) = a.status_code {
+                    match code {
+                        404 => return Some(StrongFailureKind::Http404),
+                        410 => return Some(StrongFailureKind::Http410),
+                        _ => {}
+                    }
                 }
             }
             if let Some(ref err) = a.error_kind {
-                if err == "RedirectedToHomepage" {
+                if !site_scope && err == "RedirectedToHomepage" {
                     return Some(StrongFailureKind::RedirectedToHomepage);
                 }
-                if err == "ContentMissing" {
+                if !site_scope && err == "ContentMissing" {
                     return Some(StrongFailureKind::ContentMissing);
                 }
                 if err == "DnsNxdomain" {
@@ -857,8 +884,18 @@ impl HealthDatabase {
             });
             // A 2xx transport response is expected for a soft-404. It is a real success only
             // when no content-aware probe in the same run found the deep resource missing.
-            if attempts.iter().any(is_content_aware_success)
-                || (!has_content_signal && attempts.iter().any(is_real_success))
+            let site_response = site_scope
+                && attempts.iter().any(|attempt| {
+                    attempt.actual_request == "yes"
+                        && attempt.cache_hit == 0
+                        && attempt
+                            .status_code
+                            .is_some_and(|status| (100..600).contains(&status))
+                });
+            if site_response
+                || (!site_scope
+                    && (attempts.iter().any(is_content_aware_success)
+                        || (!has_content_signal && attempts.iter().any(is_real_success))))
             {
                 continue;
             }
@@ -897,7 +934,7 @@ impl HealthDatabase {
                         has_non_nxdomain_dns_rcode = true;
                     }
                 }
-                match strong_failure_kind(a) {
+                match strong_failure_kind(a, site_scope) {
                     Some(StrongFailureKind::ConfirmedNxDomain) => {
                         // Handled below after resolver check
                     }
@@ -947,32 +984,130 @@ impl HealthDatabase {
         Ok(evidences)
     }
 
-    /// Return current-day quarantine candidates whose latest verdict is `probable_dead` or
-    /// `confirmed_dead`. Older verdicts are expired and must be probed again.
-    /// Returns (url, `current_verdict`, `last_checked_at`) tuples ordered by verdict severity.
+    /// Return current-day quarantine candidates whose latest verdict is `confirmed_dead`.
+    /// Probable or expired verdicts always remain review-only.
+    /// Returns (url, `current_verdict`, `last_checked_at`) tuples ordered by check time.
     pub fn get_quarantine_candidates(&self) -> SqlResult<Vec<(String, String, String)>> {
+        self.get_quarantine_candidates_detailed().map(|rows| {
+            rows.into_iter()
+                .map(|(_, url, _, verdict, checked_at)| (url, verdict, checked_at))
+                .collect()
+        })
+    }
+
+    /// Return the identity fields needed to build an auditable quarantine selection.
+    pub fn get_quarantine_candidates_detailed(
+        &self,
+    ) -> SqlResult<Vec<(String, String, String, String, String)>> {
         let cutoff = (Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
         let mut stmt = self.conn.prepare(
-            "SELECT url, current_verdict, last_checked_at
+            "SELECT bookmark_id, url, last_run_id, current_verdict, last_checked_at
              FROM health_summaries
-             WHERE current_verdict IN ('confirmed_dead', 'probable_dead')
+             WHERE current_verdict = 'confirmed_dead'
                AND julianday(last_checked_at) >= julianday(?1)
-             ORDER BY
-               CASE current_verdict
-                 WHEN 'confirmed_dead' THEN 0
-                 WHEN 'probable_dead'  THEN 1
-                 ELSE 2
-               END,
-               last_checked_at DESC",
+             ORDER BY last_checked_at DESC",
         )?;
         let rows = stmt.query_map(params![cutoff], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?;
         let mut results = Vec::new();
         for r in rows {
             results.push(r?);
         }
         Ok(results)
+    }
+
+    /// Re-check a quarantine selection item against the latest 24-hour database state.
+    pub fn verify_quarantine_item(
+        &self,
+        run_id: &str,
+        bookmark_id: &str,
+        url: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> SqlResult<bool> {
+        let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
+        let matches: Option<(String, String, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT s.last_run_id, s.url, s.current_verdict, s.last_checked_at
+                 FROM health_summaries s
+                 WHERE s.bookmark_id = ?1
+                   AND s.last_run_id = ?2
+                   AND s.url = ?3
+                   AND s.current_verdict = 'confirmed_dead'
+                   AND julianday(s.last_checked_at) >= julianday(?4)
+                   AND EXISTS (
+                       SELECT 1
+                       FROM health_checks c
+                       JOIN health_runs r ON r.run_id = c.run_id
+                       WHERE c.bookmark_id = s.bookmark_id
+                         AND c.run_id = s.last_run_id
+                         AND c.original_url = s.url
+                         AND c.run_verdict = 'confirmed_dead'
+                         AND r.completed = 1
+                         AND r.rule_version = ?5
+                   )",
+                params![
+                    bookmark_id,
+                    run_id,
+                    url,
+                    cutoff,
+                    crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        Ok(matches.is_some())
+    }
+
+    /// Re-check a site-scoped selection item using its representative URL.
+    pub fn verify_quarantine_site_item(
+        &self,
+        run_id: &str,
+        bookmark_id: &str,
+        url: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> SqlResult<bool> {
+        let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
+        let matches: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM health_summaries s
+                 WHERE s.bookmark_id = ?1
+                   AND s.last_run_id = ?2
+                   AND s.url = ?3
+                   AND s.current_verdict = 'confirmed_dead'
+                   AND julianday(s.last_checked_at) >= julianday(?4)
+                   AND EXISTS (
+                       SELECT 1
+                       FROM health_checks c
+                       JOIN health_runs r ON r.run_id = c.run_id
+                       WHERE c.bookmark_id = s.bookmark_id
+                         AND c.run_id = s.last_run_id
+                         AND c.original_url = s.url
+                         AND c.run_verdict = 'confirmed_dead'
+                         AND r.completed = 1
+                         AND r.rule_version = ?5
+                   )
+                 LIMIT 1",
+                params![
+                    bookmark_id,
+                    run_id,
+                    url,
+                    cutoff,
+                    crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(matches.is_some())
     }
 
     /// Return counts of bookmarks grouped by `current_verdict` in `health_summaries`.
@@ -1018,120 +1153,203 @@ impl HealthDatabase {
         Ok(results)
     }
 
-    /// Rebuild `health_summaries` from scratch using `health_checks` as authoritative source.
+    /// Rebuild `health_summaries` from current, completed raw probe history.
     ///
     /// Per plan §10: "任何 summary 必须可以通过 `health rebuild-summary` 从 attempts/checks 完整重建。"
     ///
-    /// This wipes the summary table and recomputes per-bookmark aggregates from `health_checks`.
+    /// For each bookmark, its latest completed run using the current rule selects the active
+    /// config hash. Only real, uncached attempts from completed runs using that rule/config in
+    /// the rolling 24-hour window participate. Strong-failure counters and death verdicts are
+    /// rebuilt from qualifying evidence rather than trusting cached check verdicts.
+    ///
+    /// This wipes the summary table and recomputes per-bookmark aggregates atomically.
     /// Returns the number of summary rows written.
     pub fn rebuild_summary_from_checks(&self) -> SqlResult<usize> {
         let tx = self.conn.unchecked_transaction()?;
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+        let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
+        let current_rule_version = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
 
-        // Wipe current summaries — they are a cache and must be fully rebuildable.
-        tx.execute("DELETE FROM health_summaries", [])?;
-
-        // Group rows by bookmark_id in application code for portability
+        // Group current checks by bookmark. MAX(attempt.started_at) is the real check time;
+        // check/run timestamps are not substitutes for evidence timestamps.
         use std::collections::BTreeMap;
+        struct CheckRow {
+            run_id: String,
+            verdict: String,
+            checked_at: String,
+            config_hash: String,
+        }
         struct BmData {
             url: String,
-            rows: Vec<(String, String)>, // (verdict, finished_at)
+            rows: Vec<CheckRow>,
         }
         let mut by_bm: BTreeMap<String, BmData> = BTreeMap::new();
 
         {
             let mut stmt = tx.prepare(
                 "SELECT
-                   bookmark_id,
-                   original_url,
-                   run_verdict,
-                   finished_at
-                 FROM health_checks
-                 WHERE finished_at IS NOT NULL
-                 ORDER BY bookmark_id, finished_at ASC",
+                   c.bookmark_id,
+                   c.original_url,
+                   c.run_id,
+                   c.run_verdict,
+                   MAX(a.started_at) AS checked_at,
+                   r.config_hash
+                 FROM health_checks c
+                 JOIN health_runs r ON r.run_id = c.run_id
+                 JOIN health_attempts a ON a.check_id = c.check_id
+                 WHERE r.completed = 1
+                   AND r.finished_at IS NOT NULL
+                   AND c.finished_at IS NOT NULL
+                   AND r.rule_version = ?1
+                   AND r.config_hash IS NOT NULL
+                   AND TRIM(r.config_hash) <> ''
+                   AND a.actual_request = 'yes'
+                   AND a.cache_hit = 0
+                   AND a.started_at IS NOT NULL
+                   AND julianday(a.started_at) >= julianday(?2)
+                   AND julianday(a.started_at) <= julianday(?3)
+                 GROUP BY c.check_id, c.bookmark_id, c.original_url, c.run_id,
+                          c.run_verdict, r.config_hash
+                 ORDER BY c.bookmark_id, julianday(checked_at) ASC, c.run_id ASC",
             )?;
 
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(params![current_rule_version, cutoff, now_str], |row| {
                 Ok((
                     row.get::<_, String>(0)?, // bookmark_id
                     row.get::<_, String>(1)?, // original_url
-                    row.get::<_, String>(2)?, // run_verdict
-                    row.get::<_, String>(3)?, // finished_at
+                    CheckRow {
+                        run_id: row.get(2)?,
+                        verdict: row.get(3)?,
+                        checked_at: row.get(4)?,
+                        config_hash: row.get(5)?,
+                    },
                 ))
             })?;
 
             for r in rows {
-                let (bm_id, url, verdict, finished_at) = r?;
+                let (bm_id, url, check_row) = r?;
                 let entry = by_bm.entry(bm_id).or_insert_with(|| BmData {
                     url: url.clone(),
                     rows: Vec::new(),
                 });
-                entry.rows.push((verdict, finished_at));
+                entry.url = url;
+                entry.rows.push(check_row);
             }
-        } // stmt dropped here — tx borrow released
+        }
 
-        let now_str = Utc::now().to_rfc3339();
+        // Summaries are a cache. Delete only after all authoritative reads succeed, while the
+        // same transaction still protects the snapshot used for this rebuild.
+        tx.execute("DELETE FROM health_summaries", [])?;
         let mut written = 0usize;
 
         for (bm_id, data) in &by_bm {
-            let total_checks = data.rows.len();
-            if total_checks == 0 {
+            let Some(latest) = data.rows.last() else {
                 continue;
-            }
+            };
+            let config_hash = latest.config_hash.as_str();
+            let current_rows: Vec<_> = data
+                .rows
+                .iter()
+                .filter(|row| row.config_hash == config_hash)
+                .collect();
+            let total_checks = current_rows.len();
+            let mut evidences = Self::get_qualifying_run_evidences_from(
+                &tx,
+                bm_id,
+                Some(config_hash),
+                current_rule_version,
+            )?;
+            evidences.retain(|evidence| {
+                let age = now.signed_duration_since(evidence.strong_failure_at);
+                age >= chrono::Duration::zero() && age <= chrono::Duration::hours(24)
+            });
+            evidences.sort_by_key(|evidence| evidence.completed_at);
 
-            let is_strong_failure = |v: &str| matches!(v, "probable_dead" | "confirmed_dead");
-            let is_success = |v: &str| matches!(v, "live" | "recovered");
+            let stored_verdict =
+                HealthVerdict::from_db_str(&latest.verdict).unwrap_or(HealthVerdict::NeedsReview);
+            let latest_is_qualifying = evidences
+                .iter()
+                .any(|evidence| evidence.run_id == latest.run_id);
 
-            let mut consecutive_failures: usize = 0;
-            let mut first_failed_at: Option<String> = None;
-            let mut last_failed_at: Option<String> = None;
-            let mut last_success_at: Option<String> = None;
-            let mut current_verdict = String::new();
-            let mut last_checked_at = String::new();
+            // Death states are rebuilt exclusively from current qualifying evidence. A cached
+            // dead verdict without matching evidence is always downgraded to manual review.
+            let current_verdict = if latest_is_qualifying {
+                let confirmed = if evidences.len() >= 3 {
+                    let families: std::collections::BTreeSet<&str> = evidences
+                        .iter()
+                        .flat_map(|evidence| evidence.verifier_families.iter().map(String::as_str))
+                        .collect();
+                    let all_nxdomain = evidences.iter().all(|evidence| {
+                        evidence
+                            .strong_failure_kinds
+                            .contains(&crate::health::models::StrongFailureKind::ConfirmedNxDomain)
+                    });
+                    let last_three_content_missing =
+                        evidences.iter().rev().take(3).all(|evidence| {
+                            evidence
+                                .strong_failure_kinds
+                                .contains(&crate::health::models::StrongFailureKind::ContentMissing)
+                        });
+                    families.len() >= 2 || all_nxdomain || last_three_content_missing
+                } else {
+                    false
+                };
 
-            for (verdict, finished_at) in &data.rows {
-                current_verdict = verdict.clone();
-                last_checked_at = finished_at.clone();
-
-                if is_success(verdict) {
-                    consecutive_failures = 0;
-                    first_failed_at = None;
-                    last_success_at = Some(finished_at.clone());
-                } else if is_strong_failure(verdict) {
-                    consecutive_failures += 1;
-                    if first_failed_at.is_none() {
-                        first_failed_at = Some(finished_at.clone());
-                    }
-                    last_failed_at = Some(finished_at.clone());
+                if confirmed {
+                    HealthVerdict::ConfirmedDead
+                } else if evidences.len() >= 2 {
+                    HealthVerdict::ProbableDead
+                } else {
+                    HealthVerdict::NeedsReview
                 }
-            }
+            } else if matches!(
+                stored_verdict,
+                HealthVerdict::ProbableDead | HealthVerdict::ConfirmedDead
+            ) {
+                HealthVerdict::NeedsReview
+            } else {
+                stored_verdict
+            };
+
+            let first_failed_at = evidences
+                .iter()
+                .map(|evidence| evidence.strong_failure_at)
+                .min()
+                .map(|at| at.to_rfc3339());
+            let last_failed_at = evidences
+                .iter()
+                .map(|evidence| evidence.strong_failure_at)
+                .max()
+                .map(|at| at.to_rfc3339());
+            let last_success_at = current_rows
+                .iter()
+                .rev()
+                .find(|row| matches!(row.verdict.as_str(), "live" | "recovered"))
+                .map(|row| row.checked_at.clone());
 
             let summary_id = uuid::Uuid::new_v4().to_string();
-            // Find the most recent run_id for this bookmark
-            let last_run_id: String = tx
-                .query_row(
-                    "SELECT run_id FROM health_checks WHERE bookmark_id = ?1 ORDER BY finished_at DESC LIMIT 1",
-                    params![bm_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or_else(|_| "unknown".to_string());
 
             tx.execute(
                 "INSERT INTO health_summaries (
                     summary_id, bookmark_id, url, last_run_id, last_checked_at, current_verdict,
-                    total_checks, consecutive_failures, first_failed_at, last_failed_at, last_success_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    total_checks, consecutive_failures, first_failed_at, last_failed_at,
+                    last_success_at, rule_version, config_hash
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     summary_id,
                     bm_id,
                     data.url,
-                    last_run_id,
-                    last_checked_at,
-                    current_verdict,
+                    latest.run_id,
+                    latest.checked_at,
+                    current_verdict.as_str(),
                     total_checks as i64,
-                    consecutive_failures as i64,
+                    evidences.len() as i64,
                     first_failed_at,
                     last_failed_at,
                     last_success_at,
+                    current_rule_version,
+                    config_hash,
                 ],
             )?;
             written += 1;
@@ -1163,6 +1381,8 @@ mod tests {
             proxy_url: None,
             timeout_secs: 10,
             slow_mode: false,
+            probe_scope: crate::health::targets::ProbeScope::Content,
+            dns_policy_hash: "test-dns-policy".to_string(),
             allow_private_ips: false,
             history_db_path: None,
             secondary_backends: vec![],
@@ -1196,6 +1416,8 @@ mod tests {
             proxy_url: None,
             timeout_secs: 10,
             slow_mode: false,
+            probe_scope: crate::health::targets::ProbeScope::Content,
+            dns_policy_hash: "test-dns-policy".to_string(),
             allow_private_ips: false,
             history_db_path: None,
             secondary_backends: vec!["curl".to_string()],
@@ -1255,5 +1477,181 @@ mod tests {
         let candidates = db.get_quarantine_candidates().unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0, "https://recent.example");
+    }
+
+    #[test]
+    fn quarantine_excludes_probable_dead() {
+        let db = HealthDatabase::in_memory().unwrap();
+        let checked_at = Utc::now().to_rfc3339();
+        for (id, verdict) in [
+            ("confirmed", "confirmed_dead"),
+            ("probable", "probable_dead"),
+        ] {
+            db.conn
+                .execute(
+                    "INSERT INTO health_summaries (
+                        summary_id, bookmark_id, url, last_run_id, last_checked_at,
+                        current_verdict, total_checks, consecutive_failures
+                     ) VALUES (?1, ?1, ?2, ?1, ?3, ?4, 3, 3)",
+                    params![id, format!("https://{id}.example"), checked_at, verdict],
+                )
+                .unwrap();
+        }
+
+        let candidates = db.get_quarantine_candidates().unwrap();
+        assert_eq!(
+            candidates,
+            vec![(
+                "https://confirmed.example".to_string(),
+                "confirmed_dead".to_string(),
+                checked_at,
+            )]
+        );
+    }
+
+    #[test]
+    fn rebuild_summary_uses_only_current_completed_qualifying_evidence() {
+        let db = HealthDatabase::in_memory().unwrap();
+        let now = Utc::now();
+        let bookmark_id = "bm-rebuild";
+        let url = "https://example.com/video/1";
+
+        let insert_failure = |run_id: &str,
+                              hours_ago: i64,
+                              completed: bool,
+                              rule_version: &str,
+                              config_hash: &str,
+                              backend: &str| {
+            let at = (now - chrono::Duration::hours(hours_ago)).to_rfc3339();
+            let check_id = format!("check-{run_id}");
+            db.conn
+                .execute(
+                    "INSERT INTO health_runs (
+                        run_id, started_at, finished_at, completed, mode,
+                        config_hash, rule_version
+                     ) VALUES (?1, ?2, ?2, ?3, 'standard', ?4, ?5)",
+                    params![run_id, at, i64::from(completed), config_hash, rule_version],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO health_checks (
+                        check_id, run_id, bookmark_id, original_url,
+                        started_at, finished_at, run_verdict
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'confirmed_dead')",
+                    params![check_id, run_id, bookmark_id, url, at],
+                )
+                .unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO health_attempts (
+                        attempt_id, check_id, backend, backend_version, route,
+                        attempt_index, actual_request, cache_hit, method, status_code,
+                        initial_url, redirect_count, response_time_ms, confidence,
+                        started_at, finished_at
+                     ) VALUES (?1, ?2, ?3, 'test', 'direct', 0, 'yes', 0,
+                               'GET', 404, ?4, 0, 1, 1.0, ?5, ?5)",
+                    params![format!("attempt-{run_id}"), check_id, backend, url, at],
+                )
+                .unwrap();
+        };
+
+        insert_failure(
+            "valid-1",
+            3,
+            true,
+            CURRENT_HEALTH_RULE_VERSION,
+            "current-config",
+            "native_reqwest",
+        );
+        insert_failure(
+            "valid-2",
+            2,
+            true,
+            CURRENT_HEALTH_RULE_VERSION,
+            "current-config",
+            "curl",
+        );
+        insert_failure(
+            "valid-3",
+            1,
+            true,
+            CURRENT_HEALTH_RULE_VERSION,
+            "current-config",
+            "native_reqwest",
+        );
+        insert_failure(
+            "old-config",
+            4,
+            true,
+            CURRENT_HEALTH_RULE_VERSION,
+            "old-config",
+            "curl",
+        );
+        insert_failure(
+            "stale",
+            25,
+            true,
+            CURRENT_HEALTH_RULE_VERSION,
+            "current-config",
+            "curl",
+        );
+        insert_failure(
+            "old-rule",
+            0,
+            true,
+            "obsolete-rule",
+            "current-config",
+            "curl",
+        );
+        insert_failure(
+            "incomplete",
+            0,
+            false,
+            CURRENT_HEALTH_RULE_VERSION,
+            "current-config",
+            "curl",
+        );
+        db.conn
+            .execute(
+                "UPDATE health_checks SET run_verdict = 'needs_review'
+                 WHERE run_id LIKE 'valid-%'",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(db.rebuild_summary_from_checks().unwrap(), 1);
+        let rebuilt: (String, String, usize, usize, String, String) = db
+            .conn
+            .query_row(
+                "SELECT last_run_id, current_verdict, total_checks,
+                        consecutive_failures, rule_version, config_hash
+                 FROM health_summaries
+                 WHERE bookmark_id = ?1",
+                params![bookmark_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            rebuilt,
+            (
+                "valid-3".to_string(),
+                "confirmed_dead".to_string(),
+                3,
+                3,
+                CURRENT_HEALTH_RULE_VERSION.to_string(),
+                "current-config".to_string(),
+            )
+        );
     }
 }

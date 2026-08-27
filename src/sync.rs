@@ -1,6 +1,7 @@
 pub mod collector;
 pub mod dedupe;
 pub mod exporter;
+mod firefox_backup;
 
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -15,6 +16,7 @@ use crate::browsers::{
     get_all_adapters, Bookmark, BrowserAdapter, BrowserType, Cookie, HistoryItem, ReadingListItem,
 };
 use crate::data_types::manifest::InventoryReport;
+use crate::data_types::models::{BookmarkNode, BookmarkTree};
 use crate::validator::ValidationReport;
 
 /// Configuration for hub browser operations
@@ -46,6 +48,8 @@ pub struct ExportConfig {
     pub no_wrap: bool,
     /// Export from all user profiles of each browser
     pub all_profiles: bool,
+    /// Exclude Tor onion URLs before sources are aggregated
+    pub exclude_onion: bool,
 }
 
 impl Default for ExportConfig {
@@ -60,8 +64,36 @@ impl Default for ExportConfig {
             wrap_folder: None,
             no_wrap: false,
             all_profiles: true,
+            exclude_onion: true,
         }
     }
+}
+
+fn is_onion_url(raw_url: &str) -> bool {
+    let parsed =
+        reqwest::Url::parse(raw_url).or_else(|_| reqwest::Url::parse(&format!("http://{raw_url}")));
+    parsed
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| {
+            let host = host.trim_end_matches('.');
+            host == "onion" || host.ends_with(".onion")
+        })
+}
+
+/// Recursively remove onion-host bookmarks while preserving all other URLs and folders.
+pub fn remove_onion_bookmarks(bookmarks: &mut Vec<Bookmark>) -> usize {
+    let mut removed = 0;
+    bookmarks.retain_mut(|bookmark| {
+        removed += remove_onion_bookmarks(&mut bookmark.children);
+        if bookmark.url.as_deref().is_some_and(is_onion_url) {
+            removed += 1;
+            false
+        } else {
+            true
+        }
+    });
+    removed
 }
 
 /// Location information for a bookmark in the tree
@@ -842,7 +874,7 @@ impl SyncEngine {
 
     /// Normalize URL for deduplication comparison
     fn normalize_url(url: &str) -> String {
-        url.trim().to_string()
+        url.to_string()
     }
 
     pub(crate) fn count_all_folders(bookmarks: &[Bookmark]) -> usize {
@@ -3962,6 +3994,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn onion_exclusion_is_recursive_and_hostname_specific() {
+        assert!(ExportConfig::default().exclude_onion);
+        let mut bookmarks = vec![create_folder(
+            "folder",
+            "Nested",
+            vec![
+                create_bookmark("onion", "Onion", Some("HTTP://hidden.example.ONION./post")),
+                create_bookmark(
+                    "path",
+                    "Path text only",
+                    Some("https://example.com/path/.onion"),
+                ),
+                create_bookmark(
+                    "suffix",
+                    "Not an onion host",
+                    Some("https://hidden.onion.example.com"),
+                ),
+            ],
+        )];
+
+        assert_eq!(remove_onion_bookmarks(&mut bookmarks), 1);
+        assert_eq!(bookmarks[0].children.len(), 2);
+        assert!(SyncEngine::requests_all_browsers(Some("all")));
+        assert!(!SyncEngine::requests_all_browsers(Some("chrome")));
+    }
+
     struct RestoreTestAdapter {
         path: PathBuf,
     }
@@ -4054,11 +4113,14 @@ mod tests {
                         name: format!("Profile {index}"),
                         path: PathBuf::from(format!("/tmp/test-chrome/profile-{index}")),
                     },
-                    bookmark_count: bookmark_count,
+                    bookmark_count,
                     folder_count: 0,
                     snapshot_path: None,
+                    read_success: true,
+                    error: None,
                 })
                 .collect(),
+            discovery_error: None,
         };
         InventoryReport {
             schema_version: "1.0.0".into(),
@@ -4208,7 +4270,7 @@ mod tests {
         );
         assert_eq!(
             SyncEngine::normalize_url("  https://example.com/  "),
-            "https://example.com/"
+            "  https://example.com/  "
         );
         assert_ne!(
             SyncEngine::normalize_url("https://example.com/A"),
@@ -5238,14 +5300,95 @@ impl SyncEngine {
             .await
     }
 
+    fn requests_all_browsers(browser_names: Option<&str>) -> bool {
+        browser_names.is_none_or(|names| {
+            names
+                .split(',')
+                .any(|name| name.trim().eq_ignore_ascii_case("all"))
+        })
+    }
+
+    fn legacy_bookmark_from_node(node: BookmarkNode) -> Option<Bookmark> {
+        match node {
+            BookmarkNode::Folder(folder) => Some(Bookmark {
+                id: folder.id,
+                title: folder.title,
+                url: None,
+                folder: true,
+                children: folder
+                    .children
+                    .into_iter()
+                    .filter_map(Self::legacy_bookmark_from_node)
+                    .collect(),
+                date_added: folder.date_added.map(|date| date.timestamp_millis()),
+                date_modified: folder.date_modified.map(|date| date.timestamp_millis()),
+            }),
+            BookmarkNode::Bookmark(bookmark) => Some(Bookmark {
+                id: bookmark.id,
+                title: bookmark.title,
+                url: Some(bookmark.raw_url),
+                folder: false,
+                children: Vec::new(),
+                date_added: bookmark.date_added.map(|date| date.timestamp_millis()),
+                date_modified: bookmark.date_modified.map(|date| date.timestamp_millis()),
+            }),
+            BookmarkNode::Separator(_) => None,
+        }
+    }
+
+    fn legacy_bookmarks_from_tree(tree: BookmarkTree, merge: bool) -> Vec<Bookmark> {
+        let roots: Vec<Bookmark> = tree
+            .roots
+            .into_iter()
+            .filter_map(Self::legacy_bookmark_from_node)
+            .collect();
+        if merge {
+            roots
+                .into_iter()
+                .flat_map(|root| {
+                    if root.folder {
+                        root.children
+                    } else {
+                        vec![root]
+                    }
+                })
+                .collect()
+        } else {
+            roots
+        }
+    }
+
+    fn collect_comprehensive_profiles(
+        merge: bool,
+        exclude_onion: bool,
+    ) -> Result<(Vec<Bookmark>, InventoryReport)> {
+        let snapshots = tempfile::tempdir().context("create isolated profile snapshots")?;
+        let (tree, inventory, _) = collector::BookmarkCollector::collect_all_with_options(
+            snapshots.path(),
+            exclude_onion,
+        )?;
+        Ok((Self::legacy_bookmarks_from_tree(tree, merge), inventory))
+    }
+
     /// Collect bookmarks from browsers for export (without writing to file)
     pub async fn collect_bookmarks_for_export(
         &self,
         browser_names: Option<&str>,
         config: &ExportConfig,
-        extra_bookmarks: Vec<Bookmark>,
+        mut extra_bookmarks: Vec<Bookmark>,
     ) -> Result<Vec<Bookmark>> {
         let merge = config.merge;
+
+        if config.exclude_onion {
+            remove_onion_bookmarks(&mut extra_bookmarks);
+        }
+        let mut all_bookmarks = extra_bookmarks;
+
+        if config.all_profiles && Self::requests_all_browsers(browser_names) {
+            let (bookmarks, _) = Self::collect_comprehensive_profiles(merge, config.exclude_onion)?;
+            all_bookmarks.extend(bookmarks);
+            return Ok(all_bookmarks);
+        }
 
         // Determine target browsers
         let target_adapters: Vec<_> = if let Some(names) = browser_names {
@@ -5269,12 +5412,8 @@ impl SyncEngine {
         } else {
             self.adapters.iter().collect()
         };
-
-        let mut all_bookmarks: Vec<Bookmark> = Vec::new();
-
-        // Add extra bookmarks first
-        if !extra_bookmarks.is_empty() {
-            all_bookmarks.extend(extra_bookmarks);
+        if target_adapters.is_empty() {
+            anyhow::bail!("No matching browsers found");
         }
 
         for adapter in &target_adapters {
@@ -5285,7 +5424,10 @@ impl SyncEngine {
                 adapter.read_bookmarks()
             };
             match res {
-                Ok(bookmarks) => {
+                Ok(mut bookmarks) => {
+                    if config.exclude_onion {
+                        remove_onion_bookmarks(&mut bookmarks);
+                    }
                     if merge {
                         all_bookmarks.extend(bookmarks);
                     } else {
@@ -5305,7 +5447,9 @@ impl SyncEngine {
                     }
                 }
                 Err(e) => {
-                    warn!("  ⚠️  {} : read failed - {}", browser_name, e);
+                    return Err(e).with_context(|| {
+                        format!("Cannot collect every selected profile from {browser_name}")
+                    });
                 }
             }
         }
@@ -5320,7 +5464,7 @@ impl SyncEngine {
         output_path: &str,
         report_json_path: Option<&str>,
         config: &ExportConfig,
-        extra_bookmarks: Vec<Bookmark>,
+        mut extra_bookmarks: Vec<Bookmark>,
         external_source_reports: Vec<serde_json::Value>,
     ) -> Result<usize> {
         let merge = config.merge;
@@ -5329,8 +5473,11 @@ impl SyncEngine {
         let verbose = config.verbose;
         info!("📤 Exporting bookmarks to HTML...");
 
+        let comprehensive = config.all_profiles && Self::requests_all_browsers(browser_names);
         // Determine target browsers
-        let target_adapters: Vec<_> = if let Some(names) = browser_names {
+        let target_adapters: Vec<_> = if comprehensive {
+            Vec::new()
+        } else if let Some(names) = browser_names {
             let browser_list: Vec<String> =
                 names.split(',').map(|s| s.trim().to_lowercase()).collect();
 
@@ -5356,19 +5503,30 @@ impl SyncEngine {
             self.adapters.iter().collect()
         };
 
-        if target_adapters.is_empty() {
+        if !comprehensive && target_adapters.is_empty() {
             anyhow::bail!("No matching browsers found");
         }
 
         info!("🎯 Target browsers:");
-        for adapter in &target_adapters {
-            info!("  - {}", adapter.browser_type().name());
+        if comprehensive {
+            info!("  - all discovered browser installations and profiles");
+        } else {
+            for adapter in &target_adapters {
+                info!("  - {}", adapter.browser_type().name());
+            }
         }
 
         let mut all_bookmarks: Vec<Bookmark> = Vec::new();
         let mut browser_stats: Vec<(String, usize)> = Vec::new();
         let mut browser_source_reports: Vec<serde_json::Value> = Vec::new();
+        let mut inventory_warnings: Vec<String> = Vec::new();
 
+        if config.exclude_onion {
+            let removed = remove_onion_bookmarks(&mut extra_bookmarks);
+            if removed > 0 {
+                info!("  🧅 Excluded {removed} onion bookmark(s) from external sources");
+            }
+        }
         if !extra_bookmarks.is_empty() {
             let extra_count = Self::count_all_bookmarks(&extra_bookmarks);
             info!("  📥 HTML / External import: {} bookmarks", extra_count);
@@ -5376,71 +5534,118 @@ impl SyncEngine {
             all_bookmarks.extend(extra_bookmarks);
         }
 
-        for adapter in &target_adapters {
-            let browser_name = adapter.browser_type().name();
-            let profiles_res = if config.all_profiles {
-                adapter.read_all_bookmarks_with_profiles()
-            } else {
-                adapter
-                    .read_bookmarks()
-                    .map(|b| vec![("Default".to_string(), b)])
-            };
-            match profiles_res {
-                Ok(profiles) => {
-                    let mut profile_reports = Vec::new();
-                    let mut total_browser_bookmarks = 0;
-                    let mut total_browser_folders = 0;
-                    let mut browser_bookmarks = Vec::new();
-                    for (p_name, p_bookmarks) in profiles {
-                        let b_count = Self::count_all_bookmarks(&p_bookmarks);
-                        let f_count = Self::count_all_folders(&p_bookmarks);
-                        total_browser_bookmarks += b_count;
-                        total_browser_folders += f_count;
-                        let top_folders: Vec<String> =
-                            p_bookmarks.iter().map(|b| b.title.clone()).collect();
-                        info!("  ✅ {} ({}) : {} bookmarks", browser_name, p_name, b_count);
-                        profile_reports.push(serde_json::json!({
-                            "profile_name": p_name,
-                            "bookmark_count": b_count,
-                            "folder_count": f_count,
-                            "top_level_folders": top_folders,
-                            "folder_breakdown": Self::get_folder_breakdown(&p_bookmarks)
+        if comprehensive {
+            let (bookmarks, inventory) =
+                Self::collect_comprehensive_profiles(merge, config.exclude_onion)?;
+            inventory_warnings = inventory.warnings.clone();
+            for warning in &inventory.warnings {
+                warn!("  ⚠️  {warning}");
+            }
+            for installation in inventory.installations {
+                let browser_name = installation.installation.name;
+                let total_browser_bookmarks: usize = installation
+                    .profiles
+                    .iter()
+                    .map(|profile| profile.bookmark_count)
+                    .sum();
+                let total_browser_folders: usize = installation
+                    .profiles
+                    .iter()
+                    .map(|profile| profile.folder_count)
+                    .sum();
+                let profile_reports: Vec<_> = installation
+                    .profiles
+                    .into_iter()
+                    .map(|profile| {
+                        serde_json::json!({
+                            "profile_id": profile.profile.id,
+                            "profile_name": profile.profile.name,
+                            "bookmark_count": profile.bookmark_count,
+                            "folder_count": profile.folder_count,
+                            "read_success": profile.read_success,
+                            "error": profile.error,
+                            "source_path": profile.profile.path,
+                            "snapshot_retained": false,
+                        })
+                    })
+                    .collect();
+                browser_stats.push((browser_name.clone(), total_browser_bookmarks));
+                browser_source_reports.push(serde_json::json!({
+                    "browser_name": browser_name,
+                    "discovery_error": installation.discovery_error,
+                    "profiles": profile_reports,
+                    "total_bookmarks_collected": total_browser_bookmarks,
+                    "total_folders_collected": total_browser_folders
+                }));
+            }
+            all_bookmarks.extend(bookmarks);
+        } else {
+            for adapter in &target_adapters {
+                let browser_name = adapter.browser_type().name();
+                let profiles_res = if config.all_profiles {
+                    adapter.read_all_bookmarks_with_profiles()
+                } else {
+                    adapter
+                        .read_bookmarks()
+                        .map(|b| vec![("Default".to_string(), b)])
+                };
+                match profiles_res {
+                    Ok(profiles) => {
+                        let mut profile_reports = Vec::new();
+                        let mut total_browser_bookmarks = 0;
+                        let mut total_browser_folders = 0;
+                        let mut browser_bookmarks = Vec::new();
+                        for (p_name, mut p_bookmarks) in profiles {
+                            if config.exclude_onion {
+                                remove_onion_bookmarks(&mut p_bookmarks);
+                            }
+                            let b_count = Self::count_all_bookmarks(&p_bookmarks);
+                            let f_count = Self::count_all_folders(&p_bookmarks);
+                            total_browser_bookmarks += b_count;
+                            total_browser_folders += f_count;
+                            let top_folders: Vec<String> =
+                                p_bookmarks.iter().map(|b| b.title.clone()).collect();
+                            info!("  ✅ {} ({}) : {} bookmarks", browser_name, p_name, b_count);
+                            profile_reports.push(serde_json::json!({
+                                "profile_name": p_name,
+                                "bookmark_count": b_count,
+                                "folder_count": f_count,
+                                "top_level_folders": top_folders,
+                                "folder_breakdown": Self::get_folder_breakdown(&p_bookmarks)
+                            }));
+                            browser_bookmarks.extend(p_bookmarks);
+                        }
+                        browser_stats.push((browser_name.to_string(), total_browser_bookmarks));
+                        browser_source_reports.push(serde_json::json!({
+                            "browser_name": browser_name,
+                            "profiles": profile_reports,
+                            "total_bookmarks_collected": total_browser_bookmarks,
+                            "total_folders_collected": total_browser_folders
                         }));
-                        browser_bookmarks.extend(p_bookmarks);
-                    }
-                    browser_stats.push((browser_name.to_string(), total_browser_bookmarks));
-                    browser_source_reports.push(serde_json::json!({
-                        "browser_name": browser_name,
-                        "profiles": profile_reports,
-                        "total_bookmarks_collected": total_browser_bookmarks,
-                        "total_folders_collected": total_browser_folders
-                    }));
 
-                    if merge {
-                        all_bookmarks.extend(browser_bookmarks);
-                    } else {
-                        let browser_folder = Bookmark {
-                            id: format!(
-                                "browser-{}",
-                                browser_name.to_lowercase().replace(' ', "-")
-                            ),
-                            title: browser_name.to_string(),
-                            url: None,
-                            folder: true,
-                            children: browser_bookmarks,
-                            date_added: Some(chrono::Utc::now().timestamp_millis()),
-                            date_modified: None,
-                        };
-                        all_bookmarks.push(browser_folder);
+                        if merge {
+                            all_bookmarks.extend(browser_bookmarks);
+                        } else {
+                            let browser_folder = Bookmark {
+                                id: format!(
+                                    "browser-{}",
+                                    browser_name.to_lowercase().replace(' ', "-")
+                                ),
+                                title: browser_name.to_string(),
+                                url: None,
+                                folder: true,
+                                children: browser_bookmarks,
+                                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                                date_modified: None,
+                            };
+                            all_bookmarks.push(browser_folder);
+                        }
                     }
-                }
-                Err(e) => {
-                    warn!("  ⚠️  {} : read failed - {}", browser_name, e);
-                    browser_source_reports.push(serde_json::json!({
-                        "browser_name": browser_name,
-                        "error": e.to_string(),
-                        "status": "Failed"
-                    }));
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!("Cannot collect every selected profile from {browser_name}")
+                        });
+                    }
                 }
             }
         }
@@ -5594,6 +5799,9 @@ impl SyncEngine {
                 .to_string_lossy()
                 .to_string()
         };
+        let external_source_failed = external_source_reports.iter().any(|report| {
+            report.get("status").and_then(serde_json::Value::as_str) == Some("failed")
+        });
 
         let report = serde_json::json!({
             "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -5605,11 +5813,14 @@ impl SyncEngine {
                 "merge_flat_structure": config.merge,
                 "clean_empty_folders": config.clean_empty,
                 "flatten_browser_roots": config.flat,
+                "exclude_onion": config.exclude_onion,
                 "wrap_root_folder": config.wrap_folder.as_deref().unwrap_or("📁镜像文件夹")
             },
             "sources": {
                 "installed_browsers": browser_source_reports,
-                "external_files_and_directories": external_source_reports
+                "external_files_and_directories": external_source_reports,
+                "collection_status": if inventory_warnings.is_empty() && !external_source_failed { "complete" } else { "partial" },
+                "inventory_warnings": inventory_warnings,
             },
             "deduplication_and_cleanup_statistics": {
                 "total_raw_bookmarks_collected": before_dedup,
@@ -5914,11 +6125,7 @@ pub async fn create_master_backup(output_dir: &str, include_full: bool) -> Resul
     let (tree, inventory, manifest) = collector::BookmarkCollector::collect_all(&output_path)?;
     validate_master_backup_inventory(&inventory)?;
 
-    fn collect_occurrences(
-        nodes: &[crate::data_types::models::BookmarkNode],
-        result: &mut Vec<serde_json::Value>,
-    ) {
-        use crate::data_types::models::BookmarkNode;
+    fn collect_occurrences(nodes: &[BookmarkNode], result: &mut Vec<serde_json::Value>) {
         for node in nodes {
             match node {
                 BookmarkNode::Bookmark(bookmark) => result.push(serde_json::json!({
@@ -6288,35 +6495,126 @@ pub fn import_bookmarks_from_source_with_report(
     let path = Path::new(source_path);
     if path.is_dir() {
         let mut all_b = Vec::new();
-        let mut found_db_paths = Vec::new();
-        for entry in walkdir::WalkDir::new(path).follow_links(true) {
+        let mut db_paths = Vec::new();
+        let mut backup_paths = Vec::new();
+        let mut skipped_symlink_paths = Vec::new();
+        let mut read_errors = Vec::new();
+        let mut successful_sources = 0usize;
+        for entry in walkdir::WalkDir::new(path).follow_links(false) {
             let entry = entry.map_err(|e| anyhow::anyhow!("扫描目录 '{source_path}' 失败: {e}"))?;
+            if entry.file_type().is_symlink() {
+                skipped_symlink_paths.push(entry.path().to_string_lossy().into_owned());
+                continue;
+            }
             if entry.file_name() == "places.sqlite" {
-                let db_path = entry.path();
-                info!("🔍 发现 Firefox/Waterfox 数据库文件: {}", db_path.display());
-                let b = crate::browsers::read_firefox_bookmarks(db_path).with_context(|| {
-                    format!("读取 Firefox/Waterfox 数据库 '{}' 失败", db_path.display())
-                })?;
-                info!("   📚 成功从数据库导入 {} 条书签节点", b.len());
-                found_db_paths.push(db_path.to_string_lossy().to_string());
-                all_b.extend(b);
+                db_paths.push(entry.path().to_path_buf());
+            } else if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonlz4"))
+                && entry
+                    .path()
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == "bookmarkbackups")
+            {
+                backup_paths.push(entry.path().to_path_buf());
             }
         }
-        if found_db_paths.is_empty() {
-            anyhow::bail!("在目录 '{source_path}' 中未找到任何 'places.sqlite' 数据库文件");
+        db_paths.sort();
+        db_paths.dedup();
+        backup_paths.sort();
+        backup_paths.dedup();
+
+        for db_path in &db_paths {
+            info!("🔍 发现 Firefox/Waterfox 数据库文件: {}", db_path.display());
+            match crate::browsers::read_firefox_bookmarks(db_path).with_context(|| {
+                format!("读取 Firefox/Waterfox 数据库 '{}' 失败", db_path.display())
+            }) {
+                Ok(b) => {
+                    successful_sources += 1;
+                    info!("   📚 成功从数据库导入 {} 条书签节点", b.len());
+                    all_b.extend(b);
+                }
+                Err(error) => {
+                    read_errors.push(serde_json::json!({
+                        "path": db_path,
+                        "kind": "sqlite",
+                        "error": error.to_string(),
+                    }));
+                }
+            }
+        }
+        for backup_path in &backup_paths {
+            info!(
+                "🔍 发现 Firefox/Waterfox JSONLZ4 备份: {}",
+                backup_path.display()
+            );
+            match firefox_backup::import_jsonlz4(backup_path) {
+                Ok(b) => {
+                    successful_sources += 1;
+                    info!("   📚 成功从备份导入 {} 条书签节点", b.len());
+                    all_b.extend(b);
+                }
+                Err(error) => {
+                    read_errors.push(serde_json::json!({
+                        "path": backup_path,
+                        "kind": "jsonlz4",
+                        "error": error.to_string(),
+                    }));
+                }
+            }
+        }
+        if db_paths.is_empty() && backup_paths.is_empty() {
+            anyhow::bail!(
+                "在目录 '{source_path}' 中未找到 places.sqlite 或 bookmarkbackups/*.jsonlz4"
+            );
+        }
+        if successful_sources == 0 {
+            anyhow::bail!(
+                "目录 '{}' 中发现的收藏夹数据均无法读取: {}",
+                source_path,
+                serde_json::to_string(&read_errors).unwrap_or_else(|_| "unknown read error".into())
+            );
         }
         let b_count = SyncEngine::count_all_bookmarks(&all_b);
         let f_count = SyncEngine::count_all_folders(&all_b);
         let top_folders: Vec<String> = all_b.iter().map(|b| b.title.clone()).collect();
         let breakdown = SyncEngine::get_folder_breakdown(&all_b);
+        let found_db_paths: Vec<String> = db_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let found_backup_paths: Vec<String> = backup_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
         let report = serde_json::json!({
             "source_path": source_path,
             "source_type": "Firefox/Waterfox Profile Directory",
             "detected_database_paths": found_db_paths,
+            "detected_jsonlz4_backup_paths": found_backup_paths,
+            "skipped_symlink_paths": skipped_symlink_paths,
+            "read_errors": read_errors,
+            "status": if read_errors.is_empty() { "ok" } else { "partial" },
             "bookmark_count": b_count,
             "folder_count": f_count,
             "top_level_folders": top_folders,
             "folder_breakdown": breakdown
+        });
+        Ok((all_b, report))
+    } else if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonlz4"))
+    {
+        let all_b = firefox_backup::import_jsonlz4(path)?;
+        let report = serde_json::json!({
+            "source_path": source_path,
+            "source_type": "Firefox/Waterfox JSONLZ4 Backup",
+            "bookmark_count": SyncEngine::count_all_bookmarks(&all_b),
+            "folder_count": SyncEngine::count_all_folders(&all_b),
+            "top_level_folders": all_b.iter().map(|b| b.title.clone()).collect::<Vec<_>>(),
+            "folder_breakdown": SyncEngine::get_folder_breakdown(&all_b)
         });
         Ok((all_b, report))
     } else if path
@@ -6712,20 +7010,13 @@ pub fn deduplicate_bookmarks(bookmarks: &mut Vec<Bookmark>) -> DedupeStats {
     stats
 }
 
-/// 标准化 URL 用于去重比较
+/// Return the byte-exact URL key used by the cleanup workflow.
+///
+/// Case, fragments, trailing slashes, whitespace, and `www` can all identify
+/// distinct bookmark entries.  Collapsing any of them makes precise cleanup
+/// impossible to audit.
 fn normalize_url_for_dedupe(url: &str) -> String {
-    let mut normalized = url.trim().to_lowercase();
-    // 移除尾部斜杠
-    while normalized.ends_with('/') {
-        normalized.pop();
-    }
-    // 移除 fragment
-    if let Some(pos) = normalized.find('#') {
-        normalized.truncate(pos);
-    }
-    // 移除 www. 前缀
-    normalized = normalized.replace("://www.", "://");
-    normalized
+    url.to_string()
 }
 
 /// 清理统计
@@ -7147,6 +7438,22 @@ mod export_quality_tests {
         }
     }
 
+    #[test]
+    fn exact_dedupe_keeps_url_variants_distinct() {
+        let mut bookmarks = vec![
+            make_bookmark("plain", "https://example.com/path"),
+            make_bookmark("slash", "https://example.com/path/"),
+            make_bookmark("fragment", "https://example.com/path#section"),
+            make_bookmark("case", "https://EXAMPLE.com/path"),
+            make_bookmark("exact duplicate", "https://example.com/path"),
+        ];
+
+        let stats = deduplicate_bookmarks(&mut bookmarks);
+
+        assert_eq!(stats.duplicates_removed, 1);
+        assert_eq!(bookmarks.len(), 4);
+    }
+
     // **Feature: export-quality-improvement, Property 6: 去重正确性**
     // **Validates: Requirements 5.1, 5.2**
     proptest! {
@@ -7281,5 +7588,17 @@ mod export_quality_tests {
                 rule.name
             );
         }
+    }
+
+    #[test]
+    fn unreadable_external_profile_is_reported_instead_of_silently_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let backup_dir = temp.path().join("bookmarkbackups");
+        std::fs::create_dir_all(&backup_dir).unwrap();
+        std::fs::write(backup_dir.join("bad.jsonlz4"), b"not-jsonlz4").unwrap();
+
+        let error = import_bookmarks_from_source_with_report(temp.path().to_str().unwrap())
+            .expect_err("a directory whose only source is unreadable must fail closed");
+        assert!(error.to_string().contains("均无法读取"));
     }
 }

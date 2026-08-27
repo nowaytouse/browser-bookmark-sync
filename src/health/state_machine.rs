@@ -1,10 +1,11 @@
 //! Same-day multi-run state machine for health verdicts
 
 use crate::health::models::{BackendObservation, HealthVerdict, QualifyingRunEvidence};
+use crate::health::targets::ProbeScope;
 use chrono::{DateTime, Duration, Utc};
 
 /// Current rule version. Increment this when evidence semantics change.
-pub const CURRENT_HEALTH_RULE_VERSION: &str = "5";
+pub const CURRENT_HEALTH_RULE_VERSION: &str = "7";
 
 /// Failure evidence expires after one rolling day. This avoids calendar-timezone
 /// edge cases while ensuring routine health decisions finish in one scan day.
@@ -102,6 +103,18 @@ impl StateMachine {
 
     /// Calculate current run's initial verdict from backend observations
     pub fn compute_single_run_verdict(observations: &[BackendObservation]) -> HealthVerdict {
+        Self::compute_single_run_verdict_for_scope(observations, ProbeScope::Content)
+    }
+
+    /// Calculate a run verdict without mixing site existence with deep-content validity.
+    pub fn compute_single_run_verdict_for_scope(
+        observations: &[BackendObservation],
+        scope: ProbeScope,
+    ) -> HealthVerdict {
+        if scope == ProbeScope::Site {
+            return Self::compute_site_run_verdict(observations);
+        }
+
         if observations.is_empty() {
             return HealthVerdict::NeedsReview;
         }
@@ -126,7 +139,11 @@ impl StateMachine {
 
             if is_exempt {
                 if let Some(code) = obs.status_code {
-                    if (200..300).contains(&code) {
+                    if (200..300).contains(&code)
+                        && obs.actual_request == "yes"
+                        && !obs.cache_hit
+                        && obs.error_kind.is_none()
+                    {
                         has_success = true;
                         continue;
                     }
@@ -142,7 +159,10 @@ impl StateMachine {
                     if !obs.cache_hit {
                         has_missing_content = true;
                     }
-                } else if err == "Soft404Candidate" || err == "BodyTooLarge" {
+                } else if matches!(
+                    err.as_str(),
+                    "Soft404Candidate" | "ParkedDomainCandidate" | "BodyTooLarge"
+                ) {
                     if !obs.cache_hit {
                         has_suspicious_content = true;
                     }
@@ -163,10 +183,12 @@ impl StateMachine {
 
             if let Some(code) = obs.status_code {
                 if (200..300).contains(&code) {
-                    has_success = true;
-                    if obs.actual_request == "yes"
-                        && !obs.cache_hit
-                        && obs.error_kind.is_none()
+                    let is_real_success =
+                        obs.actual_request == "yes" && !obs.cache_hit && obs.error_kind.is_none();
+                    if is_real_success {
+                        has_success = true;
+                    }
+                    if is_real_success
                         && obs
                             .body_hash
                             .as_deref()
@@ -189,9 +211,7 @@ impl StateMachine {
 
         // A 200 response only proves transport success. A content-aware probe can still prove
         // that the requested deep resource was removed or replaced by an unavailable page.
-        if has_protected {
-            HealthVerdict::Protected
-        } else if has_content_success {
+        if has_content_success {
             HealthVerdict::Live
         } else if has_missing_content {
             HealthVerdict::ProbableDead
@@ -199,9 +219,78 @@ impl StateMachine {
             HealthVerdict::NeedsReview
         } else if has_success {
             HealthVerdict::Live
+        } else if has_protected {
+            HealthVerdict::Protected
         } else if has_probable_dead {
             HealthVerdict::ProbableDead
         } else if has_temp_fail {
+            HealthVerdict::TemporaryFailure
+        } else {
+            HealthVerdict::NeedsReview
+        }
+    }
+
+    fn compute_site_run_verdict(observations: &[BackendObservation]) -> HealthVerdict {
+        if observations.is_empty() {
+            return HealthVerdict::NeedsReview;
+        }
+
+        let mut has_live_response = false;
+        let mut has_protected = false;
+        let mut has_nxdomain = false;
+        let mut has_temporary_failure = false;
+
+        for observation in observations {
+            if observation.error_kind.as_deref() == Some("OnionDomainExempt")
+                || crate::health::content::is_exempt_special_domain(&observation.initial_url)
+                || observation
+                    .final_url
+                    .as_deref()
+                    .is_some_and(crate::health::content::is_exempt_special_domain)
+            {
+                has_protected = true;
+                continue;
+            }
+
+            if observation
+                .error_kind
+                .as_deref()
+                .is_some_and(|error| error.starts_with("SecurityBlocked:"))
+            {
+                has_protected = true;
+                continue;
+            }
+
+            if observation.actual_request == "yes" && !observation.cache_hit {
+                if let Some(status) = observation.status_code {
+                    match status {
+                        401 | 403 | 407 | 423 | 429 | 451 => has_protected = true,
+                        408 | 500..=599 => has_temporary_failure = true,
+                        100..=499 => has_live_response = true,
+                        _ => has_temporary_failure = true,
+                    }
+                }
+
+                if observation
+                    .dns_rcode
+                    .as_deref()
+                    .is_some_and(|rcode| rcode.eq_ignore_ascii_case("NXDOMAIN"))
+                    || observation.error_kind.as_deref() == Some("DnsNxdomain")
+                {
+                    has_nxdomain = true;
+                }
+            } else if observation.error_kind.is_some() {
+                has_temporary_failure = true;
+            }
+        }
+
+        if has_live_response {
+            HealthVerdict::Live
+        } else if has_protected {
+            HealthVerdict::Protected
+        } else if has_nxdomain {
+            HealthVerdict::ProbableDead
+        } else if has_temporary_failure {
             HealthVerdict::TemporaryFailure
         } else {
             HealthVerdict::NeedsReview
@@ -218,7 +307,16 @@ impl StateMachine {
         history: &BookmarkHistoryStats,
         now: DateTime<Utc>,
     ) -> HealthVerdict {
-        let single_verdict = Self::compute_single_run_verdict(current_obs);
+        Self::resolve_final_verdict_for_scope(current_obs, history, now, ProbeScope::Content)
+    }
+
+    pub fn resolve_final_verdict_for_scope(
+        current_obs: &[BackendObservation],
+        history: &BookmarkHistoryStats,
+        now: DateTime<Utc>,
+        scope: ProbeScope,
+    ) -> HealthVerdict {
+        let single_verdict = Self::compute_single_run_verdict_for_scope(current_obs, scope);
 
         // A successful retry is enough to preserve the bookmark. Historical failures are
         // relevant only inside the same rolling-day evidence window.
@@ -251,6 +349,12 @@ impl StateMachine {
                 .qualifying_evidences
                 .iter()
                 .filter(|evidence| Self::is_current_evidence(evidence.strong_failure_at, now))
+                .filter(|evidence| {
+                    scope == ProbeScope::Content
+                        || evidence
+                            .strong_failure_kinds
+                            .contains(&crate::health::models::StrongFailureKind::ConfirmedNxDomain)
+                })
                 .collect();
             evidences.sort_by_key(|evidence| evidence.completed_at);
 
@@ -389,6 +493,89 @@ mod tests {
         obs.status_code = Some(200);
         let verdict = StateMachine::compute_single_run_verdict(&[obs]);
         assert_eq!(verdict, HealthVerdict::Live);
+    }
+
+    #[test]
+    fn site_scope_does_not_treat_page_failures_as_site_death() {
+        for status in [302, 404, 410] {
+            let observation = BackendObservation {
+                actual_request: "yes".to_string(),
+                status_code: Some(status),
+                error_kind: (status == 404).then(|| "ContentMissing".to_string()),
+                ..Default::default()
+            };
+            assert_eq!(
+                StateMachine::compute_single_run_verdict_for_scope(
+                    &[observation.clone()],
+                    ProbeScope::Site,
+                ),
+                HealthVerdict::Live
+            );
+            if status == 404 {
+                assert_eq!(
+                    StateMachine::compute_single_run_verdict_for_scope(
+                        &[observation],
+                        ProbeScope::Content,
+                    ),
+                    HealthVerdict::ProbableDead
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn site_scope_ignores_historical_page_failures() {
+        let now = Utc::now();
+        let observation = BackendObservation {
+            actual_request: "yes".to_string(),
+            dns_rcode: Some("NXDOMAIN".to_string()),
+            error_kind: Some("DnsNxdomain".to_string()),
+            ..Default::default()
+        };
+        let history = BookmarkHistoryStats {
+            qualifying_evidences: mock_evidences(3, Some(now - Duration::hours(2)), Some(now)),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            StateMachine::resolve_final_verdict_for_scope(
+                &[observation],
+                &history,
+                now,
+                ProbeScope::Site,
+            ),
+            HealthVerdict::NeedsReview
+        );
+    }
+
+    #[test]
+    fn any_real_success_wins_over_a_protected_secondary_probe() {
+        let mut success = BackendObservation::default();
+        success.backend = "native_reqwest".to_string();
+        success.actual_request = "yes".to_string();
+        success.status_code = Some(200);
+
+        let mut protected = BackendObservation::default();
+        protected.backend = "curl".to_string();
+        protected.actual_request = "yes".to_string();
+        protected.status_code = Some(403);
+
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[success, protected]),
+            HealthVerdict::Live
+        );
+    }
+
+    #[test]
+    fn synthetic_or_security_blocked_2xx_is_not_success() {
+        let mut observation = BackendObservation::default();
+        observation.actual_request = "no".to_string();
+        observation.status_code = Some(200);
+        observation.error_kind = Some("SecurityBlocked: private address".to_string());
+        assert_eq!(
+            StateMachine::compute_single_run_verdict(&[observation]),
+            HealthVerdict::Protected
+        );
     }
 
     #[test]
@@ -622,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn protected_signal_precedes_content_aware_success() {
+    fn real_content_success_precedes_a_protected_secondary_signal() {
         let protected = BackendObservation {
             status_code: Some(403),
             ..Default::default()
@@ -636,7 +823,7 @@ mod tests {
 
         assert_eq!(
             StateMachine::compute_single_run_verdict(&[protected, content_success]),
-            HealthVerdict::Protected
+            HealthVerdict::Live
         );
     }
 

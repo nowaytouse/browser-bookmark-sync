@@ -1,10 +1,12 @@
 //! OpenSSL CLI Probe Backend Adapter (Tier 5)
 
-use crate::health::backends::{reject_unsafe_target, ProbeBackend};
+use crate::health::backends::{
+    reject_unsafe_network_target, run_command_output_with_timeout, ProbeBackend,
+};
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
 use async_trait::async_trait;
 use chrono::Utc;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy)]
 pub struct OpenSslCliBackend;
@@ -54,7 +56,7 @@ impl ProbeBackend for OpenSslCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
-        if reject_unsafe_target(target, context, &mut obs) {
+        if reject_unsafe_network_target(target, context, &mut obs).await {
             return Ok(obs);
         }
 
@@ -79,49 +81,19 @@ impl ProbeBackend for OpenSslCliBackend {
 
         let host_port = format!("{}:{}", target.host, target.port.unwrap_or(443));
 
-        // Use stdin = Stdio::null() so OpenSSL s_client exits reliably after handshake
-        let mut child = Command::new(&bin_path)
+        let mut command = Command::new(&bin_path);
+        command
             .arg("s_client")
             .arg("-connect")
             .arg(&host_port)
             .arg("-servername")
             .arg(&target.host)
-            .arg("-brief")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("OpenSSL spawn error: {e}"))?;
-
-        let timeout = std::time::Duration::from_secs(5);
-        let start = std::time::Instant::now();
-
-        let output_res = loop {
-            if let Ok(Some(status)) = child.try_wait() {
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    use std::io::Read;
-                    let _ = out.read_to_end(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = err.read_to_end(&mut stderr);
-                }
-                break Ok(std::process::Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
-
-            if start.elapsed() >= timeout {
-                let _ = child.kill();
-                break Err("OpenSslTimeout".to_string());
-            }
-
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        };
+            .arg("-brief");
+        let output_res = run_command_output_with_timeout(
+            command,
+            std::time::Duration::from_secs(context.timeout_secs.clamp(1, 60)),
+        )
+        .await;
 
         obs.finished_at = Utc::now();
 
@@ -142,9 +114,13 @@ impl ProbeBackend for OpenSslCliBackend {
                     obs.error_kind = Some("TlsHandshakeFailed".to_string());
                 }
             }
-            Err(err_kind) => {
+            Err(error) => {
                 obs.actual_request = "unknown".to_string();
-                obs.error_kind = Some(err_kind);
+                obs.error_kind = Some(if error.kind() == std::io::ErrorKind::TimedOut {
+                    "OpenSslTimeout".to_string()
+                } else {
+                    format!("OpenSslExecutionError: {error}")
+                });
             }
         }
 

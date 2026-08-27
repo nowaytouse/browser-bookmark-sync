@@ -89,17 +89,8 @@ impl ProbeTarget {
         let host = parsed.host_str().unwrap_or("").to_string();
         let port = parsed.port();
 
-        // Extract registrable domain
-        let registrable_domain = if host.is_empty() {
-            String::new()
-        } else {
-            let parts: Vec<&str> = host.split('.').collect();
-            if parts.len() >= 2 {
-                parts[parts.len() - 2..].join(".")
-            } else {
-                host.clone()
-            }
-        };
+        let registrable_domain = crate::health::targets::registrable_domain(&host)
+            .ok_or_else(|| "Invalid URL: host has no registrable domain".to_string())?;
 
         Ok(Self {
             bookmark_id: bookmark_id.into(),
@@ -110,6 +101,28 @@ impl ProbeTarget {
             registrable_domain,
             original_title: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::ProbeTarget;
+
+    #[test]
+    fn probe_target_uses_public_suffix_data_for_scheduler_keys() {
+        assert_eq!(
+            ProbeTarget::from_url("id", "https://a.example.co.uk/post")
+                .unwrap()
+                .registrable_domain,
+            "example.co.uk"
+        );
+        assert_eq!(
+            ProbeTarget::from_url("id", "https://owner.github.io/post")
+                .unwrap()
+                .registrable_domain,
+            "owner.github.io"
+        );
+        assert!(ProbeTarget::from_url("id", "https://co.uk/").is_err());
     }
 }
 
@@ -196,6 +209,8 @@ pub struct ProbeContext {
     pub proxy_url: Option<String>,
     pub timeout_secs: u64,
     pub slow_mode: bool,
+    pub probe_scope: crate::health::targets::ProbeScope,
+    pub dns_policy_hash: String,
     pub allow_private_ips: bool,
     pub history_db_path: Option<PathBuf>,
     pub secondary_backends: Vec<String>,
@@ -257,11 +272,12 @@ impl ConfigHashInput {
             } else {
                 "direct".to_string()
             },
-            request_strategy: "head_then_get_html_content_v1".to_string(),
+            request_strategy: format!("head_then_get_html_content_v2:{:?}", context.probe_scope)
+                .to_ascii_lowercase(),
             timeout_secs: context.timeout_secs,
             allow_private_ips: context.allow_private_ips,
             rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION.to_string(),
-            dns_resolver_policy: "cloudflare_and_alidns".to_string(),
+            dns_resolver_policy: context.dns_policy_hash.clone(),
             cache_policy: "no_cache".to_string(),
             retry_preset: "single_attempt".to_string(),
             verifier_family_mapping_version: "1".to_string(),

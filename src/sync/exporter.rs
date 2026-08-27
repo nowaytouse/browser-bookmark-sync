@@ -195,7 +195,7 @@ impl ReportExporter {
 
         report.push_str("\n## 3. Deduplication Policy & Tie-Breaking Rules\n\n");
         report.push_str(
-            "The deduplication engine performed **exact URL matching** (`raw_url.trim()`).\n",
+            "The deduplication engine performed **byte-exact URL matching** (`raw_url`).\n",
         );
         report.push_str("For each set of duplicate bookmark occurrences pointing to the exact same URL, a single **Primary Canonical Bookmark** was selected based on the following deterministic tie-breaking priority:\n\n");
         report.push_str("1. **Preferred Browser Source**: User-configured or default browser authority priority.\n");

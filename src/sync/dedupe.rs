@@ -27,10 +27,10 @@ impl DedupeEngine {
 
         let total_raw = occurrences.len();
 
-        // Group occurrences strictly by raw_url.trim()
+        // Exact means byte-for-byte equality; do not silently normalize user data.
         let mut url_groups: HashMap<String, Vec<BookmarkOccurrence>> = HashMap::new();
         for occ in occurrences {
-            let key = occ.raw_url.trim().to_string();
+            let key = occ.raw_url.clone();
             url_groups.entry(key).or_default().push(occ);
         }
 
@@ -359,5 +359,27 @@ mod tests {
         let (forward_index, _) = DedupeEngine::select_primary_index(&forward, &[]);
         let (reverse_index, _) = DedupeEngine::select_primary_index(&reverse, &[]);
         assert_eq!(forward[forward_index].id, reverse[reverse_index].id);
+    }
+
+    #[test]
+    fn exact_dedupe_does_not_merge_whitespace_distinct_urls() {
+        let tree = BookmarkTree {
+            sources: vec![],
+            roots: vec![
+                BookmarkNode::Bookmark(make_sample_occurrence(
+                    "https://example.com",
+                    "plain",
+                    "Chrome",
+                )),
+                BookmarkNode::Bookmark(make_sample_occurrence(
+                    " https://example.com",
+                    "leading-space",
+                    "Chrome",
+                )),
+            ],
+            harvested_at: Utc::now(),
+        };
+        let (canonicals, _, _, raw, duplicates) = DedupeEngine::deduplicate_tree(&tree, &[]);
+        assert_eq!((raw, canonicals.len(), duplicates), (2, 2, 0));
     }
 }

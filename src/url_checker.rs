@@ -10,7 +10,7 @@
 //!   4. 本地网络/代理IO错误（超时/本地故障）→ Uncertain（本地原因，不判死链）
 //!   5. 服务器暂时维护（5xx / 503）→ Uncertain（存疑保留）
 
-use crate::health::security::{validate_url_security, SecurityCheckResult};
+use crate::health::security::{is_ip_allowed, validate_url_security, SecurityCheckResult};
 use anyhow::Result;
 use hickory_resolver::{
     config::{NameServerConfig, ResolverConfig, ResolverOpts, CLOUDFLARE},
@@ -129,6 +129,13 @@ struct SmartDohResolver {
     global_resolver: Arc<TokioResolver>,
 }
 
+fn validate_resolved_ips(ips: &[IpAddr], allow_private: bool) -> Result<(), String> {
+    for ip in ips {
+        is_ip_allowed(*ip, allow_private)?;
+    }
+    Ok(())
+}
+
 impl SmartDohResolver {
     fn build() -> Result<Self> {
         // 阿里云 DoH: https://dns.alidns.com/dns-query
@@ -193,10 +200,17 @@ impl Resolve for SmartDohResolver {
                 .lookup_ip(host.as_str())
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+            let ips: Vec<IpAddr> = lookup.iter().collect();
+            if let Err(reason) = validate_resolved_ips(&ips, false) {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("DNS resolved to a blocked address: {reason}"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
             let addrs: Addrs = Box::new(
-                lookup
-                    .iter()
-                    .map(|ip: IpAddr| SocketAddr::new(ip, 0))
+                ips.into_iter()
+                    .map(|ip| SocketAddr::new(ip, 0))
                     .collect::<Vec<_>>()
                     .into_iter(),
             );
@@ -732,6 +746,13 @@ mod tests {
     }
 
     #[test]
+    fn doh_results_cannot_route_the_checker_into_private_networks() {
+        assert!(validate_resolved_ips(&["127.0.0.1".parse().unwrap()], false).is_err());
+        assert!(validate_resolved_ips(&["10.0.0.1".parse().unwrap()], false).is_err());
+        assert!(validate_resolved_ips(&["93.184.216.34".parse().unwrap()], false).is_ok());
+    }
+
+    #[test]
     fn test_check_report_consistency() {
         let results = vec![
             UrlCheckResult::from_results(
@@ -780,7 +801,9 @@ impl UrlChecker {
                 .pool_idle_timeout(Duration::from_secs(30))
                 .pool_max_idle_per_host(10)
                 .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-                .redirect(reqwest::redirect::Policy::limited(5));
+                // The legacy checker is report-only. Stopping at redirects avoids a second,
+                // unvalidated DNS target; the health engine owns safe per-hop following.
+                .redirect(reqwest::redirect::Policy::none());
             if let Some(ref r) = doh_resolver {
                 builder = builder.dns_resolver(Arc::new(r.clone()));
             }
@@ -801,7 +824,7 @@ impl UrlChecker {
                     .user_agent(
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                     )
-                    .redirect(reqwest::redirect::Policy::limited(5))
+                    .redirect(reqwest::redirect::Policy::none())
                     .build()?,
             )
         } else {

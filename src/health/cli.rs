@@ -79,8 +79,29 @@ pub enum HealthCommands {
         /// SQLite database path
         #[arg(long, default_value = "./bookmark-health.sqlite")]
         db: PathBuf,
+        /// Output selection JSON path
+        #[arg(long, default_value = "./quarantine-selection.json")]
+        output: PathBuf,
     },
-    /// Rebuild `health_summaries` table from raw `health_checks` history
+    /// Apply an explicit ConfirmedDead selection to a check-copy only
+    ApplyQuarantine {
+        /// SQLite database path
+        #[arg(long, default_value = "./bookmark-health.sqlite")]
+        db: PathBuf,
+        /// Reviewed quarantine selection JSON
+        #[arg(long)]
+        selection: PathBuf,
+        /// Input HTML check copy; never a browser profile
+        #[arg(long)]
+        input: PathBuf,
+        /// New cleaned HTML output path; must not already exist
+        #[arg(long)]
+        output: PathBuf,
+        /// Explicitly confirm destructive filtering of the copy
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Rebuild summaries from current completed 24-hour evidence
     RebuildSummary {
         /// SQLite database path
         #[arg(long, default_value = "./bookmark-health.sqlite")]
@@ -209,7 +230,7 @@ impl HealthCommands {
                         + report.temp_failure_count
                 );
             }
-            Self::Quarantine { db } => {
+            Self::Quarantine { db, output } => {
                 println!("🛡️  Quarantine Review Candidates (Multi-Run Confirmed Dead Only)");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 if !db.exists() {
@@ -218,6 +239,8 @@ impl HealthCommands {
                 }
                 let conn =
                     HealthDatabase::open(&db).map_err(|e| format!("Failed to open DB: {e}"))?;
+                let count = crate::health::quarantine::write_selection(&conn, &output)
+                    .map_err(|e| format!("Selection generation failed: {e:#}"))?;
                 let candidates = conn
                     .get_quarantine_candidates()
                     .map_err(|e| format!("Query failed: {e}"))?;
@@ -229,10 +252,35 @@ impl HealthCommands {
                     }
                     println!("\nTotal: {} candidates", candidates.len());
                 }
+                println!("Selection JSON: {} ({count} items)", output.display());
                 println!(
                     "\nSafety Notice: Single-run results cannot be used for destructive deletion."
                 );
-                println!("Generate and review a quarantine report first.");
+                println!("Review the selection, then use apply-quarantine with --confirm on a check copy.");
+            }
+            Self::ApplyQuarantine {
+                db,
+                selection,
+                input,
+                output,
+                confirm,
+            } => {
+                let conn =
+                    HealthDatabase::open(&db).map_err(|e| format!("Failed to open DB: {e}"))?;
+                let audit = crate::health::quarantine::apply_selection(
+                    &conn, &selection, &input, &output, confirm,
+                )
+                .map_err(|e| format!("Quarantine apply failed: {e:#}"))?;
+                println!(
+                    "✅ Cleaned copy written: {} (removed {}, kept {})",
+                    output.display(),
+                    audit.removed_count,
+                    audit.kept_count
+                );
+                println!(
+                    "Deletion audit: {}",
+                    crate::health::quarantine::audit_path_for(&output).display()
+                );
             }
             Self::RebuildSummary { db } => {
                 if !db.exists() {
@@ -244,7 +292,9 @@ impl HealthCommands {
                 let rebuilt = conn
                     .rebuild_summary_from_checks()
                     .map_err(|e| format!("Rebuild failed: {e}"))?;
-                println!("✅ Rebuilt health_summaries from raw checks: {rebuilt} entries updated.");
+                println!(
+                    "✅ Rebuilt health_summaries from current completed 24-hour evidence: {rebuilt} entries updated."
+                );
             }
         }
 

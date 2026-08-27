@@ -1,6 +1,6 @@
 //! `ProjectDiscovery` httpx CLI Probe Backend Adapter (Tier 3 & Tier 4)
 
-use crate::health::backends::{reject_unsafe_target, run_command_output, ProbeBackend};
+use crate::health::backends::{reject_unsafe_network_target, run_command_output, ProbeBackend};
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -56,7 +56,7 @@ impl ProbeBackend for HttpxCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
-        if reject_unsafe_target(target, context, &mut obs) {
+        if reject_unsafe_network_target(target, context, &mut obs).await {
             return Ok(obs);
         }
 
@@ -98,7 +98,11 @@ impl ProbeBackend for HttpxCliBackend {
             Ok(out) => {
                 obs.actual_request = "yes".to_string();
                 let stdout_str = String::from_utf8_lossy(&out.stdout);
-                if let Ok(v) = serde_json::from_str::<Value>(&stdout_str) {
+                let parsed = stdout_str
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .and_then(|line| serde_json::from_str::<Value>(line).ok());
+                if let Some(v) = parsed {
                     if let Some(code) = v.get("status_code").and_then(Value::as_u64) {
                         obs.status_code = Some(code as u16);
                     }
@@ -114,10 +118,17 @@ impl ProbeBackend for HttpxCliBackend {
                     if let Some(ct) = v.get("content_type").and_then(|t| t.as_str()) {
                         obs.content_type = Some(ct.to_string());
                     }
-                } else if out.status.success() {
-                    obs.status_code = Some(200);
                 } else {
-                    obs.error_kind = Some("HttpxExecutionFailed".to_string());
+                    obs.actual_request = "unknown".to_string();
+                    obs.error_kind = Some(if out.status.success() {
+                        "HttpxMalformedJson".to_string()
+                    } else {
+                        "HttpxExecutionFailed".to_string()
+                    });
+                }
+                if obs.status_code.is_none() && obs.error_kind.is_none() {
+                    obs.actual_request = "unknown".to_string();
+                    obs.error_kind = Some("HttpxMissingStatus".to_string());
                 }
             }
             Err(e) => {

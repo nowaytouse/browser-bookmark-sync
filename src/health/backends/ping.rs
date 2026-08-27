@@ -1,6 +1,6 @@
 //! Ping CLI Probe Backend Adapter (Tier 5)
 
-use crate::health::backends::{reject_unsafe_target, run_command_output, ProbeBackend};
+use crate::health::backends::{reject_unsafe_network_target, run_command_output, ProbeBackend};
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -57,7 +57,7 @@ impl ProbeBackend for PingCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
-        if reject_unsafe_target(target, context, &mut obs) {
+        if reject_unsafe_network_target(target, context, &mut obs).await {
             return Ok(obs);
         }
 

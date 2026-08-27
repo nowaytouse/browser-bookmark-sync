@@ -1,6 +1,6 @@
 //! Lychee CLI Probe Backend Adapter (Tier 2)
 
-use crate::health::backends::{reject_unsafe_target, run_command_output, ProbeBackend};
+use crate::health::backends::{reject_unsafe_network_target, run_command_output, ProbeBackend};
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -60,7 +60,7 @@ impl ProbeBackend for LycheeCliBackend {
         obs.started_at = started_at;
         obs.initial_url = target.original_url.clone();
 
-        if reject_unsafe_target(target, context, &mut obs) {
+        if reject_unsafe_network_target(target, context, &mut obs).await {
             return Ok(obs);
         }
 
@@ -109,16 +109,13 @@ impl ProbeBackend for LycheeCliBackend {
                         if code == 0 {
                             obs.status_code = Some(200);
                         } else {
-                            obs.status_code = Some(404);
                             obs.error_kind = Some("LycheeDetectedFailure".to_string());
                             if let Some(fail_map) = v.get("fail_map").or_else(|| v.get("results")) {
                                 obs.body_preview = Some(fail_map.to_string());
                             }
                         }
-                    } else if code == 0 {
-                        obs.status_code = Some(200);
                     } else {
-                        // Exit code 2 but malformed JSON -> process failure
+                        // Exit code alone is not structured URL evidence.
                         obs.actual_request = "unknown".to_string();
                         obs.error_kind = Some("LycheeMalformedJson".to_string());
                     }

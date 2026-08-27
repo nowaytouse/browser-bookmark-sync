@@ -62,8 +62,10 @@ impl CurlCliBackend {
             if crate::health::content::is_parked_domain(
                 observation.title.as_deref(),
                 observation.body_preview.as_deref(),
-            ) || (crate::health::content::is_deep_content_url(target_url)
-                && crate::health::content::is_structured_content_missing(&text))
+            ) {
+                observation.error_kind = Some("ParkedDomainCandidate".to_string());
+            } else if crate::health::content::is_deep_content_url(target_url)
+                && crate::health::content::is_structured_content_missing(&text)
             {
                 observation.error_kind = Some("ContentMissing".to_string());
             } else if crate::health::content::is_soft_404(
@@ -238,6 +240,15 @@ impl ProbeBackend for CurlCliBackend {
                     }
                     if let Some(ip) = v.get("remote_ip").and_then(|i| i.as_str()) {
                         if !ip.is_empty() {
+                            if let Ok(parsed_ip) = ip.parse::<IpAddr>() {
+                                if let Err(reason) = crate::health::security::is_ip_allowed(
+                                    parsed_ip,
+                                    context.allow_private_ips,
+                                ) {
+                                    obs.actual_request = "no".to_string();
+                                    obs.error_kind = Some(format!("SecurityBlocked: {reason}"));
+                                }
+                            }
                             obs.ip_addresses = vec![ip.to_string()];
                         }
                     }
@@ -255,10 +266,13 @@ impl ProbeBackend for CurlCliBackend {
                 } else if body_too_large {
                     obs.actual_request = "unknown".to_string();
                     obs.error_kind = Some("BodyTooLarge".to_string());
-                } else if out.status.success() {
-                    obs.status_code = Some(200);
                 } else {
-                    obs.error_kind = Some(format!("CurlExitCode: {:?}", out.status.code()));
+                    obs.actual_request = "unknown".to_string();
+                    obs.error_kind = Some(if out.status.success() {
+                        "CurlMalformedJson".to_string()
+                    } else {
+                        format!("CurlExitCode: {:?}", out.status.code())
+                    });
                 }
                 obs.content_length = Some(body.len() as u64);
                 if !body_too_large {

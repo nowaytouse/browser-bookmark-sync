@@ -1917,13 +1917,14 @@ mod tests {
 
         conn.execute(
             "INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version)
-             VALUES (?1, ?2, ?3, ?4, 'standard', ?5, '5', '0.0.0')",
+             VALUES (?1, ?2, ?3, ?4, 'standard', ?5, ?6, '0.0.0')",
             params![
                 run_id,
                 started_at,
                 finished_at,
                 if run_completed { 1i64 } else { 0i64 },
                 config_hash,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
             ],
         )
         .unwrap();
@@ -2073,7 +2074,7 @@ mod tests {
         let check_id = "chk-bm3-1".to_string();
         let conn = db.raw_conn_for_test();
         let t = Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id, t, t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','7','0')", rusqlite::params![run_id, t, t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, finished_at, run_verdict) VALUES (?1,?2,'bm3','http://x.com',?3,?4,'needs_review')", rusqlite::params![check_id, run_id, t, t]).unwrap();
         for i in 0..3 {
             let aid = format!("att-bm3-{i}");
@@ -2159,7 +2160,7 @@ mod tests {
         let check_id = "chk-bm6-1".to_string();
         let conn = db.raw_conn_for_test();
         let t = Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id, t, t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_hash, rule_version, app_version) VALUES (?1,?2,?3,1,'standard','h','7','0')", rusqlite::params![run_id, t, t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, finished_at, run_verdict) VALUES (?1,?2,'bm6','http://x.com',?3,?4,'live')", rusqlite::params![check_id, run_id, t, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence,started_at,finished_at) VALUES ('a1',?1,'native_reqwest','0','direct',0,'yes',0,'GET',404,'http://x.com',0,0,1.0,?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,status_code,initial_url,redirect_count,response_time_ms,confidence,started_at,finished_at) VALUES ('a2',?1,'lychee','0','direct',1,'yes',0,'GET',200,'http://x.com',0,0,1.0,?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2703,7 +2704,7 @@ mod tests {
         let check_id = "chk-dns2-1".to_string();
         let conn = db.raw_conn_for_test();
         let t = Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','7','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns2','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2736,7 +2737,7 @@ mod tests {
         let check_id = "chk-dns3".to_string();
         let conn = db.raw_conn_for_test();
         let t = Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','7','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns3','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','resolver-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2758,7 +2759,7 @@ mod tests {
         let check_id = "chk-dns4".to_string();
         let conn = db.raw_conn_for_test();
         let t = Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','7','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns4','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','r-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NOERROR','r-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2781,7 +2782,7 @@ mod tests {
         let check_id = "chk-dns5".to_string();
         let conn = db.raw_conn_for_test();
         let t = Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','7','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns5','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','r-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'ServFail','r-b',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2804,7 +2805,7 @@ mod tests {
         let check_id = "chk-dns6".to_string();
         let conn = db.raw_conn_for_test();
         let t = Utc::now().to_rfc3339();
-        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','5','0')", rusqlite::params![run_id,t,t]).unwrap();
+        conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,config_hash,rule_version,app_version) VALUES (?1,?2,?3,1,'standard','h','7','0')", rusqlite::params![run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?2,'dns6','http://dead.example.com',?3,?4,'needs_review')", rusqlite::params![check_id,run_id,t,t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a1',?1,'hickory_dns','0','direct',0,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
         conn.execute("INSERT INTO health_attempts (attempt_id,check_id,backend,backend_version,route,attempt_index,actual_request,cache_hit,method,initial_url,redirect_count,response_time_ms,confidence,dns_rcode,resolver_id,started_at,finished_at) VALUES ('a2',?1,'hickory_dns','0','direct',1,'yes',0,'GET','http://dead.example.com',0,0,1.0,'NxDomain','resolver-a',?2,?2)", rusqlite::params![check_id, t]).unwrap();
@@ -2878,12 +2879,12 @@ mod tests {
     #[test]
     fn matching_rule_version_uses_or_rebuilds_valid_summary() {
         use crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
-        assert_eq!(CURRENT_HEALTH_RULE_VERSION, "5");
+        assert_eq!(CURRENT_HEALTH_RULE_VERSION, "7");
     }
 
     #[test]
     fn stale_rule_version_forces_rebuild() {
-        // Simulate: summary stored with rule_version "1", current is "5"
+        // Simulate: summary stored with rule_version "1", current is "6"
         // State machine should not trust the cached summary → rebuild from evidences
         let db = HealthDatabase::in_memory().unwrap();
         // No evidence in DB → qualifying_evidences will be empty regardless of summary
@@ -2919,8 +2920,8 @@ mod tests {
         };
         let history = BookmarkHistoryStats {
             qualifying_evidences: evidences,
-            rule_version: "5".to_string(), // current version
-            consecutive_failures: 99,      // stale summary would say 99, but evidences override
+            rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION.to_string(),
+            consecutive_failures: 99, // stale summary would say 99, but evidences override
             ..Default::default()
         };
         let verdict = StateMachine::resolve_final_verdict(&[obs], &history, Utc::now());
@@ -2982,7 +2983,7 @@ mod tests {
             rule_version: CURRENT_HEALTH_RULE_VERSION.to_string(),
             ..Default::default()
         };
-        assert_eq!(history.rule_version, "5");
+        assert_eq!(history.rule_version, "7");
     }
 
     #[test]
@@ -2993,6 +2994,8 @@ mod tests {
             proxy_url: None,
             timeout_secs,
             slow_mode: false,
+            probe_scope: crate::health::targets::ProbeScope::Content,
+            dns_policy_hash: "test-dns-policy".to_string(),
             allow_private_ips: false,
             history_db_path: None,
             secondary_backends,
@@ -3181,7 +3184,7 @@ mod tests {
 
     #[test]
     fn summary_config_mismatch_forces_rebuild() {
-        // Summary rule_version "1" vs current "5" → qualifying_evidences must be rebuilt fresh
+        // Summary rule_version "1" vs current "6" → qualifying_evidences must be rebuilt fresh
         let db = HealthDatabase::in_memory().unwrap();
         insert_run_and_attempt(
             &db,
@@ -4034,6 +4037,8 @@ mod sqlite_integration_tests {
             proxy_url: None,
             timeout_secs: 10,
             slow_mode: false,
+            probe_scope: crate::health::targets::ProbeScope::Content,
+            dns_policy_hash: "test-dns-policy".to_string(),
             allow_private_ips: false,
             history_db_path: None,
             secondary_backends: vec!["dnsx".to_string()],

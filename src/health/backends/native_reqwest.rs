@@ -273,6 +273,14 @@ impl ProbeBackend for NativeReqwestBackend {
                     }
                 }
 
+                let declared_html = obs.content_type.as_ref().is_some_and(|content_type| {
+                    let lower = content_type.to_lowercase();
+                    lower.contains("html") || lower.contains("xhtml")
+                });
+                if obs.content_type.is_some() && !declared_html {
+                    return Ok(obs);
+                }
+
                 // If GET was performed, read body with max 256 KiB limit
                 if method == "GET" || fell_back {
                     let mut buffer = Vec::new();
@@ -321,17 +329,9 @@ impl ProbeBackend for NativeReqwestBackend {
                         return Ok(obs);
                     }
 
-                    let text = String::from_utf8_lossy(&buffer);
-                    let raw_preview: String = text.chars().take(500).collect();
-                    obs.body_preview = Some(raw_preview);
-
                     // Title, Canonical, and Body Hash extraction ONLY if Content-Type is HTML/XHTML
-                    let is_html = obs.content_type.as_ref().is_some_and(|ct| {
-                        let ct_lower = ct.to_lowercase();
-                        ct_lower.contains("html") || ct_lower.contains("xhtml")
-                    });
-
-                    if is_html {
+                    if declared_html {
+                        let text = String::from_utf8_lossy(&buffer);
                         if let Some(t) = crate::health::content::extract_html_title(&text) {
                             obs.title = Some(t);
                         }
@@ -349,11 +349,13 @@ impl ProbeBackend for NativeReqwestBackend {
                             if crate::health::content::is_parked_domain(
                                 obs.title.as_deref(),
                                 obs.body_preview.as_deref(),
-                            ) || (crate::health::content::is_deep_content_url(
+                            ) {
+                                obs.error_kind = Some("ParkedDomainCandidate".to_string());
+                            } else if crate::health::content::is_deep_content_url(
                                 &target.original_url,
                             ) && crate::health::content::is_structured_content_missing(
                                 &text,
-                            )) {
+                            ) {
                                 obs.error_kind = Some("ContentMissing".to_string());
                             } else if crate::health::content::is_soft_404(
                                 obs.title.as_deref(),
@@ -443,6 +445,8 @@ mod tests {
             proxy_url: None,
             timeout_secs: 5,
             slow_mode: false,
+            probe_scope: crate::health::targets::ProbeScope::Content,
+            dns_policy_hash: "test-dns-policy".to_string(),
             allow_private_ips: true,
             history_db_path: None,
             secondary_backends: Vec::new(),
@@ -460,7 +464,7 @@ mod tests {
     async fn html_200_still_detects_parked_site_and_removed_video() {
         let parked = probe_html("/", "<html><title>Domain for Sale</title></html>").await;
         assert_eq!(parked.request_method, "GET");
-        assert_eq!(parked.error_kind.as_deref(), Some("ContentMissing"));
+        assert_eq!(parked.error_kind.as_deref(), Some("ParkedDomainCandidate"));
 
         let removed_video = probe_html(
             "/watch?v=gone",

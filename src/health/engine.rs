@@ -18,8 +18,10 @@ use crate::health::models::{BackendObservation, HealthVerdict, ProbeContext, Pro
 use crate::health::reporting::{HealthRunSummaryReport, ReportExporter};
 use crate::health::scheduler::{HostScheduler, SchedulerConfig};
 use crate::health::state_machine::{BookmarkHistoryStats, StateMachine};
+use crate::health::targets::{DnsPolicy, ProbeScope};
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 pub struct HealthEngineOptions {
@@ -27,10 +29,14 @@ pub struct HealthEngineOptions {
     pub timeout_secs: u64,
     pub concurrency: usize,
     pub slow_mode: bool,
+    pub probe_scope: ProbeScope,
+    pub dns_policy: DnsPolicy,
     pub allow_private_ips: bool,
     pub history_db_path: Option<PathBuf>,
     pub secondary_backends: Vec<String>,
     pub output_dir: Option<PathBuf>,
+    /// Whether the caller deliberately truncated the eligible target set.
+    pub partial_run: bool,
     /// Maximum completed runs for unresolved URLs in one scan invocation.
     pub max_attempts: u8,
     /// Delay between completed retry runs.
@@ -44,10 +50,13 @@ impl Default for HealthEngineOptions {
             timeout_secs: 10,
             concurrency: 5,
             slow_mode: false,
+            probe_scope: ProbeScope::Content,
+            dns_policy: DnsPolicy::default(),
             allow_private_ips: false,
             history_db_path: None,
             secondary_backends: Vec::new(),
             output_dir: None,
+            partial_run: false,
             max_attempts: 3,
             retry_interval_secs: 5,
         }
@@ -57,14 +66,23 @@ impl Default for HealthEngineOptions {
 pub struct HealthEngine {
     options: HealthEngineOptions,
     scheduler: HostScheduler,
-    db: Option<Arc<HealthDatabase>>,
+    // The SQLite connection is intentionally confined to this executor thread;
+    // network probes are concurrent but database writes stay serialized.
+    db: Option<Rc<HealthDatabase>>,
 }
 
 const fn should_retry(verdict: HealthVerdict) -> bool {
     matches!(
         verdict,
-        HealthVerdict::TemporaryFailure | HealthVerdict::ProbableDead | HealthVerdict::NeedsReview
+        HealthVerdict::TemporaryFailure
+            | HealthVerdict::ProbableDead
+            | HealthVerdict::ConfirmedDead
+            | HealthVerdict::NeedsReview
     )
+}
+
+const fn should_skip_secondary(slow_mode: bool, verdict: HealthVerdict) -> bool {
+    slow_mode || matches!(verdict, HealthVerdict::Live | HealthVerdict::Protected)
 }
 
 const MAX_RETRY_INTERVAL_SECS: u64 = 60;
@@ -77,6 +95,81 @@ const fn bounded_retry_interval_secs(interval_secs: u64) -> u64 {
     }
 }
 
+fn internal_probe_failure_result(
+    target: &ProbeTarget,
+    error: &str,
+) -> (String, String, HealthVerdict, Vec<BackendObservation>) {
+    let now = Utc::now();
+    let observation = BackendObservation {
+        backend: "health_engine".to_string(),
+        backend_version: env!("CARGO_PKG_VERSION").to_string(),
+        route: "internal".to_string(),
+        started_at: now,
+        finished_at: now,
+        actual_request: "unknown".to_string(),
+        request_method: "NONE".to_string(),
+        initial_url: target.original_url.clone(),
+        error_kind: Some(format!("InternalProbeError: {error}")),
+        confidence: 0.0,
+        ..Default::default()
+    };
+    (
+        target.bookmark_id.clone(),
+        target.original_url.clone(),
+        HealthVerdict::NeedsReview,
+        vec![observation],
+    )
+}
+
+fn is_nxdomain(observation: &BackendObservation) -> bool {
+    observation
+        .dns_rcode
+        .as_deref()
+        .is_some_and(|rcode| rcode.eq_ignore_ascii_case("NXDOMAIN"))
+}
+
+async fn run_dns_policy<B: ProbeBackend>(
+    policy: &DnsPolicy,
+    target: &ProbeTarget,
+    context: &ProbeContext,
+    cloudflare: Option<&B>,
+    alidns: Option<&B>,
+) -> Vec<BackendObservation> {
+    let backend = |resolver_id: &str| match resolver_id {
+        "cloudflare" => cloudflare,
+        "alidns" => alidns,
+        _ => None,
+    };
+    let Some(primary_id) = policy
+        .resolver_ids_for_host(&target.host)
+        .into_iter()
+        .next()
+    else {
+        return Vec::new();
+    };
+    let Some(primary_backend) = backend(&primary_id) else {
+        return Vec::new();
+    };
+    let Ok(primary) = primary_backend.probe(target, context).await else {
+        return Vec::new();
+    };
+    let needs_confirmation = is_nxdomain(&primary);
+    let mut observations = vec![primary];
+    if needs_confirmation {
+        if let Some(confirm_backend) = policy
+            .confirmation_resolvers
+            .iter()
+            .filter(|resolver_id| resolver_id.as_str() != primary_id)
+            .find_map(|resolver_id| backend(resolver_id))
+        {
+            if let Ok(confirm) = confirm_backend.probe(target, context).await {
+                observations.push(confirm);
+            }
+        }
+    }
+    observations
+}
+
 impl HealthEngine {
     pub fn new(options: HealthEngineOptions) -> Result<Self, String> {
         if options.concurrency == 0 {
@@ -85,6 +178,7 @@ impl HealthEngine {
         if options.timeout_secs == 0 {
             return Err("Health probe timeout must be at least 1 second".to_string());
         }
+        options.dns_policy.validate()?;
         if options.proxy_url.is_some() {
             if let Some(backend) = options
                 .secondary_backends
@@ -113,7 +207,7 @@ impl HealthEngine {
         let db = if let Some(ref db_path) = options.history_db_path {
             let conn = HealthDatabase::open(db_path)
                 .map_err(|e| format!("Failed to open health db: {e}"))?;
-            Some(Arc::new(conn))
+            Some(Rc::new(conn))
         } else {
             None
         };
@@ -125,13 +219,127 @@ impl HealthEngine {
         })
     }
 
-    /// Execute bounded same-day probes, stopping retries as soon as a URL is live,
-    /// protected, or confirmed dead.
+    fn load_same_day_positive_results(
+        &self,
+        targets: &[ProbeTarget],
+        context: &ProbeContext,
+    ) -> Result<
+        std::collections::HashMap<
+            (String, String),
+            (String, String, HealthVerdict, Vec<BackendObservation>),
+        >,
+        String,
+    > {
+        let Some(db) = self.db.as_ref() else {
+            return Ok(std::collections::HashMap::new());
+        };
+        let requested: std::collections::HashSet<_> = targets
+            .iter()
+            .map(|target| (target.bookmark_id.clone(), target.original_url.clone()))
+            .collect();
+        let config_hash = crate::health::models::ConfigHashInput::from_probe_context(context)
+            .stable_hash()
+            .map_err(|error| format!("Resume config hash failed: {error}"))?;
+        let cutoff = (Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+        let mut statement = db
+            .conn
+            .prepare(
+                "SELECT c.bookmark_id, c.original_url, c.run_verdict, r.run_id,
+                        r.config_hash, r.rule_version,
+                        COALESCE(r.finished_at, r.started_at)
+                 FROM health_checks c
+                 JOIN health_runs r ON r.run_id = c.run_id
+                 WHERE julianday(COALESCE(r.finished_at, r.started_at)) >= julianday(?1)
+                 ORDER BY julianday(COALESCE(r.finished_at, r.started_at)) DESC, c.rowid DESC",
+            )
+            .map_err(|error| format!("Resume query preparation failed: {error}"))?;
+        let rows = statement
+            .query_map(rusqlite::params![cutoff], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(|error| format!("Resume query failed: {error}"))?;
+
+        let mut latest_seen = std::collections::HashSet::new();
+        let mut results = std::collections::HashMap::new();
+        for row in rows {
+            let (bookmark_id, url, verdict_text, run_id, row_config_hash, rule_version, checked_at) =
+                row.map_err(|error| format!("Resume row decode failed: {error}"))?;
+            let key = (bookmark_id.clone(), url.clone());
+            if !requested.contains(&key) || !latest_seen.insert(key.clone()) {
+                continue;
+            }
+            if row_config_hash.as_deref() != Some(config_hash.as_str())
+                || rule_version.as_deref()
+                    != Some(crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION)
+            {
+                continue;
+            }
+            let Some(verdict) = HealthVerdict::from_db_str(&verdict_text) else {
+                continue;
+            };
+            if should_retry(verdict) {
+                continue;
+            }
+
+            // A positive result is safe to reuse even when the enclosing run was interrupted:
+            // it can only preserve a bookmark, never promote one into the deletion set.
+
+            let checked_at = DateTime::parse_from_rfc3339(&checked_at)
+                .map_or_else(|_| Utc::now(), |date| date.with_timezone(&Utc));
+            let observation = BackendObservation {
+                backend: "same_day_resume".to_string(),
+                backend_version: env!("CARGO_PKG_VERSION").to_string(),
+                run_id,
+                route: "history".to_string(),
+                started_at: checked_at,
+                finished_at: checked_at,
+                actual_request: "no".to_string(),
+                cache_hit: true,
+                request_method: "REUSE".to_string(),
+                initial_url: url.clone(),
+                confidence: 1.0,
+                ..Default::default()
+            };
+            results.insert(key, (bookmark_id, url, verdict, vec![observation]));
+        }
+        Ok(results)
+    }
+
+    /// Execute bounded same-day probes, reusing recent positive results while retrying every
+    /// failure, uncertain result, and confirmed-dead result within the current invocation.
     pub async fn run_probes<F>(
         &self,
         targets: Vec<ProbeTarget>,
         progress_cb: F,
     ) -> Result<HealthRunSummaryReport, String>
+    where
+        F: Fn(usize, usize, &str) + Send + Sync + 'static,
+    {
+        self.run_probes_with_results(targets, progress_cb)
+            .await
+            .map(|(report, _)| report)
+    }
+
+    /// Execute a scan and return the exact current-scan results used to build its report.
+    pub async fn run_probes_with_results<F>(
+        &self,
+        targets: Vec<ProbeTarget>,
+        progress_cb: F,
+    ) -> Result<
+        (
+            HealthRunSummaryReport,
+            Vec<(String, String, HealthVerdict, Vec<BackendObservation>)>,
+        ),
+        String,
+    >
     where
         F: Fn(usize, usize, &str) + Send + Sync + 'static,
     {
@@ -177,6 +385,8 @@ impl HealthEngine {
             proxy_url: self.options.proxy_url.clone(),
             timeout_secs: self.options.timeout_secs,
             slow_mode: self.options.slow_mode,
+            probe_scope: self.options.probe_scope,
+            dns_policy_hash: self.options.dns_policy.hash()?,
             allow_private_ips: self.options.allow_private_ips,
             history_db_path: self.options.history_db_path.clone(),
             secondary_backends: self.options.secondary_backends.clone(),
@@ -194,8 +404,37 @@ impl HealthEngine {
 
         let total = targets.len();
         let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut resumable = match self.load_same_day_positive_results(&targets, &backend_context) {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::warn!("{error}; probing all targets instead");
+                std::collections::HashMap::new()
+            }
+        };
+        let mut final_results = Vec::with_capacity(total);
+        let mut targets_to_probe = Vec::with_capacity(total);
+        for target in targets {
+            let key = (target.bookmark_id.clone(), target.original_url.clone());
+            if let Some(result) = resumable.remove(&key) {
+                let current = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                progress(current, total, &target.original_url);
+                final_results.push(result);
+            } else {
+                targets_to_probe.push(target);
+            }
+        }
+        if !final_results.is_empty() {
+            tracing::info!(
+                "Reused {} same-day positive results; probing {} remaining targets",
+                final_results.len(),
+                targets_to_probe.len()
+            );
+        }
+        // Keep enough hosts ready to avoid same-host queues starving global concurrency;
+        // HostScheduler still enforces the actual global and per-host request limits.
+        let scheduling_window = self.options.concurrency.saturating_mul(8);
         use futures::stream::{self, StreamExt};
-        let final_results: Vec<_> = stream::iter(targets)
+        let probed_results: Vec<_> = stream::iter(targets_to_probe)
             .map(|target| {
                 let progress = progress.clone();
                 let completed = completed.clone();
@@ -205,42 +444,50 @@ impl HealthEngine {
 
                 async move {
                     let progress_url = target.original_url.clone();
-                    for attempt in 1..=max_attempts {
-                        let mut round_results = self
-                            .run_probe_round(
-                                vec![target.clone()],
-                                |_, _, _| {},
-                                native_backend.clone(),
-                                dns_cloudflare_backend.clone(),
-                                dns_alidns_backend.clone(),
-                            )
-                            .await?;
-                        let result = round_results.pop().ok_or_else(|| {
-                            format!("Probe run returned no result for {progress_url}")
-                        })?;
-                        if attempt < max_attempts && should_retry(result.2) {
-                            tokio::time::sleep(std::time::Duration::from_secs(
-                                bounded_retry_interval_secs(self.options.retry_interval_secs),
-                            ))
-                            .await;
-                            continue;
+                    let probe_result = async {
+                        for attempt in 1..=max_attempts {
+                            let mut round_results = self
+                                .run_probe_round(
+                                    vec![target.clone()],
+                                    |_, _, _| {},
+                                    native_backend.clone(),
+                                    dns_cloudflare_backend.clone(),
+                                    dns_alidns_backend.clone(),
+                                )
+                                .await?;
+                            let result = round_results.pop().ok_or_else(|| {
+                                format!("Probe run returned no result for {progress_url}")
+                            })?;
+                            if attempt < max_attempts && should_retry(result.2) {
+                                tokio::time::sleep(std::time::Duration::from_secs(
+                                    bounded_retry_interval_secs(self.options.retry_interval_secs),
+                                ))
+                                .await;
+                                continue;
+                            }
+
+                            return Ok(result);
                         }
 
-                        let current =
-                            completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        progress(current, total, &progress_url);
-                        return Ok(result);
+                        Err(format!(
+                            "Probe attempts exhausted without a result for {progress_url}"
+                        ))
                     }
-                    Err(format!(
-                        "Probe attempts exhausted without a result for {progress_url}"
-                    ))
+                    .await;
+
+                    let result = probe_result
+                        .unwrap_or_else(|error| internal_probe_failure_result(&target, &error));
+                    let current = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    progress(current, total, &progress_url);
+                    Ok(result)
                 }
             })
-            .buffer_unordered(self.options.concurrency)
+            .buffer_unordered(scheduling_window)
             .collect::<Vec<Result<_, String>>>()
             .await
             .into_iter()
             .collect::<Result<_, _>>()?;
+        final_results.extend(probed_results);
 
         let duration_secs = start_time.elapsed().as_secs_f64();
         let out_dir = self
@@ -249,8 +496,16 @@ impl HealthEngine {
             .clone()
             .unwrap_or_else(|| PathBuf::from("./bookmark-health-run"));
 
-        ReportExporter::export_all(out_dir, &scan_id, duration_secs, &final_results)
-            .map_err(|e| format!("Report generation error: {e}"))
+        let report = ReportExporter::export_all_for_scope(
+            out_dir,
+            &scan_id,
+            duration_secs,
+            self.options.probe_scope,
+            self.options.partial_run,
+            &final_results,
+        )
+        .map_err(|e| format!("Report generation error: {e}"))?;
+        Ok((report, final_results))
     }
 
     /// Execute one independent completed probe run.
@@ -273,6 +528,8 @@ impl HealthEngine {
             proxy_url: self.options.proxy_url.clone(),
             timeout_secs: self.options.timeout_secs,
             slow_mode: self.options.slow_mode,
+            probe_scope: self.options.probe_scope,
+            dns_policy_hash: self.options.dns_policy.hash()?,
             allow_private_ips: self.options.allow_private_ips,
             history_db_path: self.options.history_db_path.clone(),
             secondary_backends: self.options.secondary_backends.clone(),
@@ -321,6 +578,7 @@ impl HealthEngine {
                 let native_backend = native_backend.clone();
                 let dns_cloudflare_backend = dns_cloudflare_backend.clone();
                 let dns_alidns_backend = dns_alidns_backend.clone();
+                let dns_policy = self.options.dns_policy.clone();
 
                 async move {
                     let mut key_vec = vec![target.host.as_str()];
@@ -334,7 +592,10 @@ impl HealthEngine {
                     let mut item_ctx = ctx_base.clone();
                     item_ctx.check_id = check_id.clone();
 
-                    let permit = scheduler.acquire_keys(&key_vec).await;
+                    let permit = scheduler
+                        .acquire_keys(&key_vec)
+                        .await
+                        .map_err(str::to_string)?;
 
                     cb(idx + 1, total, &target.original_url);
 
@@ -345,29 +606,29 @@ impl HealthEngine {
                         observations.push(obs);
                     }
 
-                    let initial_verdict = StateMachine::compute_single_run_verdict(&observations);
+                    let initial_verdict = StateMachine::compute_single_run_verdict_for_scope(
+                        &observations,
+                        item_ctx.probe_scope,
+                    );
 
                     // Tier 2 - Tier 5 Secondary Backends
                     // In slow mode or when initial_verdict is Live or Protected (429/403), skip dense secondary backends
-                    let skip_secondary = item_ctx.slow_mode
-                        && initial_verdict == HealthVerdict::Live
-                        || initial_verdict == HealthVerdict::Live
-                        || initial_verdict == HealthVerdict::Protected;
+                    let skip_secondary = should_skip_secondary(item_ctx.slow_mode, initial_verdict);
 
                     if !matches!(
                         initial_verdict,
                         HealthVerdict::Live | HealthVerdict::Protected
                     ) {
-                        if let Some(backend) = dns_cloudflare_backend.as_ref() {
-                            if let Ok(obs) = backend.probe(&target, &item_ctx).await {
-                                observations.push(obs);
-                            }
-                        }
-                        if let Some(backend) = dns_alidns_backend.as_ref() {
-                            if let Ok(obs) = backend.probe(&target, &item_ctx).await {
-                                observations.push(obs);
-                            }
-                        }
+                        observations.extend(
+                            run_dns_policy(
+                                &dns_policy,
+                                &target,
+                                &item_ctx,
+                                dns_cloudflare_backend.as_ref(),
+                                dns_alidns_backend.as_ref(),
+                            )
+                            .await,
+                        );
                     }
 
                     if !skip_secondary {
@@ -390,16 +651,16 @@ impl HealthEngine {
                                     }
                                 }
                                 "dnsx" => {
-                                    if let Ok(obs) =
-                                        dnsx_cloudflare_backend.probe(&target, &item_ctx).await
-                                    {
-                                        observations.push(obs);
-                                    }
-                                    if let Ok(obs) =
-                                        dnsx_alidns_backend.probe(&target, &item_ctx).await
-                                    {
-                                        observations.push(obs);
-                                    }
+                                    observations.extend(
+                                        run_dns_policy(
+                                            &dns_policy,
+                                            &target,
+                                            &item_ctx,
+                                            Some(&dnsx_cloudflare_backend),
+                                            Some(&dnsx_alidns_backend),
+                                        )
+                                        .await,
+                                    );
                                 }
                                 "openssl" => {
                                     if let Ok(obs) = openssl_backend.probe(&target, &item_ctx).await
@@ -432,8 +693,10 @@ impl HealthEngine {
                         }
                     }
 
-                    let single_run_verdict =
-                        StateMachine::compute_single_run_verdict(&observations);
+                    let single_run_verdict = StateMachine::compute_single_run_verdict_for_scope(
+                        &observations,
+                        item_ctx.probe_scope,
+                    );
 
                     let persistence_result = if let Some(ref db) = db_opt {
                         db.record_check_observations(
@@ -545,8 +808,12 @@ impl HealthEngine {
                         }
                     },
                 );
-                let verdict =
-                    StateMachine::resolve_final_verdict(&observations, &history, Utc::now());
+                let verdict = StateMachine::resolve_final_verdict_for_scope(
+                    &observations,
+                    &history,
+                    Utc::now(),
+                    self.options.probe_scope,
+                );
                 db.finalize_check_result(&run_id, &check_id, &bookmark_id, &url, verdict)
                     .map_err(|error| format!("DB verdict finalize failed: {error}"))?;
                 finalized.push((bookmark_id, url, verdict, observations));
@@ -557,10 +824,11 @@ impl HealthEngine {
                 .into_iter()
                 .map(
                     |(bookmark_id, url, _check_id, _single_run_verdict, observations)| {
-                        let verdict = StateMachine::resolve_final_verdict(
+                        let verdict = StateMachine::resolve_final_verdict_for_scope(
                             &observations,
                             &BookmarkHistoryStats::default(),
                             Utc::now(),
+                            self.options.probe_scope,
                         );
                         (bookmark_id, url, verdict, observations)
                     },
@@ -581,10 +849,18 @@ mod tests {
         assert!(!should_retry(HealthVerdict::Live));
         assert!(!should_retry(HealthVerdict::Recovered));
         assert!(!should_retry(HealthVerdict::Protected));
-        assert!(!should_retry(HealthVerdict::ConfirmedDead));
+        assert!(should_retry(HealthVerdict::ConfirmedDead));
         assert!(should_retry(HealthVerdict::TemporaryFailure));
         assert!(should_retry(HealthVerdict::ProbableDead));
         assert!(should_retry(HealthVerdict::NeedsReview));
+    }
+
+    #[test]
+    fn slow_mode_skips_dense_secondary_backends() {
+        assert!(should_skip_secondary(true, HealthVerdict::TemporaryFailure));
+        assert!(should_skip_secondary(false, HealthVerdict::Live));
+        assert!(should_skip_secondary(false, HealthVerdict::Protected));
+        assert!(!should_skip_secondary(false, HealthVerdict::NeedsReview));
     }
 
     #[test]
@@ -773,6 +1049,8 @@ mod tests {
             proxy_url: None,
             timeout_secs: 1,
             slow_mode: false,
+            probe_scope: ProbeScope::Content,
+            dns_policy_hash: DnsPolicy::default().hash().unwrap(),
             allow_private_ips: false,
             history_db_path: Some(db_path.clone()),
             secondary_backends: Vec::new(),
@@ -812,5 +1090,237 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM health_runs", [], |row| row.get(0))
             .unwrap();
         assert_eq!(run_count, 1);
+    }
+
+    #[tokio::test]
+    async fn single_target_internal_failure_becomes_needs_review_without_aborting_batch() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await;
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("health.sqlite");
+        let db = HealthDatabase::open(&db_path).unwrap();
+        db.raw_conn_for_test()
+            .execute_batch(
+                "CREATE TRIGGER fail_one_bookmark
+                 BEFORE INSERT ON health_checks
+                 WHEN NEW.bookmark_id = 'bad'
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected per-target persistence failure');
+                 END;",
+            )
+            .unwrap();
+        drop(db);
+
+        let report_dir = temp.path().join("report");
+        let engine = HealthEngine::new(HealthEngineOptions {
+            proxy_url: Some(format!("http://{address}")),
+            timeout_secs: 2,
+            concurrency: 2,
+            history_db_path: Some(db_path),
+            output_dir: Some(report_dir.clone()),
+            max_attempts: 1,
+            retry_interval_secs: 0,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let report = engine
+            .run_probes(
+                vec![
+                    ProbeTarget::from_url("good", "http://93.184.216.34/good").unwrap(),
+                    ProbeTarget::from_url("bad", "http://93.184.216.35/bad").unwrap(),
+                ],
+                |_, _, _| {},
+            )
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(report.total_checked, 2);
+        assert_eq!(report.live_count, 1);
+        assert_eq!(report.needs_review_count, 1);
+        let review = std::fs::read_to_string(report_dir.join("needs-review.html")).unwrap();
+        assert!(review.contains("http://93.184.216.35/bad"));
+        assert!(review.contains("InternalProbeError"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_same_day_live_result_is_reused_without_another_request() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut request_count = 0;
+            loop {
+                let accepted =
+                    tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept())
+                        .await;
+                let Ok(Ok((mut socket, _))) = accepted else {
+                    break;
+                };
+                request_count += 1;
+                let mut request = [0_u8; 2048];
+                let _ = socket.read(&mut request).await;
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            }
+            request_count
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("health.sqlite");
+        let report_dir = temp.path().join("report");
+        let context = ProbeContext {
+            run_id: "interrupted-live-run".to_string(),
+            check_id: "interrupted-live-check".to_string(),
+            proxy_url: Some(format!("http://{address}")),
+            timeout_secs: 2,
+            slow_mode: false,
+            probe_scope: ProbeScope::Content,
+            dns_policy_hash: DnsPolicy::default().hash().unwrap(),
+            allow_private_ips: false,
+            history_db_path: Some(db_path.clone()),
+            secondary_backends: Vec::new(),
+            artifact_dir: Some(report_dir.clone()),
+        };
+        let mut observation = BackendObservation::default();
+        observation.backend = "native_reqwest".to_string();
+        observation.run_id = context.run_id.clone();
+        observation.check_id = context.check_id.clone();
+        observation.status_code = Some(200);
+        observation.initial_url = "http://93.184.216.34/live".to_string();
+        let db = HealthDatabase::open(&db_path).unwrap();
+        db.record_run_start(&context).unwrap();
+        db.record_check_observations(
+            &context.run_id,
+            &context.check_id,
+            "live",
+            &observation.initial_url,
+            HealthVerdict::Live,
+            &[observation.clone()],
+        )
+        .unwrap();
+        drop(db); // Deliberately leave the run incomplete, as after an interrupted process.
+
+        let engine = HealthEngine::new(HealthEngineOptions {
+            proxy_url: Some(format!("http://{address}")),
+            timeout_secs: 2,
+            concurrency: 1,
+            history_db_path: Some(db_path),
+            output_dir: Some(report_dir.clone()),
+            max_attempts: 1,
+            retry_interval_secs: 0,
+            ..Default::default()
+        })
+        .unwrap();
+        let target = ProbeTarget::from_url("live", "http://93.184.216.34/live").unwrap();
+
+        let resumed = engine.run_probes(vec![target], |_, _, _| {}).await.unwrap();
+
+        assert_eq!(resumed.total_checked, 1);
+        assert_eq!(resumed.live_count, 1);
+        assert_eq!(server.await.unwrap(), 0);
+        let observations =
+            std::fs::read_to_string(report_dir.join("health-observations.csv")).unwrap();
+        assert!(observations.contains("same_day_resume"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_same_day_negative_result_is_probed_again() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let accepted =
+                tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await;
+            let Ok(Ok((mut socket, _))) = accepted else {
+                return 0;
+            };
+            let mut request = [0_u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            1
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("health.sqlite");
+        let report_dir = temp.path().join("report");
+        let context = ProbeContext {
+            run_id: "interrupted-negative-run".to_string(),
+            check_id: "interrupted-negative-check".to_string(),
+            proxy_url: Some(format!("http://{address}")),
+            timeout_secs: 2,
+            slow_mode: false,
+            probe_scope: ProbeScope::Content,
+            dns_policy_hash: DnsPolicy::default().hash().unwrap(),
+            allow_private_ips: false,
+            history_db_path: Some(db_path.clone()),
+            secondary_backends: Vec::new(),
+            artifact_dir: Some(report_dir.clone()),
+        };
+        let mut observation = BackendObservation::default();
+        observation.backend = "native_reqwest".to_string();
+        observation.run_id = context.run_id.clone();
+        observation.check_id = context.check_id.clone();
+        observation.status_code = Some(404);
+        observation.initial_url = "http://93.184.216.34/missing".to_string();
+        let db = HealthDatabase::open(&db_path).unwrap();
+        db.record_run_start(&context).unwrap();
+        db.record_check_observations(
+            &context.run_id,
+            &context.check_id,
+            "missing",
+            &observation.initial_url,
+            HealthVerdict::ProbableDead,
+            &[observation.clone()],
+        )
+        .unwrap();
+        drop(db);
+
+        let engine = HealthEngine::new(HealthEngineOptions {
+            proxy_url: Some(format!("http://{address}")),
+            timeout_secs: 2,
+            concurrency: 1,
+            history_db_path: Some(db_path),
+            output_dir: Some(report_dir),
+            max_attempts: 1,
+            retry_interval_secs: 0,
+            ..Default::default()
+        })
+        .unwrap();
+        let target = ProbeTarget::from_url("missing", &observation.initial_url).unwrap();
+
+        let report = engine.run_probes(vec![target], |_, _, _| {}).await.unwrap();
+
+        assert_eq!(server.await.unwrap(), 1);
+        assert_eq!(report.total_checked, 1);
+        assert_eq!(report.live_count, 1);
     }
 }
