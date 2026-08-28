@@ -36,3 +36,4 @@ htest/
 append_tests.py
 src/bin/quick_complete.rs
 major_sites.json
+.agents
