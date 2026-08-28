@@ -121,6 +121,54 @@ fn internal_probe_failure_result(
     )
 }
 
+/// Finalizes a persisted run even when a probe round exits through an error path.
+/// The health schema has no separate failure state, so a completed run without a
+/// check is deliberately fail-closed: it cannot contribute deletion evidence.
+struct RunFinishGuard {
+    db: Option<Rc<HealthDatabase>>,
+    run_id: String,
+    finished: bool,
+}
+
+impl RunFinishGuard {
+    fn new(db: Option<Rc<HealthDatabase>>, run_id: String) -> Self {
+        Self {
+            db,
+            run_id,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        if self.finished {
+            return Ok(());
+        }
+        if let Some(ref db) = self.db {
+            db.record_run_finish(&self.run_id)
+                .map_err(|error| format!("DB run finish record failed: {error}"))?;
+        }
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for RunFinishGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        if let Some(ref db) = self.db {
+            if let Err(error) = db.record_run_finish(&self.run_id) {
+                tracing::error!(
+                    run_id = %self.run_id,
+                    %error,
+                    "Failed to finalize health run after probe error"
+                );
+            }
+        }
+    }
+}
+
 fn is_nxdomain(observation: &BackendObservation) -> bool {
     observation
         .dns_rcode
@@ -540,6 +588,7 @@ impl HealthEngine {
             db.record_run_start(&ctx_base)
                 .map_err(|e| format!("DB run start record failed: {e}"))?;
         }
+        let mut run_finish_guard = RunFinishGuard::new(self.db.clone(), run_id.clone());
 
         let total = targets.len();
         let progress_arc = Arc::new(progress_cb);
@@ -746,10 +795,7 @@ impl HealthEngine {
 
         let probe_results: Vec<_> = probe_results.into_iter().collect::<Result<_, _>>()?;
 
-        if let Some(ref db) = self.db {
-            db.record_run_finish(&run_id)
-                .map_err(|error| format!("DB run finish record failed: {error}"))?;
-        }
+        run_finish_guard.finish()?;
 
         let results = if let Some(ref db) = self.db {
             let config_hash = crate::health::models::ConfigHashInput::from_probe_context(&ctx_base)
@@ -1132,7 +1178,7 @@ mod tests {
             proxy_url: Some(format!("http://{address}")),
             timeout_secs: 2,
             concurrency: 2,
-            history_db_path: Some(db_path),
+            history_db_path: Some(db_path.clone()),
             output_dir: Some(report_dir.clone()),
             max_attempts: 1,
             retry_interval_secs: 0,
@@ -1158,6 +1204,18 @@ mod tests {
         let review = std::fs::read_to_string(report_dir.join("needs-review.html")).unwrap();
         assert!(review.contains("http://93.184.216.35/bad"));
         assert!(review.contains("InternalProbeError"));
+        drop(engine);
+
+        let db = HealthDatabase::open(db_path).unwrap();
+        let incomplete_runs: i64 = db
+            .raw_conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM health_runs WHERE completed = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(incomplete_runs, 0);
     }
 
     #[tokio::test]
