@@ -89,7 +89,7 @@ const MAX_RETRY_INTERVAL_SECS: u64 = 60;
 
 // Keep the scan bounded per registrable domain while avoiding multi-hour queues
 // when a single host owns thousands of saved pages.
-const STANDARD_PER_HOST_CONCURRENCY: usize = 4;
+const STANDARD_PER_HOST_CONCURRENCY: usize = 8;
 
 const fn bounded_retry_interval_secs(interval_secs: u64) -> u64 {
     if interval_secs > MAX_RETRY_INTERVAL_SECS {
