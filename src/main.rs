@@ -354,7 +354,7 @@ enum Commands {
         )]
         timeout: u64,
 
-        /// Number of concurrent requests (max 128; each host remains limited to 1)
+        /// Number of concurrent requests (max 128; each registrable domain remains bounded)
         #[arg(
             short,
             long,
