@@ -50,7 +50,7 @@ bsync health apply-quarantine --db ./bookmark-health.sqlite \
 
 `check` has two distinct validation targets: site availability and the saved page/video/resource path. A temporary failure is retried within the same day. A real, uncached success preserves the bookmark as live/recovered even when another probe disagrees. Uncertain results remain for review.
 
-Checks append lifecycle and progress events to `browser-sync.log` under `--export-dir` (or to `./browser-sync-check.log` when no directory is supplied). The same directory contains an atomic `check-status.json`: `running` remains visible after a forced termination, while a normal exit records `completed`; use the global `--log-file` option to choose another log path.
+Checks append process, status, scan lifecycle, and progress events to `browser-sync.log` under `--export-dir` (or to `./browser-sync-check.log` when no directory is supplied). The same directory contains an atomic `check-status.json`: a normal exit records `completed`, while SIGINT/SIGTERM records `aborted` and the signal name is logged. SIGKILL cannot be handled by any process; in that case `running` plus a dead PID and no later `process_finished` event is durable interruption evidence. Use the global `--log-file` option to choose another log path.
 
 `check --delete` is intentionally disabled. Use the quarantine review, then the separately approved `bsync health apply-quarantine` workflow. No command in the supported surface writes browser profiles.
 

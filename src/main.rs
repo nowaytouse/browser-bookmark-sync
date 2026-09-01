@@ -129,6 +129,13 @@ impl CheckStatusGuard {
             finished: false,
         };
         guard.write("running");
+        info!(
+            event = "check_status_started",
+            pid = std::process::id(),
+            scope = guard.scope,
+            status_file = ?guard.path,
+            "check status tracking started"
+        );
         guard
     }
 
@@ -162,6 +169,13 @@ impl CheckStatusGuard {
     fn finish(&mut self) {
         self.finished = true;
         self.write("completed");
+        info!(
+            event = "check_status_completed",
+            pid = std::process::id(),
+            scope = self.scope,
+            status_file = ?self.path,
+            "check status tracking completed"
+        );
     }
 }
 
@@ -169,8 +183,35 @@ impl Drop for CheckStatusGuard {
     fn drop(&mut self) {
         if !self.finished {
             self.write("aborted");
+            warn!(
+                event = "check_status_aborted",
+                pid = std::process::id(),
+                scope = self.scope,
+                status_file = ?self.path,
+                "check status tracking aborted before normal completion"
+            );
         }
     }
+}
+
+#[cfg(unix)]
+async fn wait_for_termination_signal() -> Result<&'static str> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
+    let mut sigint = signal(SignalKind::interrupt()).context("install SIGINT handler")?;
+    tokio::select! {
+        value = sigterm.recv() => value.context("SIGTERM signal stream closed").map(|_| "SIGTERM"),
+        value = sigint.recv() => value.context("SIGINT signal stream closed").map(|_| "SIGINT"),
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_termination_signal() -> Result<&'static str> {
+    tokio::signal::ctrl_c()
+        .await
+        .context("install Ctrl-C handler")?;
+    Ok("CTRL_C")
 }
 
 const fn bounded_health_concurrency(requested: usize) -> usize {
@@ -690,6 +731,39 @@ async fn main() -> Result<()> {
         "browser bookmark sync process started"
     );
 
+    tokio::select! {
+        // Register termination handlers before check setup performs synchronous work.
+        biased;
+        signal = wait_for_termination_signal() => {
+            let signal = signal?;
+            warn!(
+                event = "process_terminated",
+                pid = std::process::id(),
+                signal,
+                "browser bookmark sync process received a termination signal"
+            );
+            Err(anyhow::anyhow!("process terminated by {signal}"))
+        }
+        result = run_cli(cli) => {
+            match &result {
+                Ok(()) => info!(
+                    event = "process_finished",
+                    pid = std::process::id(),
+                    "browser bookmark sync process finished"
+                ),
+                Err(error) => error!(
+                    event = "process_failed",
+                    pid = std::process::id(),
+                    %error,
+                    "browser bookmark sync process failed"
+                ),
+            }
+            result
+        }
+    }
+}
+
+async fn run_cli(cli: Cli) -> Result<()> {
     if is_disabled_non_core_command(&cli.command) {
         anyhow::bail!(
             "This legacy command is disabled: use the core collect/export/check/quarantine workflow; history, organization, legacy pipelines, sensitive export, and GUI are unsupported"
