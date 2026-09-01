@@ -5,6 +5,7 @@ use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
 use crate::health::security::{
     is_ip_allowed, validate_url_parsed, validate_url_security, SecurityCheckResult,
 };
+use crate::health::targets::ProbeScope;
 use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::Client;
@@ -200,28 +201,29 @@ impl ProbeBackend for NativeReqwestBackend {
 
         let start_time = Instant::now();
 
-        // Try HEAD first
-        let mut method = "HEAD";
-        let mut response_res = client.head(&target.original_url).send().await;
+        // Content checks need the response body, so issue one GET directly.  The old HEAD→GET
+        // sequence doubled requests for every saved page and made long-tail scans needlessly
+        // slow.  Site checks stay HEAD-first and only fall back when a server rejects HEAD.
+        let mut method = if context.probe_scope == ProbeScope::Content {
+            "GET"
+        } else {
+            "HEAD"
+        };
+        let mut response_res = if context.probe_scope == ProbeScope::Content {
+            client.get(&target.original_url).send().await
+        } else {
+            client.head(&target.original_url).send().await
+        };
 
-        // Fallback to GET when HEAD is unsupported, or fetch a deep HTML page so content-level
-        // disappearance (soft-404 / removed post / unavailable video) can be verified.
         let mut fell_back = false;
-        if let Ok(ref resp) = response_res {
-            let status = resp.status().as_u16();
-            let content_type = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_lowercase);
-            let should_probe_content = (200..300).contains(&status)
-                && content_type
-                    .as_deref()
-                    .is_none_or(|value| value.contains("html") || value.contains("xhtml"));
-            if matches!(status, 405 | 403 | 404 | 400 | 501) || should_probe_content {
-                method = "GET";
-                fell_back = true;
-                response_res = client.get(&target.original_url).send().await;
+        if context.probe_scope == ProbeScope::Site {
+            if let Ok(ref resp) = response_res {
+                let status = resp.status().as_u16();
+                if matches!(status, 400 | 403 | 404 | 405 | 501) {
+                    method = "GET";
+                    fell_back = true;
+                    response_res = client.get(&target.original_url).send().await;
+                }
             }
         }
 
@@ -285,42 +287,30 @@ impl ProbeBackend for NativeReqwestBackend {
                 if method == "GET" || fell_back {
                     let mut buffer = Vec::new();
                     let max_bytes = 256 * 1024;
-                    let mut body_issue = if obs
-                        .content_length
-                        .is_some_and(|length| length > max_bytes as u64)
-                    {
-                        Some("BodyTooLarge".to_string())
-                    } else {
-                        None
-                    };
+                    let mut body_read_error = None;
 
-                    while body_issue.is_none() {
+                    while buffer.len() < max_bytes {
                         match resp.chunk().await {
                             Ok(Some(chunk)) => {
                                 let available = max_bytes - buffer.len();
-                                if available == 0 {
-                                    body_issue = Some("BodyTooLarge".to_string());
-                                    break;
-                                }
                                 let to_take = chunk.len().min(available);
                                 buffer.extend_from_slice(&chunk[..to_take]);
                                 if to_take < chunk.len() {
-                                    body_issue = Some("BodyTooLarge".to_string());
                                     break;
                                 }
                             }
                             Ok(None) => break,
                             Err(error) => {
-                                body_issue = Some(format!("BodyReadError: {error}"));
+                                body_read_error = Some(format!("BodyReadError: {error}"));
                                 break;
                             }
                         }
                     }
 
-                    if obs.content_length.is_none() || !buffer.is_empty() {
+                    if obs.content_length.is_none() {
                         obs.content_length = Some(buffer.len() as u64);
                     }
-                    if let Some(issue) = body_issue {
+                    if let Some(issue) = body_read_error {
                         obs.actual_request = "unknown".to_string();
                         obs.error_kind = Some(issue);
                         return Ok(obs);
@@ -417,23 +407,29 @@ mod tests {
     }
 
     async fn probe_html(path: &str, html: &str) -> BackendObservation {
+        probe_html_with_scope(path, html, ProbeScope::Content).await
+    }
+
+    async fn probe_html_with_scope(
+        path: &str,
+        html: &str,
+        probe_scope: ProbeScope,
+    ) -> BackendObservation {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let body = html.to_string();
         let server = tokio::spawn(async move {
-            for _ in 0..2 {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let mut request = [0_u8; 2048];
-                let size = socket.read(&mut request).await.unwrap();
-                let is_head = request[..size].starts_with(b"HEAD ");
-                let headers = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                socket.write_all(headers.as_bytes()).await.unwrap();
-                if !is_head {
-                    let _ = socket.write_all(body.as_bytes()).await;
-                }
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let size = socket.read(&mut request).await.unwrap();
+            let is_head = request[..size].starts_with(b"HEAD ");
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(headers.as_bytes()).await.unwrap();
+            if !is_head {
+                let _ = socket.write_all(body.as_bytes()).await;
             }
         });
 
@@ -445,7 +441,7 @@ mod tests {
             proxy_url: None,
             timeout_secs: 5,
             slow_mode: false,
-            probe_scope: crate::health::targets::ProbeScope::Content,
+            probe_scope,
             dns_policy_hash: "test-dns-policy".to_string(),
             allow_private_ips: true,
             history_db_path: None,
@@ -476,15 +472,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_or_oversized_html_cannot_be_content_success() {
+    async fn site_probe_uses_one_head_request_for_a_live_html_homepage() {
+        let site =
+            probe_html_with_scope("/", "<html><title>Live</title></html>", ProbeScope::Site).await;
+        assert_eq!(site.request_method, "HEAD");
+        assert!(site.body_hash.is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_html_is_not_success_but_an_oversized_prefix_is_usable() {
         let empty = probe_html("/empty", "").await;
         assert_eq!(empty.content_length, Some(0));
         assert!(empty.body_hash.is_none());
 
         let oversized_html = format!("<html>{}</html>", "x".repeat(300 * 1024));
         let oversized = probe_html("/large", &oversized_html).await;
-        assert_eq!(oversized.actual_request, "unknown");
-        assert_eq!(oversized.error_kind.as_deref(), Some("BodyTooLarge"));
-        assert!(oversized.body_hash.is_none());
+        assert_eq!(oversized.actual_request, "yes");
+        assert!(oversized.error_kind.is_none());
+        assert!(oversized.body_hash.is_some());
     }
 }

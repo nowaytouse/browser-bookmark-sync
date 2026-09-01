@@ -52,6 +52,127 @@ const DEFAULT_TRUSTED_SITE_SKIP_LIST: &str = include_str!("../trusted_site_skip_
 
 const MAX_HEALTH_CONCURRENCY: usize = 128;
 
+fn build_log_filter() -> Result<tracing_subscriber::EnvFilter> {
+    Ok(tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive(tracing::Level::INFO.into())
+        .add_directive("html5ever=error".parse()?))
+}
+
+fn init_logging(log_path: Option<&std::path::Path>) -> Result<()> {
+    if let Some(path) = log_path {
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "unable to create log directory {}: {error}",
+                    parent.display()
+                );
+            }
+        }
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(file) => {
+                use tracing_subscriber::fmt::writer::MakeWriterExt;
+                tracing_subscriber::fmt()
+                    .with_env_filter(build_log_filter()?)
+                    .with_writer(std::io::stderr.and(file))
+                    .init();
+                return Ok(());
+            }
+            Err(error) => {
+                eprintln!("unable to open log file {}: {error}", path.display());
+            }
+        }
+    }
+    tracing_subscriber::fmt()
+        .with_env_filter(build_log_filter()?)
+        .init();
+    Ok(())
+}
+
+fn default_check_log_path(cli: &Cli) -> Option<std::path::PathBuf> {
+    if let Some(path) = cli.log_file.as_deref() {
+        return Some(std::path::PathBuf::from(expand_path(path)));
+    }
+    match &cli.command {
+        Commands::Check {
+            export_dir: Some(dir),
+            ..
+        } => Some(std::path::PathBuf::from(expand_path(dir)).join("browser-sync.log")),
+        Commands::Check { .. } => Some(std::path::PathBuf::from("./browser-sync-check.log")),
+        _ => None,
+    }
+}
+
+struct CheckStatusGuard {
+    path: Option<std::path::PathBuf>,
+    scope: &'static str,
+    input: Option<String>,
+    started_at: String,
+    finished: bool,
+}
+
+impl CheckStatusGuard {
+    fn start(export_dir: Option<&str>, scope: ProbeScope, input: Option<&str>) -> Self {
+        let path = export_dir
+            .map(|dir| std::path::PathBuf::from(expand_path(dir)).join("check-status.json"));
+        let guard = Self {
+            path,
+            scope: match scope {
+                ProbeScope::Site => "site",
+                ProbeScope::Content => "content",
+            },
+            input: input.map(str::to_string),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            finished: false,
+        };
+        guard.write("running");
+        guard
+    }
+
+    fn write(&self, status: &str) {
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "pid": std::process::id(),
+            "status": status,
+            "scope": self.scope,
+            "input": self.input,
+            "started_at": self.started_at,
+            "updated_at": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "unable to create status directory {}: {error}",
+                    parent.display()
+                );
+                return;
+            }
+        }
+        if let Err(error) = browser_utils::atomic_write_file(path, payload.to_string().as_bytes()) {
+            eprintln!("unable to write status file {}: {error}", path.display());
+        }
+    }
+
+    fn finish(&mut self) {
+        self.finished = true;
+        self.write("completed");
+    }
+}
+
+impl Drop for CheckStatusGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.write("aborted");
+        }
+    }
+}
+
 const fn bounded_health_concurrency(requested: usize) -> usize {
     if requested > MAX_HEALTH_CONCURRENCY {
         MAX_HEALTH_CONCURRENCY
@@ -72,6 +193,10 @@ const fn bounded_health_concurrency(requested: usize) -> usize {
     bsync check --file ./bookmarks.html --slow --history-db ./bookmark-health.sqlite
     bsync health quarantine --db ./bookmark-health.sqlite")]
 struct Cli {
+    /// Append structured process and progress logs to this file.
+    #[arg(long, global = true)]
+    log_file: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -555,12 +680,15 @@ fn print_sync_warning() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let log_filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive(tracing::Level::INFO.into())
-        .add_directive("html5ever=error".parse()?);
-    tracing_subscriber::fmt().with_env_filter(log_filter).init();
-
     let cli = Cli::parse();
+    let log_path = default_check_log_path(&cli);
+    init_logging(log_path.as_deref())?;
+    info!(
+        event = "process_started",
+        pid = std::process::id(),
+        log_file = ?log_path,
+        "browser bookmark sync process started"
+    );
 
     if is_disabled_non_core_command(&cli.command) {
         anyhow::bail!(
@@ -1324,6 +1452,8 @@ async fn main() -> Result<()> {
                 );
                 return Ok(());
             }
+            let mut status_guard =
+                CheckStatusGuard::start(export_dir.as_deref(), scope, file.as_deref());
             info!("🔍 检查收藏夹URL有效性");
             info!(
                 "健康检查阶段: {}（站点与内容是独立阶段；Check 不删除）",
@@ -1348,8 +1478,8 @@ async fn main() -> Result<()> {
             }
             info!("超时: {}秒", timeout);
 
-            // Across-host parallelism is safe because the health engine still permits only one
-            // in-flight request per host.
+            // Across-host parallelism stays bounded by the health engine's global and per-host
+            // scheduler limits.
             let safe_concurrency = bounded_health_concurrency(concurrency);
             if concurrency > MAX_HEALTH_CONCURRENCY {
                 warn!(
@@ -1472,6 +1602,7 @@ async fn main() -> Result<()> {
 
             if target_inputs.is_empty() {
                 info!("没有找到收藏夹URL");
+                status_guard.finish();
                 return Ok(());
             }
 
@@ -1547,6 +1678,7 @@ async fn main() -> Result<()> {
             let planned_targets = probe_targets_from_plan(&plan)?;
             if planned_targets.is_empty() {
                 info!("计划中没有可检查目标（invalid/skipped 已写入 probe-plan.json）");
+                status_guard.finish();
                 return Ok(());
             }
 
@@ -1661,6 +1793,7 @@ async fn main() -> Result<()> {
                         );
                     }
                 }
+                status_guard.finish();
                 return Ok(());
             }
 
@@ -1902,6 +2035,7 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            status_guard.finish();
         }
 
         Commands::Backup { output } => {
@@ -2502,7 +2636,7 @@ mod cli_tests {
     use super::{
         apply_content_site_gate, bounded_health_concurrency, build_probe_plan, content_site_key,
         is_disabled_non_core_command, parse_probe_scope, probe_targets_from_plan,
-        BookmarkTargetInput, Cli, Commands, ProbeScope, TrustedSiteSkipList,
+        BookmarkTargetInput, CheckStatusGuard, Cli, Commands, ProbeScope, TrustedSiteSkipList,
     };
     use clap::Parser;
     use std::collections::HashSet;
@@ -2561,6 +2695,35 @@ mod cli_tests {
             panic!("expected check command");
         };
         assert_eq!(scope, ProbeScope::Content);
+    }
+
+    #[test]
+    fn check_status_guard_records_running_completed_and_aborted_states() {
+        let temp = tempfile::tempdir().unwrap();
+        let export_dir = temp.path().to_str().unwrap();
+        {
+            let mut guard =
+                CheckStatusGuard::start(Some(export_dir), ProbeScope::Content, Some("input.html"));
+            let running: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(temp.path().join("check-status.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(running["status"], "running");
+            guard.finish();
+            let completed: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(temp.path().join("check-status.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(completed["status"], "completed");
+        }
+        {
+            let _guard = CheckStatusGuard::start(Some(export_dir), ProbeScope::Content, None);
+        }
+        let aborted: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("check-status.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(aborted["status"], "aborted");
     }
 
     #[test]

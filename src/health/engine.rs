@@ -82,7 +82,22 @@ const fn should_retry(verdict: HealthVerdict) -> bool {
 }
 
 const fn should_skip_secondary(slow_mode: bool, verdict: HealthVerdict) -> bool {
-    slow_mode || matches!(verdict, HealthVerdict::Live | HealthVerdict::Protected)
+    // A strong 404/410 or DNS failure is re-probed in separate bounded rounds below;
+    // launching an external verifier for every such URL only duplicates the request.
+    slow_mode
+        || matches!(
+            verdict,
+            HealthVerdict::Live
+                | HealthVerdict::Protected
+                | HealthVerdict::ProbableDead
+                | HealthVerdict::ConfirmedDead
+        )
+}
+
+/// DNS is a site-level signal. Content probes already have a site preflight and
+/// must not repeat the same resolver work for every saved page.
+fn should_probe_dns(scope: ProbeScope, verdict: HealthVerdict) -> bool {
+    scope == ProbeScope::Site && !matches!(verdict, HealthVerdict::Live | HealthVerdict::Protected)
 }
 
 const MAX_RETRY_INTERVAL_SECS: u64 = 60;
@@ -162,6 +177,10 @@ impl Drop for RunFinishGuard {
             return;
         }
         if let Some(ref db) = self.db {
+            tracing::warn!(
+                run_id = %self.run_id,
+                "health probe run ended before normal finalization; marking run complete without deletion evidence"
+            );
             if let Err(error) = db.record_run_finish(&self.run_id) {
                 tracing::error!(
                     run_id = %self.run_id,
@@ -456,6 +475,15 @@ impl HealthEngine {
 
         let total = targets.len();
         let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        tracing::info!(
+            event = "health_scan_started",
+            scan_id = %scan_id,
+            scope = ?self.options.probe_scope,
+            total_targets = total,
+            concurrency = self.options.concurrency,
+            max_attempts,
+            "health scan started"
+        );
         let mut resumable = match self.load_same_day_positive_results(&targets, &backend_context) {
             Ok(results) => results,
             Err(error) => {
@@ -470,6 +498,18 @@ impl HealthEngine {
             if let Some(result) = resumable.remove(&key) {
                 let current = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 progress(current, total, &target.original_url);
+                if current == total || current.is_multiple_of(10) {
+                    tracing::info!(
+                        event = "health_progress",
+                        scan_id = %scan_id,
+                        completed = current,
+                        total,
+                        remaining = total.saturating_sub(current),
+                        elapsed_secs = start_time.elapsed().as_secs_f64(),
+                        url = %target.original_url,
+                        "health scan progress"
+                    );
+                }
                 final_results.push(result);
             } else {
                 targets_to_probe.push(target);
@@ -493,6 +533,7 @@ impl HealthEngine {
                 let native_backend = native_backend.clone();
                 let dns_cloudflare_backend = dns_cloudflare_backend.clone();
                 let dns_alidns_backend = dns_alidns_backend.clone();
+                let scan_id = scan_id.clone();
 
                 async move {
                     let progress_url = target.original_url.clone();
@@ -531,6 +572,18 @@ impl HealthEngine {
                         .unwrap_or_else(|error| internal_probe_failure_result(&target, &error));
                     let current = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     progress(current, total, &progress_url);
+                    if current == total || current.is_multiple_of(10) {
+                        tracing::info!(
+                            event = "health_progress",
+                            scan_id = %scan_id,
+                            completed = current,
+                            total,
+                            remaining = total.saturating_sub(current),
+                            elapsed_secs = start_time.elapsed().as_secs_f64(),
+                            url = %progress_url,
+                            "health scan progress"
+                        );
+                    }
                     Ok(result)
                 }
             })
@@ -557,6 +610,15 @@ impl HealthEngine {
             &final_results,
         )
         .map_err(|e| format!("Report generation error: {e}"))?;
+        tracing::info!(
+            event = "health_scan_finished",
+            scan_id = %scan_id,
+            scope = ?self.options.probe_scope,
+            total_targets = total,
+            duration_secs,
+            confirmed_dead = report.confirmed_dead_count,
+            "health scan finished"
+        );
         Ok((report, final_results))
     }
 
@@ -668,10 +730,7 @@ impl HealthEngine {
                     // In slow mode or when initial_verdict is Live or Protected (429/403), skip dense secondary backends
                     let skip_secondary = should_skip_secondary(item_ctx.slow_mode, initial_verdict);
 
-                    if !matches!(
-                        initial_verdict,
-                        HealthVerdict::Live | HealthVerdict::Protected
-                    ) {
+                    if should_probe_dns(item_ctx.probe_scope, initial_verdict) {
                         observations.extend(
                             run_dns_policy(
                                 &dns_policy,
@@ -911,6 +970,17 @@ mod tests {
         assert!(should_skip_secondary(false, HealthVerdict::Live));
         assert!(should_skip_secondary(false, HealthVerdict::Protected));
         assert!(!should_skip_secondary(false, HealthVerdict::NeedsReview));
+        assert!(should_skip_secondary(false, HealthVerdict::ProbableDead));
+        assert!(should_skip_secondary(false, HealthVerdict::ConfirmedDead));
+        assert!(!should_probe_dns(
+            ProbeScope::Content,
+            HealthVerdict::NeedsReview
+        ));
+        assert!(should_probe_dns(
+            ProbeScope::Site,
+            HealthVerdict::NeedsReview
+        ));
+        assert!(!should_probe_dns(ProbeScope::Content, HealthVerdict::Live));
     }
 
     #[test]
