@@ -36,6 +36,17 @@
 - `cargo build --locked --release`：exit 0；发布构建完成，保留上述既有 Cargo 告警。
 - 本轮未运行真实网站全量扫描、未执行真实 quarantine apply，未改写浏览器 profile 或原始收藏夹。规则 v8 实机验收仍待执行，不能沿用旧报告宣称完成。未登录的私有资源若返回普通 404，仍需人工复核。
 
+## 2026-09-07：限流补强与实机重新启动
+
+- 启动前发现 `Retry-After: 120` 被缩短至 60 秒、过期/零冷却绕过间隔的问题；回归先得到 exit 101（2 failed），修复后 scheduler 三项测试 exit 0。保留服务器完整等待时长，超大值不溢出，短冷却不覆盖长冷却，其他域名不受阻塞。
+- native/curl 的 429/503 等待时间进入同一调度器；采用最长等待，慢速无有效头时默认冷却 60 秒。真实本机 HTTP → curl → scheduler 回归通过，不访问互联网。
+- `cargo test --locked --workspace`：exit 0，385 passed（10 suites）；`cargo fmt --check`：exit 0；严格 Clippy 首次因新增测试未处理读取长度退出 101，修复后 exit 0；`cargo build --locked --release`、`git diff --check`：exit 0。仍有七项既有 Cargo 告警。
+- 全新采集发现 12 个浏览器安装位置、读取 21 个 profile；11 个 profile 为空，没有读取/发现错误。两个指定外部来源均已纳入，其中 HTML 是空书签导出。采集报告保留 `partial` 和空 profile/无 profile 告警，不改成无条件完整成功。
+- 排除 onion 后的 281,687 条原始记录 − 258,000 条精确重复 = 23,687 个唯一书签。独立解析导出 HTML 验证重复为 0、onion 为 0；4 个非 HTTP/无效目标保留并由检查计划记录原因。
+- 实机已于北京时间 2026-09-07 15:55 启动，PID 25784；网站预检后逐 URL 内容检查，`--limit 0 --slow --concurrency 2 --secondary curl`。使用当时系统已启用的本机 HTTP 代理；代理模式的解析由代理负责，不宣称已经执行直连 DoH 验证。
+- 三小时看门狗于 18:55 发出正常中断信号；未完成时保留 SQLite 检查点和原始输入，标记 PARTIAL。每 30 分钟检查一次，不连续轮询，不为赶时限缩短服务器冷却或放宽删除证据。
+- 本轮输出在 `/Users/nyamiiko/Downloads/Bookmark/final/run-20260907-v8-CtQH0M/`；固定构建副本、只读检查输入、来源清单、精确去重报告、输入校验和运行清单均独立留存。启动核验时已记录 37 次真实请求（含 30 个 HTTP 200），不只是空进程。尚未完成全量检查或执行 apply，删除数为 0，浏览器 profile 和原始收藏夹未修改。
+
 ## 历史验证记录（不代表规则 v8 本轮验收）
 
 - 已运行并通过：`cargo test --workspace`（381 passed）、健康模块定向测试、`cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo build --release`、`git diff --check`。

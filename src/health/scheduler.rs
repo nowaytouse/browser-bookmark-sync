@@ -37,7 +37,7 @@ impl SchedulerConfig {
 
 struct HostState {
     last_request: Option<Instant>,
-    cooldown_until: Option<Instant>,
+    cooldown: Option<(Instant, Duration)>,
     active_requests: usize,
 }
 
@@ -83,30 +83,28 @@ impl HostScheduler {
                 for &k in keys {
                     let state = guard.entry(k.to_string()).or_insert(HostState {
                         last_request: None,
-                        cooldown_until: None,
+                        cooldown: None,
                         active_requests: 0,
                     });
 
-                    let key_delay = if let Some(until) = state.cooldown_until {
-                        if now < until {
-                            now.duration_since(now) + (until - now)
-                        } else {
-                            state.cooldown_until = None;
-                            Duration::ZERO
-                        }
-                    } else if state.active_requests >= self.config.per_host_concurrency {
-                        Duration::from_millis(100)
-                    } else if let Some(last) = state.last_request {
-                        let interval = Duration::from_millis(self.config.host_interval_ms);
-                        let elapsed = now.duration_since(last);
-                        if elapsed < interval {
-                            interval.checked_sub(elapsed).unwrap_or_default()
+                    let cooldown_delay = state
+                        .cooldown
+                        .map(|(start, duration)| duration.saturating_sub(now.duration_since(start)))
+                        .unwrap_or_default();
+                    let concurrency_delay =
+                        if state.active_requests >= self.config.per_host_concurrency {
+                            Duration::from_millis(100)
                         } else {
                             Duration::ZERO
-                        }
-                    } else {
-                        Duration::ZERO
-                    };
+                        };
+                    let interval_delay = state
+                        .last_request
+                        .map(|last| {
+                            Duration::from_millis(self.config.host_interval_ms)
+                                .saturating_sub(now.duration_since(last))
+                        })
+                        .unwrap_or_default();
+                    let key_delay = cooldown_delay.max(concurrency_delay).max(interval_delay);
 
                     if key_delay > delay {
                         delay = key_delay;
@@ -142,7 +140,8 @@ impl HostScheduler {
                 permit = Some(acquired);
             } else {
                 drop(permit.take());
-                sleep(max_delay).await;
+                // Long server delays remain enforced without overflowing the timer deadline.
+                sleep(max_delay.min(Duration::from_secs(60))).await;
             }
         }
     }
@@ -167,7 +166,11 @@ impl HostScheduler {
                 state.last_request = Some(now);
 
                 if let Some(cooldown) = cooldown_duration {
-                    state.cooldown_until = Some(now + cooldown);
+                    let remaining = state
+                        .cooldown
+                        .map(|(start, duration)| duration.saturating_sub(now.duration_since(start)))
+                        .unwrap_or_default();
+                    state.cooldown = Some((now, cooldown.max(remaining)));
                 }
             }
         }
@@ -180,20 +183,20 @@ impl HostScheduler {
 
     /// Parse Retry-After header string into Duration
     pub fn parse_retry_after(header_val: &str, default_secs: u64) -> Duration {
-        const MAX_COOLDOWN_SECS: u64 = 60;
-        let bounded = |seconds: u64| Duration::from_secs(seconds.min(MAX_COOLDOWN_SECS));
         if let Ok(secs) = header_val.trim().parse::<u64>() {
-            bounded(secs)
+            Duration::from_secs(secs)
         } else if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(header_val.trim()) {
             let now = chrono::Utc::now();
             let target = dt.with_timezone(&chrono::Utc);
             if target > now {
-                bounded((target - now).num_seconds().max(1) as u64)
+                (target - now)
+                    .to_std()
+                    .unwrap_or_else(|_| Duration::from_secs(default_secs))
             } else {
-                bounded(default_secs)
+                Duration::from_secs(default_secs)
             }
         } else {
-            bounded(default_secs)
+            Duration::from_secs(default_secs)
         }
     }
 }
@@ -206,7 +209,7 @@ mod tests {
     fn test_retry_after_parsing() {
         assert_eq!(
             HostScheduler::parse_retry_after("120", 30),
-            Duration::from_secs(60)
+            Duration::from_secs(120)
         );
         assert_eq!(
             HostScheduler::parse_retry_after("invalid", 45),
@@ -214,8 +217,47 @@ mod tests {
         );
         assert_eq!(
             HostScheduler::parse_retry_after("18446744073709551615", 30),
-            Duration::from_secs(60)
+            Duration::from_secs(u64::MAX)
         );
+        let date = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc2822();
+        let delay = HostScheduler::parse_retry_after(&date, 30);
+        assert!(delay >= Duration::from_secs(3599) && delay <= Duration::from_secs(3600));
+    }
+
+    #[tokio::test]
+    async fn retry_after_preserves_pacing_and_large_delays_without_blocking_other_hosts() {
+        let scheduler = HostScheduler::new(SchedulerConfig {
+            max_global_concurrency: 1,
+            per_host_concurrency: 1,
+            host_interval_ms: 100,
+            default_429_cooldown_secs: 60,
+        });
+        let permit = scheduler.acquire("a").await.unwrap();
+        scheduler.release("a", Some(Duration::ZERO)).await;
+        drop(permit);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), scheduler.acquire("a"))
+                .await
+                .is_err(),
+            "Retry-After: 0 must not bypass host pacing"
+        );
+
+        scheduler
+            .release("a", Some(Duration::from_secs(u64::MAX)))
+            .await;
+        scheduler.release("a", Some(Duration::ZERO)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), scheduler.acquire("a"))
+                .await
+                .is_err(),
+            "a shorter cooldown must not erase an existing longer delay"
+        );
+        let other = tokio::time::timeout(Duration::from_millis(50), scheduler.acquire("b"))
+            .await
+            .expect("a delayed host blocked an unrelated host")
+            .unwrap();
+        scheduler.release("b", None).await;
+        drop(other);
     }
 
     #[tokio::test]

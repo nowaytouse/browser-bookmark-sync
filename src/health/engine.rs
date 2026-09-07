@@ -832,20 +832,27 @@ impl HealthEngine {
                         Ok(())
                     };
 
-                    // Register 429 Retry-After cooldown on scheduler if 429 encountered
-                    let cooldown = observations.iter().find_map(|o| {
-                        if o.status_code == Some(429) {
-                            if let Some(ref err) = o.error_kind {
-                                if err.starts_with("RetryAfter:") {
-                                    let val = err.trim_start_matches("RetryAfter:");
-                                    return Some(HostScheduler::parse_retry_after(val, 30));
+                    // Respect the longest server delay from every verifier and route.
+                    let default_cooldown = if item_ctx.slow_mode { 60 } else { 30 };
+                    let cooldown = observations
+                        .iter()
+                        .filter_map(|o| {
+                            if matches!(o.status_code, Some(429 | 503)) {
+                                if let Some(ref err) = o.error_kind {
+                                    if err.starts_with("RetryAfter:") {
+                                        let val = err.trim_start_matches("RetryAfter:");
+                                        return Some(HostScheduler::parse_retry_after(
+                                            val,
+                                            default_cooldown,
+                                        ));
+                                    }
                                 }
+                                Some(std::time::Duration::from_secs(default_cooldown))
+                            } else {
+                                None
                             }
-                            Some(std::time::Duration::from_secs(30))
-                        } else {
-                            None
-                        }
-                    });
+                        })
+                        .max();
 
                     scheduler.release_keys(&key_vec, cooldown).await;
                     drop(permit);
@@ -1248,6 +1255,56 @@ mod tests {
                 crate::health::quarantine::write_selection(&db, &selection).unwrap(),
                 0
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn secondary_retry_after_reaches_host_scheduler() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for status in [429, 503] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                for code in [404, status] {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut request = [0_u8; 2048];
+                    let received = socket.read(&mut request).await.unwrap();
+                    assert!(received > 0);
+                    socket.write_all(format!(
+                        "HTTP/1.1 {code} Test\r\nRetry-After: 120\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    ).as_bytes()).await.unwrap();
+                }
+            });
+            let engine = HealthEngine::new(HealthEngineOptions {
+                proxy_url: Some(format!("http://{address}")),
+                timeout_secs: 2,
+                concurrency: 1,
+                probe_scope: ProbeScope::Content,
+                secondary_backends: vec!["curl".into()],
+                max_attempts: 1,
+                ..Default::default()
+            })
+            .unwrap();
+            let target = ProbeTarget::from_url("limited", "http://93.184.216.34/missing").unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                engine.run_probes_with_results(vec![target], |_, _, _| {}),
+            )
+            .await;
+            server.abort();
+            let (_, checks) = result.unwrap().unwrap();
+            assert!(checks[0].3.iter().any(|observation| {
+                observation.backend == "curl"
+                    && observation.status_code == Some(status)
+                    && observation.error_kind.as_deref() == Some("RetryAfter: 120")
+            }));
+            assert!(tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                engine.scheduler.acquire("93.184.216.34")
+            )
+            .await
+            .is_err());
         }
     }
 

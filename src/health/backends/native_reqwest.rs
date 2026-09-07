@@ -258,7 +258,7 @@ impl ProbeBackend for NativeReqwestBackend {
                     }
                 }
 
-                if status_code == 429 {
+                if matches!(status_code, 429 | 503) {
                     if let Some(ra) = resp.headers().get(reqwest::header::RETRY_AFTER) {
                         if let Ok(ra_str) = ra.to_str() {
                             obs.error_kind = Some(format!("RetryAfter: {ra_str}"));

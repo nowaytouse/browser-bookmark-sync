@@ -205,7 +205,7 @@ impl ProbeBackend for CurlCliBackend {
                 .arg("-o")
                 .arg(body_file.path())
                 .arg("-w")
-                .arg("%{json}");
+                .arg("%{json}\n%header{retry-after}");
             Self::configure_route(&mut command, proxy_url.as_deref(), resolve_entry.as_deref());
             command.arg(target_url);
             let command_output = command.output()?;
@@ -224,7 +224,9 @@ impl ProbeBackend for CurlCliBackend {
                 obs.actual_request = "yes".to_string();
                 let body_too_large = out.status.code() == Some(63);
                 let stdout_str = String::from_utf8_lossy(&out.stdout);
-                if let Ok(v) = serde_json::from_str::<Value>(&stdout_str) {
+                let (metadata, retry_after) =
+                    stdout_str.split_once('\n').unwrap_or((&stdout_str, ""));
+                if let Ok(v) = serde_json::from_str::<Value>(metadata) {
                     if let Some(code) = v.get("http_code").and_then(Value::as_u64) {
                         if code > 0 {
                             obs.status_code = Some(code as u16);
@@ -267,6 +269,10 @@ impl ProbeBackend for CurlCliBackend {
                         // body must not turn a 404 into independent death evidence.
                         obs.actual_request = "unknown".to_string();
                         obs.error_kind = Some(format!("CurlExitCode: {:?}", out.status.code()));
+                    }
+                    if matches!(obs.status_code, Some(429 | 503)) && !retry_after.trim().is_empty()
+                    {
+                        obs.error_kind = Some(format!("RetryAfter: {}", retry_after.trim()));
                     }
                 } else if body_too_large {
                     obs.actual_request = "unknown".to_string();
