@@ -82,15 +82,12 @@ const fn should_retry(verdict: HealthVerdict) -> bool {
 }
 
 const fn should_skip_secondary(slow_mode: bool, verdict: HealthVerdict) -> bool {
-    // A strong 404/410 or DNS failure is re-probed in separate bounded rounds below;
-    // launching an external verifier for every such URL only duplicates the request.
-    slow_mode
+    // Repeated requests from one verifier cannot satisfy the two-family death gate.
+    // Slow mode still allows one confirmation backend for a strong failure.
+    (slow_mode && !matches!(verdict, HealthVerdict::ProbableDead))
         || matches!(
             verdict,
-            HealthVerdict::Live
-                | HealthVerdict::Protected
-                | HealthVerdict::ProbableDead
-                | HealthVerdict::ConfirmedDead
+            HealthVerdict::Live | HealthVerdict::Protected | HealthVerdict::ConfirmedDead
         )
 }
 
@@ -707,7 +704,7 @@ impl HealthEngine {
                     let mut item_ctx = ctx_base.clone();
                     item_ctx.check_id = check_id.clone();
 
-                    let permit = scheduler
+                    let mut permit = scheduler
                         .acquire_keys(&key_vec)
                         .await
                         .map_err(str::to_string)?;
@@ -727,7 +724,7 @@ impl HealthEngine {
                     );
 
                     // Tier 2 - Tier 5 Secondary Backends
-                    // In slow mode or when initial_verdict is Live or Protected (429/403), skip dense secondary backends
+                    // Live/protected results need no second probe; slow mode only confirms strong failures.
                     let skip_secondary = should_skip_secondary(item_ctx.slow_mode, initial_verdict);
 
                     if should_probe_dns(item_ctx.probe_scope, initial_verdict) {
@@ -745,6 +742,14 @@ impl HealthEngine {
 
                     if !skip_secondary {
                         for sec in &secondary_list {
+                            // Confirmation requests share the same host/domain pacing as
+                            // first probes, including cooldowns registered by other targets.
+                            scheduler.release_keys(&key_vec, None).await;
+                            drop(permit);
+                            permit = scheduler
+                                .acquire_keys(&key_vec)
+                                .await
+                                .map_err(str::to_string)?;
                             match sec.as_str() {
                                 "lychee" => {
                                     if let Ok(obs) = lychee_backend.probe(&target, &item_ctx).await
@@ -801,6 +806,9 @@ impl HealthEngine {
                                     }
                                 }
                                 _ => {}
+                            }
+                            if item_ctx.slow_mode {
+                                break;
                             }
                         }
                     }
@@ -917,12 +925,21 @@ impl HealthEngine {
                         }
                     },
                 );
-                let verdict = StateMachine::resolve_final_verdict_for_scope(
+                let verdict = match StateMachine::resolve_final_verdict_for_scope(
                     &observations,
                     &history,
                     Utc::now(),
                     self.options.probe_scope,
-                );
+                ) {
+                    // Match summary rebuilding: old failures cannot qualify an incomplete
+                    // current request or a run excluded by conflicting/unknown evidence.
+                    HealthVerdict::ProbableDead | HealthVerdict::ConfirmedDead
+                        if !evidences.iter().any(|evidence| evidence.run_id == run_id) =>
+                    {
+                        HealthVerdict::NeedsReview
+                    }
+                    verdict => verdict,
+                };
                 db.finalize_check_result(&run_id, &check_id, &bookmark_id, &url, verdict)
                     .map_err(|error| format!("DB verdict finalize failed: {error}"))?;
                 finalized.push((bookmark_id, url, verdict, observations));
@@ -970,7 +987,8 @@ mod tests {
         assert!(should_skip_secondary(false, HealthVerdict::Live));
         assert!(should_skip_secondary(false, HealthVerdict::Protected));
         assert!(!should_skip_secondary(false, HealthVerdict::NeedsReview));
-        assert!(should_skip_secondary(false, HealthVerdict::ProbableDead));
+        assert!(!should_skip_secondary(false, HealthVerdict::ProbableDead));
+        assert!(!should_skip_secondary(true, HealthVerdict::ProbableDead));
         assert!(should_skip_secondary(false, HealthVerdict::ConfirmedDead));
         assert!(!should_probe_dns(
             ProbeScope::Content,
@@ -1125,6 +1143,112 @@ mod tests {
             )
             .unwrap();
         assert_eq!(direct_dns_attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn content_death_requires_complete_secondary_and_current_run_evidence() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for (status, slow_mode, restored_status) in [(404, false, 200), (410, true, 403)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let server_requests = requests.clone();
+            let server = tokio::spawn(async move {
+                let mut accepted_at = Vec::new();
+                // Three complete native+curl runs, then three runs with truncated curl
+                // responses, then a recovery/protection response. No internet is used.
+                for index in 0..13 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    accepted_at.push(tokio::time::Instant::now());
+                    let mut request = [0_u8; 2048];
+                    let _ = socket.read(&mut request).await;
+                    server_requests.fetch_add(1, Ordering::SeqCst);
+                    let code = if index == 12 { restored_status } else { status };
+                    let length = usize::from((6..12).contains(&index) && index % 2 == 1);
+                    let response = format!(
+                        "HTTP/1.1 {code} Test\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+                    );
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                }
+                accepted_at
+            });
+
+            let temp = tempfile::tempdir().unwrap();
+            let db_path = temp.path().join("health.sqlite");
+            let engine = HealthEngine::new(HealthEngineOptions {
+                proxy_url: Some(format!("http://{address}")),
+                timeout_secs: 2,
+                concurrency: 1,
+                slow_mode,
+                secondary_backends: if slow_mode {
+                    vec!["curl".into(), "curl".into()]
+                } else {
+                    vec!["curl".into()]
+                },
+                probe_scope: ProbeScope::Content,
+                history_db_path: Some(db_path.clone()),
+                output_dir: Some(temp.path().join("report")),
+                max_attempts: 3,
+                retry_interval_secs: 0,
+                ..Default::default()
+            })
+            .unwrap();
+
+            let target =
+                ProbeTarget::from_url("missing-content", "http://93.184.216.34/missing").unwrap();
+            let scan_results = tokio::time::timeout(std::time::Duration::from_secs(40), async {
+                let mut results = Vec::new();
+                for _ in 0..3 {
+                    let (report, checks) = engine
+                        .run_probes_with_results(vec![target.clone()], |_, _, _| {})
+                        .await
+                        .unwrap();
+                    let selected = crate::health::quarantine::write_selection(
+                        engine.db.as_deref().unwrap(),
+                        &temp.path().join("quarantine-selection.json"),
+                    )
+                    .unwrap();
+                    results.push((report.confirmed_dead_count, checks[0].2, selected));
+                }
+                results
+            })
+            .await;
+            // Abort the fixture even when the engine returns early or times out.
+            server.abort();
+            let accepted_at = server.await.unwrap_or_default();
+            let results = scan_results.expect("bounded local content scan timed out");
+            assert_eq!(
+                requests.load(Ordering::SeqCst),
+                13,
+                "status={status}, results={results:?}"
+            );
+            assert_eq!(accepted_at.len(), 13);
+            let interval = std::time::Duration::from_millis(if slow_mode { 2000 } else { 200 });
+            assert!(accepted_at
+                .windows(2)
+                .all(|pair| pair[1] - pair[0] >= interval));
+            assert_eq!(results[0], (1, HealthVerdict::ConfirmedDead, 1));
+            assert_eq!(results[1], (0, HealthVerdict::NeedsReview, 0));
+            assert_eq!((results[2].0, results[2].2), (0, 0));
+            if restored_status == 200 {
+                assert!(matches!(
+                    results[2].1,
+                    HealthVerdict::Live | HealthVerdict::Recovered
+                ));
+            } else {
+                assert_eq!(results[2].1, HealthVerdict::Protected);
+            }
+            drop(engine);
+
+            let db = HealthDatabase::open(db_path).unwrap();
+            let selection = temp.path().join("quarantine-selection.json");
+            assert_eq!(
+                crate::health::quarantine::write_selection(&db, &selection).unwrap(),
+                0
+            );
+        }
     }
 
     #[tokio::test]

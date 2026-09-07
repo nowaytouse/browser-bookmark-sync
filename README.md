@@ -32,7 +32,7 @@ bsync inventory
 # Export a deterministic, deduplicated bookmark copy
 bsync export -o ~/Downloads/all_bookmarks.html --all-profiles -d --clean
 
-# Validate the exported copy; --slow enables same-day historical evidence
+# Validate the exported copy; --slow limits per-host request load
 bsync check --file ~/Downloads/all_bookmarks.html \
   --slow --history-db ./bookmark-health.sqlite \
   --export-dir ~/Downloads/check_results
@@ -49,6 +49,10 @@ bsync health apply-quarantine --db ./bookmark-health.sqlite \
 ```
 
 `check` has two distinct validation targets: site availability and the saved page/video/resource path. A temporary failure is retried within the same day. A real, uncached success preserves the bookmark as live/recovered even when another probe disagrees. Uncertain results remain for review.
+
+The trusted-site list skips only redundant site preflight work; it never skips page, repository, post, or video checks. Content probing is suppressed only when the site itself is already `ConfirmedDead`. Raw 404/410 responses require three completed, uncached same-day runs and two verifier families before a content URL becomes a quarantine candidate. The current run must also contain qualifying evidence; interrupted transfers cannot borrow older failures to confirm a deletion candidate. A real successful retry keeps the bookmark.
+
+The default secondary verifier is `curl`. Every secondary request re-enters the same host/domain rate limiter and shares its cooldowns. Slow mode spaces scheduled primary/secondary probes to the same host/domain by at least two seconds and allows at most one configured secondary verifier per strong-failure round. Without a working second verifier, raw 404/410 responses remain unconfirmed. Unauthenticated probes cannot reliably distinguish a deleted resource from a private resource that deliberately returns an ordinary 404, so quarantine still requires human review.
 
 Checks append process, status, scan lifecycle, and progress events to `browser-sync.log` under `--export-dir` (or to `./browser-sync-check.log` when no directory is supplied). The same directory contains an atomic `check-status.json`: a normal exit records `completed`, while SIGINT/SIGTERM records `aborted` and the signal name is logged. SIGKILL cannot be handled by any process; in that case `running` plus a dead PID and no later `process_finished` event is durable interruption evidence. Use the global `--log-file` option to choose another log path.
 

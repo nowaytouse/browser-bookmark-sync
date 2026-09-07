@@ -1687,11 +1687,11 @@ async fn run_cli(cli: Cli) -> Result<()> {
                 let mut site_plan = build_probe_plan(&target_inputs, ProbeScope::Site);
                 site_plan.apply_trusted_site_skip(&trusted_list, no_trusted_site_skip);
                 let site_targets = probe_targets_from_plan(&site_plan)?;
-                let live_site_ids = if site_targets.is_empty() {
+                let confirmed_dead_site_ids = if site_targets.is_empty() {
                     HashSet::new()
                 } else {
                     info!(
-                        "🌐 先执行站点预检：{} 个站点；仅 Live/Recovered 或 trusted 站点进入内容阶段",
+                        "🌐 先执行站点预检：{} 个站点；仅明确 ConfirmedDead 站点跳过逐 URL 内容探测",
                         site_targets.len()
                     );
                     let (_site_report, site_results) = run_health_stage(
@@ -1710,17 +1710,11 @@ async fn run_cli(cli: Cli) -> Result<()> {
                     site_results
                         .into_iter()
                         .filter_map(|(bookmark_id, _, verdict, _)| {
-                            matches!(verdict, HealthVerdict::Live | HealthVerdict::Recovered)
-                                .then_some(bookmark_id)
+                            matches!(verdict, HealthVerdict::ConfirmedDead).then_some(bookmark_id)
                         })
                         .collect()
                 };
-                apply_content_site_gate(
-                    &mut plan,
-                    &live_site_ids,
-                    &trusted_list,
-                    no_trusted_site_skip,
-                );
+                apply_content_site_gate(&mut plan, &confirmed_dead_site_ids);
                 Some(site_plan)
             } else {
                 plan.apply_trusted_site_skip(&trusted_list, no_trusted_site_skip);
@@ -2600,27 +2594,21 @@ fn content_site_key(target: &browser_bookmark_sync::health::SiteTarget) -> Strin
 
 fn apply_content_site_gate(
     content_plan: &mut ProbePlan,
-    live_site_ids: &std::collections::HashSet<String>,
-    trusted_list: &TrustedSiteSkipList,
-    no_trusted_site_skip: bool,
+    confirmed_dead_site_ids: &std::collections::HashSet<String>,
 ) {
     let mut retained = Vec::with_capacity(content_plan.targets.len());
     for target in content_plan.targets.drain(..) {
         let site_key = content_site_key(&target);
-        let trusted = !no_trusted_site_skip
-            && trusted_list
-                .matches_host(&target.normalized_host)
-                .unwrap_or(false);
-        if trusted || live_site_ids.contains(&format!("site:{site_key}")) {
-            retained.push(target);
-        } else {
+        if confirmed_dead_site_ids.contains(&format!("site:{site_key}")) {
             content_plan.skipped.push(SkippedTarget {
                 original_url: target.probe_url.clone(),
-                reason: format!("SkippedSitePreflight:{site_key}"),
+                reason: format!("SkippedConfirmedDeadSite:{site_key}"),
                 site_key: Some(site_key),
                 bookmark_count: target.bookmark_count,
                 source_bookmark_ids: target.source_bookmark_ids,
             });
+        } else {
+            retained.push(target);
         }
     }
     content_plan.targets = retained;
@@ -2683,7 +2671,8 @@ fn write_probe_plan_artifact(
         "skipped": plan.skipped,
         "target_limit": limit,
         "partial": limit > 0,
-        "content_requires_live_site": plan.scope == ProbeScope::Content,
+        "content_requires_live_site": false,
+        "content_skips_confirmed_dead_sites": plan.scope == ProbeScope::Content,
         "site_preflight": site_preflight_plan,
         "trusted_site_skip": {
             "enabled": (matches!(plan.scope, ProbeScope::Site) || site_preflight_plan.is_some())
@@ -2710,7 +2699,7 @@ mod cli_tests {
     use super::{
         apply_content_site_gate, bounded_health_concurrency, build_probe_plan, content_site_key,
         is_disabled_non_core_command, parse_probe_scope, probe_targets_from_plan,
-        BookmarkTargetInput, CheckStatusGuard, Cli, Commands, ProbeScope, TrustedSiteSkipList,
+        BookmarkTargetInput, CheckStatusGuard, Cli, Commands, ProbeScope,
     };
     use clap::Parser;
     use std::collections::HashSet;
@@ -2829,7 +2818,7 @@ mod cli_tests {
     }
 
     #[test]
-    fn content_gate_requires_live_site_or_trusted_site() {
+    fn content_gate_keeps_unverified_content_for_content_level_checks() {
         let inputs = [
             BookmarkTargetInput {
                 bookmark_id: "trusted".to_string(),
@@ -2841,26 +2830,22 @@ mod cli_tests {
             },
         ];
         let mut plan = build_probe_plan(&inputs, ProbeScope::Content);
-        let trusted = TrustedSiteSkipList {
-            version: "test".to_string(),
-            domains: vec!["example.com".to_string()],
-        };
+        apply_content_site_gate(&mut plan, &HashSet::new());
 
-        apply_content_site_gate(&mut plan, &HashSet::new(), &trusted, false);
+        assert_eq!(plan.targets.len(), 2);
+        assert!(plan.skipped.is_empty());
 
-        assert_eq!(plan.targets.len(), 1);
-        assert_eq!(plan.targets[0].normalized_host, "www.example.com");
-        assert!(plan.skipped.iter().any(|item| item.original_url
-            == "https://www.example.net/article"
-            && item.reason.starts_with("SkippedSitePreflight:")));
-
-        let mut live = HashSet::new();
+        let mut confirmed_dead = HashSet::new();
         let mut second_plan = build_probe_plan(&inputs, ProbeScope::Content);
-        live.insert(format!(
+        confirmed_dead.insert(format!(
             "site:{}",
             content_site_key(&second_plan.targets[1])
         ));
-        apply_content_site_gate(&mut second_plan, &live, &trusted, false);
-        assert_eq!(second_plan.targets.len(), 2);
+        apply_content_site_gate(&mut second_plan, &confirmed_dead);
+        assert_eq!(second_plan.targets.len(), 1);
+        assert_eq!(second_plan.targets[0].normalized_host, "www.example.com");
+        assert!(second_plan.skipped.iter().any(|item| item.original_url
+            == "https://www.example.net/article"
+            && item.reason.starts_with("SkippedConfirmedDeadSite:")));
     }
 }

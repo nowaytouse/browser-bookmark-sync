@@ -239,7 +239,9 @@ impl ProbeBackend for CurlCliBackend {
                         }
                     }
                     if let Some(ip) = v.get("remote_ip").and_then(|i| i.as_str()) {
-                        if !ip.is_empty() {
+                        // With an explicit proxy this is the proxy peer, not the target IP.
+                        // Target URL validation still runs before starting curl.
+                        if !ip.is_empty() && context.proxy_url.is_none() {
                             if let Ok(parsed_ip) = ip.parse::<IpAddr>() {
                                 if let Err(reason) = crate::health::security::is_ip_allowed(
                                     parsed_ip,
@@ -260,7 +262,10 @@ impl ProbeBackend for CurlCliBackend {
                     if body_too_large {
                         obs.actual_request = "unknown".to_string();
                         obs.error_kind = Some("BodyTooLarge".to_string());
-                    } else if !out.status.success() && obs.status_code.is_none() {
+                    } else if !out.status.success() && obs.error_kind.is_none() {
+                        // Headers alone are not a complete response: a truncated/timed-out
+                        // body must not turn a 404 into independent death evidence.
+                        obs.actual_request = "unknown".to_string();
                         obs.error_kind = Some(format!("CurlExitCode: {:?}", out.status.code()));
                     }
                 } else if body_too_large {
