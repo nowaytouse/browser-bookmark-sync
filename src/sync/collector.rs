@@ -154,6 +154,14 @@ impl BookmarkCollector {
                 None,
                 home.join("Library/Safari/Bookmarks.plist"),
             ),
+            (
+                "Safari Technology Preview",
+                BrowserKind::Safari,
+                Some("Technology Preview".into()),
+                home.join(
+                    "Library/Containers/com.apple.SafariTechnologyPreview/Data/Library/Safari/Bookmarks.plist",
+                ),
+            ),
         ];
 
         let mut discovered = Vec::new();
@@ -1236,6 +1244,47 @@ mod tests {
         assert!(
             error.to_string().contains("Application Support")
                 || error.to_string().contains("browser installation candidate")
+        );
+    }
+
+    #[test]
+    fn discovers_safari_and_technology_preview_as_separate_installations() {
+        let temp = tempfile::tempdir().unwrap();
+        let safari = temp.path().join("Library/Safari/Bookmarks.plist");
+        let technology_preview = temp.path().join(
+            "Library/Containers/com.apple.SafariTechnologyPreview/Data/Library/Safari/Bookmarks.plist",
+        );
+        fs::create_dir_all(safari.parent().unwrap()).unwrap();
+        fs::create_dir_all(technology_preview.parent().unwrap()).unwrap();
+        fs::write(&safari, b"safari").unwrap();
+        fs::write(&technology_preview, b"technology-preview").unwrap();
+        fs::create_dir_all(temp.path().join("Library/Application Support")).unwrap();
+
+        let installations =
+            BookmarkCollector::discover_installations_from_home(Some(temp.path().to_path_buf()))
+                .unwrap();
+        let safari_installations: Vec<_> = installations
+            .iter()
+            .filter(|installation| installation.kind == BrowserKind::Safari)
+            .collect();
+
+        assert_eq!(safari_installations.len(), 2);
+        assert_eq!(safari_installations[0].name, "Safari");
+        assert_eq!(safari_installations[0].channel, None);
+        assert_eq!(safari_installations[0].root_path, safari);
+        assert_eq!(safari_installations[1].name, "Safari Technology Preview");
+        assert_eq!(
+            safari_installations[1].channel.as_deref(),
+            Some("Technology Preview")
+        );
+        assert_eq!(safari_installations[1].root_path, technology_preview);
+        assert_eq!(
+            BookmarkCollector::discover_profiles(safari_installations[0]).unwrap()[0].path,
+            safari_installations[0].root_path
+        );
+        assert_eq!(
+            BookmarkCollector::discover_profiles(safari_installations[1]).unwrap()[0].path,
+            safari_installations[1].root_path
         );
     }
 

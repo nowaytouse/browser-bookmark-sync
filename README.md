@@ -14,6 +14,8 @@ It does not synchronize browsers, write browser profiles, upload bookmarks to cl
 
 The collector covers Chromium-family profiles, Gecko profiles, and Safari where their local bookmark stores are available. A failed profile is reported instead of silently producing a partial harvest.
 
+Add `--reading-list` to export Safari and Chromium reading lists from isolated snapshots. Chromium local and account records are included; per-source counts and unsupported Gecko reading-list coverage appear in the export report. An unreadable or changing store fails the export instead of masquerading as an empty list. Safari Technology Preview bookmark stores are discovered separately when present. Safari custom profile-to-Favorites mappings are not yet verified, so these reports do not claim universal source completeness.
+
 ## Install
 
 ```bash

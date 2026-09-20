@@ -2,6 +2,7 @@ pub mod collector;
 pub mod dedupe;
 pub mod exporter;
 mod firefox_backup;
+pub mod reading_list;
 
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -5800,7 +5801,10 @@ impl SyncEngine {
                 .to_string()
         };
         let external_source_failed = external_source_reports.iter().any(|report| {
-            report.get("status").and_then(serde_json::Value::as_str) == Some("failed")
+            matches!(
+                report.get("status").and_then(serde_json::Value::as_str),
+                Some("failed" | "unsupported" | "unverified" | "partial")
+            )
         });
 
         let report = serde_json::json!({

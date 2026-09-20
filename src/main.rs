@@ -374,7 +374,7 @@ enum Commands {
         #[arg(long, hide = true)]
         history: bool,
 
-        /// Include reading list (Safari, Firefox)
+        /// Include supported reading lists (Safari, Chromium)
         #[arg(short = 'r', long)]
         reading_list: bool,
 
@@ -1054,37 +1054,14 @@ async fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
 
-            // Include Safari reading list if requested
+            // Include supported Safari and Chromium reading lists if requested.
             if reading_list {
-                info!("📖 Reading Safari reading list...");
-                match engine.get_safari_reading_list() {
-                    Ok(items) if !items.is_empty() => {
-                        info!("   {} items found", items.len());
-                        let reading_folder = browsers::Bookmark {
-                            id: "reading-list".to_string(),
-                            title: "Reading List".to_string(),
-                            url: None,
-                            folder: true,
-                            children: items
-                                .into_iter()
-                                .map(|item| browsers::Bookmark {
-                                    id: format!("rl-{}", item.url.len()),
-                                    title: item.title,
-                                    url: Some(item.url),
-                                    folder: false,
-                                    children: vec![],
-                                    date_added: item.date_added,
-                                    date_modified: None,
-                                })
-                                .collect(),
-                            date_added: Some(chrono::Utc::now().timestamp_millis()),
-                            date_modified: None,
-                        };
-                        extra_bookmarks.push(reading_folder);
-                    }
-                    Ok(_) => info!("   No reading list items"),
-                    Err(e) => warn!("   Failed to read: {}", e),
-                }
+                info!("📖 Reading supported Safari/Chromium reading lists...");
+                let (reading_bookmarks, reading_reports) =
+                    sync::reading_list::collect_for_export(&browsers)?;
+                info!("   {} items found", reading_bookmarks.len());
+                extra_bookmarks.extend(reading_bookmarks);
+                external_source_reports.extend(reading_reports);
             }
 
             // Include History if requested
