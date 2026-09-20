@@ -147,10 +147,7 @@ fn store_files(source: &Path) -> Result<Vec<PathBuf>> {
             .checked_add(metadata.len())
             .ok_or_else(|| anyhow::anyhow!("LevelDB snapshot size overflow"))?;
         if total > MAX_SNAPSHOT_BYTES {
-            bail!(
-                "Chromium LevelDB snapshot exceeds {} bytes",
-                MAX_SNAPSHOT_BYTES
-            );
+            bail!("Chromium LevelDB snapshot exceeds {MAX_SNAPSHOT_BYTES} bytes");
         }
         files.push(path);
     }
