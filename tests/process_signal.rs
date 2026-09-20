@@ -78,3 +78,67 @@ fn sigterm_marks_check_aborted_and_logs_reason() -> Result<(), Box<dyn std::erro
     assert!(log.contains("SIGTERM"));
     Ok(())
 }
+
+#[tokio::test]
+async fn check_persists_real_site_and_content_progress() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{fs, process::Stdio, time::Duration};
+
+    // A loopback-only proxy fixture: never visit a real bookmarked site.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let proxy = format!("http://{}", listener.local_addr()?);
+    let app = axum::Router::new().fallback(|| async {
+        axum::response::Html("<!doctype html><html><head><title>Healthy fixture</title></head><body>A working article for the local progress regression test.</body></html>")
+    });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let temp = tempfile::tempdir()?;
+    let input = temp.path().join("input.html");
+    let fixture_db = temp.path().join("fixture-health.sqlite");
+    fs::write(&input, "<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><p><DT><A HREF=\"http://progress.example.com/article\">test</A></DL><p>")?;
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_browser-bookmark-sync"));
+    command
+        .current_dir(temp.path())
+        .args([
+            "check",
+            "--file",
+            &input.to_string_lossy(),
+            "--export-dir",
+            &temp.path().to_string_lossy(),
+            "--history-db",
+            &fixture_db.to_string_lossy(),
+            "--scope",
+            "content",
+            "--proxy",
+            &proxy,
+            "--timeout",
+            "1",
+            "--concurrency",
+            "1",
+            "--no-trusted-site-skip",
+        ])
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let result = tokio::time::timeout(Duration::from_secs(30), command.output()).await;
+    server.abort();
+    let output = result??;
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value =
+        serde_json::from_slice(&fs::read(temp.path().join("check-status.json"))?)?;
+    assert_eq!(status["status"], "completed");
+    assert_eq!(status["phase"], "content");
+    assert_eq!(status["completed_targets"], 1);
+    assert_eq!(status["total_targets"], 1);
+    for scope in ["site", "content"] {
+        let report: serde_json::Value = serde_json::from_slice(&fs::read(
+            temp.path().join(scope).join("health-summary.json"),
+        )?)?;
+        assert_eq!(report["total_checked"], 1);
+        assert_eq!(report["live_count"], 1, "{scope} report: {report}");
+    }
+    Ok(())
+}

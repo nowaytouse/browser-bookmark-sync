@@ -107,11 +107,25 @@ fn default_check_log_path(cli: &Cli) -> Option<std::path::PathBuf> {
 }
 
 struct CheckStatusGuard {
+    writer: CheckStatusWriter,
+    finished: bool,
+}
+
+#[derive(Clone)]
+struct CheckStatusWriter {
     path: Option<std::path::PathBuf>,
     scope: &'static str,
     input: Option<String>,
     started_at: String,
-    finished: bool,
+    progress: std::sync::Arc<std::sync::Mutex<CheckProgress>>,
+}
+
+struct CheckProgress {
+    status: &'static str,
+    phase: &'static str,
+    completed: usize,
+    total: Option<usize>,
+    last_write: Option<std::time::Instant>,
 }
 
 impl CheckStatusGuard {
@@ -119,38 +133,108 @@ impl CheckStatusGuard {
         let path = export_dir
             .map(|dir| std::path::PathBuf::from(expand_path(dir)).join("check-status.json"));
         let guard = Self {
-            path,
-            scope: match scope {
-                ProbeScope::Site => "site",
-                ProbeScope::Content => "content",
+            writer: CheckStatusWriter {
+                path,
+                scope: match scope {
+                    ProbeScope::Site => "site",
+                    ProbeScope::Content => "content",
+                },
+                input: input.map(str::to_string),
+                started_at: chrono::Utc::now().to_rfc3339(),
+                progress: std::sync::Arc::new(std::sync::Mutex::new(CheckProgress {
+                    status: "running",
+                    phase: "preparing",
+                    completed: 0,
+                    total: None,
+                    last_write: None,
+                })),
             },
-            input: input.map(str::to_string),
-            started_at: chrono::Utc::now().to_rfc3339(),
             finished: false,
         };
-        guard.write("running");
+        guard.writer.write("running");
         info!(
             event = "check_status_started",
             pid = std::process::id(),
-            scope = guard.scope,
-            status_file = ?guard.path,
+            scope = guard.writer.scope,
+            status_file = ?guard.writer.path,
             "check status tracking started"
         );
         guard
     }
 
-    fn write(&self, status: &str) {
+    fn begin_phase(
+        &self,
+        scope: ProbeScope,
+        total: usize,
+    ) -> impl Fn(usize, usize, &str) + Send + Sync + 'static {
+        let writer = self.writer.clone();
+        let phase = match scope {
+            ProbeScope::Site => "site",
+            ProbeScope::Content => "content",
+        };
+        {
+            let mut progress = writer.progress.lock().unwrap_or_else(|e| e.into_inner());
+            progress.phase = phase;
+            progress.completed = 0;
+            progress.total = Some(total);
+            writer.write_locked(&mut progress);
+        }
+        move |current, callback_total, _url| {
+            let mut progress = writer.progress.lock().unwrap_or_else(|e| e.into_inner());
+            if progress.status != "running" || progress.phase != phase || callback_total != total {
+                return;
+            }
+            // Concurrent callbacks can arrive out of order. Never regress the count.
+            progress.completed = progress.completed.max(current.min(total));
+            if progress.completed == total
+                || progress.completed == 1
+                || progress
+                    .last_write
+                    .is_none_or(|last| last.elapsed().as_secs() >= 2)
+            {
+                writer.write_locked(&mut progress);
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        self.finished = true;
+        self.writer.write("completed");
+        info!(
+            event = "check_status_completed",
+            pid = std::process::id(),
+            scope = self.writer.scope,
+            status_file = ?self.writer.path,
+            "check status tracking completed"
+        );
+    }
+}
+
+impl CheckStatusWriter {
+    fn write(&self, status: &'static str) {
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        progress.status = status;
+        self.write_locked(&mut progress);
+    }
+
+    fn write_locked(&self, progress: &mut CheckProgress) {
         let Some(path) = self.path.as_ref() else {
             return;
         };
         let payload = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "pid": std::process::id(),
-            "status": status,
+            "status": progress.status,
             "scope": self.scope,
             "input": self.input,
             "started_at": self.started_at,
             "updated_at": chrono::Utc::now().to_rfc3339(),
+            "phase": progress.phase,
+            "completed_targets": progress.total.map(|_| progress.completed),
+            "total_targets": progress.total,
+            "progress_includes_reused_results": true,
+            "network_consistency": "unverified",
+            "deletion_stage_status": "not_run",
         });
         if let Some(parent) = path.parent() {
             if let Err(error) = std::fs::create_dir_all(parent) {
@@ -163,31 +247,21 @@ impl CheckStatusGuard {
         }
         if let Err(error) = browser_utils::atomic_write_file(path, payload.to_string().as_bytes()) {
             eprintln!("unable to write status file {}: {error}", path.display());
+        } else {
+            progress.last_write = Some(std::time::Instant::now());
         }
-    }
-
-    fn finish(&mut self) {
-        self.finished = true;
-        self.write("completed");
-        info!(
-            event = "check_status_completed",
-            pid = std::process::id(),
-            scope = self.scope,
-            status_file = ?self.path,
-            "check status tracking completed"
-        );
     }
 }
 
 impl Drop for CheckStatusGuard {
     fn drop(&mut self) {
         if !self.finished {
-            self.write("aborted");
+            self.writer.write("aborted");
             warn!(
                 event = "check_status_aborted",
                 pid = std::process::id(),
-                scope = self.scope,
-                status_file = ?self.path,
+                scope = self.writer.scope,
+                status_file = ?self.writer.path,
                 "check status tracking aborted before normal completion"
             );
         }
@@ -1705,6 +1779,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
                         secondary_backends(secondary.as_deref()),
                         scoped_export_dir(export_dir.as_deref(), ProbeScope::Site)?,
                         dns_policy_config.clone(),
+                        status_guard.begin_phase(ProbeScope::Site, site_targets.len()),
                     )
                     .await?;
                     site_results
@@ -1796,10 +1871,12 @@ async fn run_cli(cli: Cli) -> Result<()> {
                         .progress_chars("#>-"),
                 );
                 let pb2 = pb.clone();
+                let progress = status_guard.begin_phase(scope, targets.len());
 
                 let report = engine
-                    .run_probes(targets, move |cur, _total, _url| {
+                    .run_probes(targets, move |cur, total, url| {
                         pb2.set_position(cur as u64);
+                        progress(cur, total, url);
                     })
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?;
@@ -1886,9 +1963,11 @@ async fn run_cli(cli: Cli) -> Result<()> {
 
             // 执行检查
             let start_time = std::time::Instant::now();
+            let progress = status_guard.begin_phase(scope, unique_urls.len());
             let results = checker
-                .check_batch(unique_urls, |current, _total, url| {
+                .check_batch(unique_urls, |current, total, url| {
                     pb.set_position(current as u64);
+                    progress(current, total, url);
                     if verbose {
                         pb.set_message(url.to_string());
                     }
@@ -2547,7 +2626,7 @@ fn secondary_backends(value: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-async fn run_health_stage(
+async fn run_health_stage<F>(
     targets: Vec<ProbeTarget>,
     scope: ProbeScope,
     proxy: Option<String>,
@@ -2558,10 +2637,14 @@ async fn run_health_stage(
     secondary: Vec<String>,
     output_dir: Option<std::path::PathBuf>,
     dns_policy: DnsPolicy,
+    progress: F,
 ) -> Result<(
     HealthRunSummaryReport,
     Vec<(String, String, HealthVerdict, Vec<BackendObservation>)>,
-)> {
+)>
+where
+    F: Fn(usize, usize, &str) + Send + Sync + 'static,
+{
     let db_path = history_db.map(|path| std::path::PathBuf::from(expand_path(path)));
     let engine = HealthEngine::new(HealthEngineOptions {
         proxy_url: proxy,
@@ -2580,7 +2663,7 @@ async fn run_health_stage(
     })
     .map_err(anyhow::Error::msg)?;
     engine
-        .run_probes_with_results(targets, |_current, _total, _url| {})
+        .run_probes_with_results(targets, progress)
         .await
         .map_err(anyhow::Error::msg)
 }
@@ -2772,6 +2855,8 @@ mod cli_tests {
             )
             .unwrap();
             assert_eq!(running["status"], "running");
+            assert_eq!(running["phase"], "preparing");
+            assert_eq!(running["network_consistency"], "unverified");
             guard.finish();
             let completed: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(temp.path().join("check-status.json")).unwrap(),
@@ -2787,6 +2872,34 @@ mod cli_tests {
         )
         .unwrap();
         assert_eq!(aborted["status"], "aborted");
+    }
+
+    #[test]
+    fn check_progress_is_phase_local_monotonic_and_cannot_revive_aborted_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let read = || -> serde_json::Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(temp.path().join("check-status.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        let guard = CheckStatusGuard::start(temp.path().to_str(), ProbeScope::Content, None);
+        let site = guard.begin_phase(ProbeScope::Site, 3);
+        site(1, 3, "private-url-not-persisted");
+        assert_eq!(read()["completed_targets"], 1);
+        site(3, 3, "");
+        site(2, 3, "");
+        assert_eq!(read()["completed_targets"], 3);
+        let content = guard.begin_phase(ProbeScope::Content, 2);
+        site(3, 3, "");
+        assert_eq!(read()["phase"], "content");
+        assert_eq!(read()["completed_targets"], 0);
+        content(1, 2, "");
+        drop(guard);
+        content(2, 2, "");
+        assert_eq!(read()["status"], "aborted");
+        assert_eq!(read()["completed_targets"], 1);
+        assert!(!read().to_string().contains("private-url"));
     }
 
     #[test]
