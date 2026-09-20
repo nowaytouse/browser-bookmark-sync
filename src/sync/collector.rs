@@ -342,7 +342,7 @@ impl BookmarkCollector {
     /// Discover profiles for a given installation
     pub fn discover_profiles(installation: &BrowserInstallation) -> Result<Vec<BrowserProfile>> {
         match &installation.kind {
-            BrowserKind::Chromium(_) => Self::discover_chromium_profiles(installation),
+            BrowserKind::Chromium(_) => Self::discover_chromium_profiles(installation, false),
             BrowserKind::Firefox(_) => Self::discover_firefox_profiles(installation),
             BrowserKind::Safari => Ok(vec![BrowserProfile {
                 id: "default".into(),
@@ -352,11 +352,26 @@ impl BookmarkCollector {
         }
     }
 
+    pub(crate) fn discover_reading_list_profiles(
+        installation: &BrowserInstallation,
+    ) -> Result<Vec<BrowserProfile>> {
+        match installation.kind {
+            BrowserKind::Chromium(_) => Self::discover_chromium_profiles(installation, true),
+            _ => Self::discover_profiles(installation),
+        }
+    }
+
     fn discover_chromium_profiles(
         installation: &BrowserInstallation,
+        include_reading_lists: bool,
     ) -> Result<Vec<BrowserProfile>> {
         let mut profiles = Vec::new();
         let user_data_dir = &installation.root_path;
+        let has_store = |path: &Path| -> Result<bool> {
+            Ok(Self::is_file_if_present(&path.join("Bookmarks"))?
+                || (include_reading_lists
+                    && Self::is_file_if_present(&path.join("Sync Data/LevelDB/CURRENT"))?))
+        };
 
         // Parse Local State for display names if available
         let mut name_map = BTreeMap::new();
@@ -380,7 +395,7 @@ impl BookmarkCollector {
 
         // Some Chromium browsers (notably single-profile layouts) store Bookmarks
         // directly in their application-support root.
-        if Self::is_file_if_present(&user_data_dir.join("Bookmarks"))? {
+        if has_store(user_data_dir)? {
             profiles.push(BrowserProfile {
                 id: "Default".into(),
                 name: name_map
@@ -412,7 +427,7 @@ impl BookmarkCollector {
                 .is_dir()
             {
                 let folder_name = entry.file_name().to_string_lossy().to_string();
-                if Self::is_file_if_present(&path.join("Bookmarks"))? {
+                if has_store(&path)? {
                     let display_name = name_map
                         .get(&folder_name)
                         .cloned()
@@ -1341,6 +1356,28 @@ mod tests {
         let profiles = BookmarkCollector::discover_profiles(&installation).unwrap();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].id, "Work Account");
+    }
+
+    #[test]
+    fn discovers_reading_list_only_chromium_profile() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let profile = temp.path().join("Profile 16");
+        fs::create_dir_all(profile.join("Sync Data/LevelDB"))?;
+        fs::write(
+            profile.join("Sync Data/LevelDB/CURRENT"),
+            "MANIFEST-000001\n",
+        )?;
+        let installation = BrowserInstallation {
+            name: "Test Chromium".into(),
+            kind: BrowserKind::Chromium("Chromium".into()),
+            channel: None,
+            root_path: temp.path().to_path_buf(),
+        };
+        assert!(BookmarkCollector::discover_profiles(&installation)?.is_empty());
+        let profiles = BookmarkCollector::discover_reading_list_profiles(&installation)?;
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].path, profile);
+        Ok(())
     }
 
     #[test]

@@ -66,7 +66,7 @@ pub fn collect_for_export(browser_names: &str) -> Result<(Vec<Bookmark>, Vec<ser
         if !selected(&installation.name, browser_names) {
             continue;
         }
-        for profile in BookmarkCollector::discover_profiles(&installation)? {
+        for profile in BookmarkCollector::discover_reading_list_profiles(&installation)? {
             let source = format!(
                 "{}:{}:{}",
                 installation.name,
