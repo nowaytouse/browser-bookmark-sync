@@ -1116,13 +1116,23 @@ impl BookmarkCollector {
         if let Some(dict) = plist_value.as_dictionary() {
             if let Some(children) = dict.get("Children").and_then(|v| v.as_array()) {
                 for (idx, child) in children.iter().enumerate() {
-                    let (child_nodes, bm, fld) = Self::parse_safari_node(
-                        child,
-                        source,
-                        &BookmarkRootKind::Favorites,
-                        &["Favorites".into()],
-                        idx,
-                    )?;
+                    let root = child.as_dictionary();
+                    let root_id = root
+                        .and_then(|node| node.get("WebBookmarkUUID"))
+                        .and_then(|value| value.as_string());
+                    let root_kind = match root_id {
+                        Some("BookmarksBar") => BookmarkRootKind::BookmarkBar,
+                        Some("BookmarksMenu") => BookmarkRootKind::BookmarkMenu,
+                        _ => BookmarkRootKind::Custom(
+                            root.and_then(|node| node.get("Title"))
+                                .and_then(|value| value.as_string())
+                                .or(root_id)
+                                .unwrap_or("Safari Root")
+                                .to_string(),
+                        ),
+                    };
+                    let (child_nodes, bm, fld) =
+                        Self::parse_safari_node(child, source, &root_kind, &[], idx)?;
                     bm_count += bm;
                     folder_count += fld;
                     nodes.extend(child_nodes);
@@ -1301,6 +1311,74 @@ mod tests {
             BookmarkCollector::discover_profiles(safari_installations[1]).unwrap()[0].path,
             safari_installations[1].root_path
         );
+    }
+
+    #[test]
+    fn safari_roots_keep_their_actual_origin_and_folder_path() {
+        fn folder(id: &str, title: &str, url: &str) -> plist::Value {
+            let mut leaf = plist::Dictionary::new();
+            leaf.insert("WebBookmarkType".into(), "WebBookmarkTypeLeaf".into());
+            leaf.insert("WebBookmarkUUID".into(), format!("{id}-leaf").into());
+            leaf.insert("Title".into(), title.into());
+            leaf.insert("URLString".into(), url.into());
+
+            let mut root = plist::Dictionary::new();
+            root.insert("WebBookmarkType".into(), "WebBookmarkTypeList".into());
+            root.insert("WebBookmarkUUID".into(), id.into());
+            root.insert("Title".into(), title.into());
+            root.insert(
+                "Children".into(),
+                vec![plist::Value::Dictionary(leaf)].into(),
+            );
+            plist::Value::Dictionary(root)
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Bookmarks.plist");
+        let mut document = plist::Dictionary::new();
+        document.insert(
+            "Children".into(),
+            vec![
+                folder("BookmarksBar", "BookmarksBar", "https://bar.example"),
+                folder("BookmarksMenu", "BookmarksMenu", "https://menu.example"),
+                folder("custom-root", "Personal", "https://personal.example"),
+                folder(
+                    "reading-list",
+                    "com.apple.ReadingList",
+                    "https://reading.example",
+                ),
+                folder("history", "History", "https://history.example"),
+            ]
+            .into(),
+        );
+        let mut bytes = Vec::new();
+        plist::to_writer_xml(&mut bytes, &plist::Value::Dictionary(document)).unwrap();
+        fs::write(&path, bytes).unwrap();
+        let source = SourceDescriptor {
+            browser: BrowserKind::Safari,
+            browser_channel: None,
+            profile_id: "default".into(),
+            profile_name: "Safari".into(),
+            source_path: path.clone(),
+        };
+
+        let (nodes, count, _) = BookmarkCollector::parse_safari_plist(&path, &source).unwrap();
+        assert_eq!(count, 3);
+        for (node, (kind, path)) in nodes.iter().zip([
+            (BookmarkRootKind::BookmarkBar, "BookmarksBar"),
+            (BookmarkRootKind::BookmarkMenu, "BookmarksMenu"),
+            (BookmarkRootKind::Custom("Personal".into()), "Personal"),
+        ]) {
+            let BookmarkNode::Folder(folder) = node else {
+                panic!("Safari root should remain a folder");
+            };
+            assert_eq!(folder.root_kind, kind);
+            let BookmarkNode::Bookmark(bookmark) = &folder.children[0] else {
+                panic!("Safari root should contain its URL");
+            };
+            assert_eq!(bookmark.root_kind, kind);
+            assert_eq!(bookmark.folder_path, vec![path.to_string()]);
+        }
     }
 
     #[test]
