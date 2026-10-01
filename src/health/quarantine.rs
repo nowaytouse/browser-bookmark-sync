@@ -476,6 +476,13 @@ mod tests {
         assert_eq!(fs::read(&input).unwrap(), before);
         assert!(audit.input_hash_before == audit.input_hash_after);
         assert!(audit_path_for(&output).exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [&selection_path, &output, &audit_path_for(&output)] {
+                assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o077, 0);
+            }
+        }
         let cleaned = crate::sync::import_bookmarks_from_html(output.to_str().unwrap()).unwrap();
         assert_eq!(count_bookmarks(&cleaned), 1);
     }

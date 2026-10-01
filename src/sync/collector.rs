@@ -285,8 +285,14 @@ impl BookmarkCollector {
         }
     }
 
+    fn has_chromium_store(path: &Path, include_reading_lists: bool) -> Result<bool> {
+        Ok(Self::is_file_if_present(&path.join("Bookmarks"))?
+            || (include_reading_lists
+                && Self::is_file_if_present(&path.join("Sync Data/LevelDB/CURRENT"))?))
+    }
+
     fn looks_like_chromium_root(path: &Path) -> Result<bool> {
-        if Self::is_file_if_present(&path.join("Bookmarks"))? {
+        if Self::has_chromium_store(path, true)? {
             return Ok(true);
         }
         let entries = fs::read_dir(path)
@@ -302,7 +308,7 @@ impl BookmarkCollector {
                     format!("Cannot inspect possible Chromium profile {entry_path:?}")
                 })?
                 .is_dir()
-                && Self::is_file_if_present(&entry_path.join("Bookmarks"))?
+                && Self::has_chromium_store(&entry_path, true)?
             {
                 return Ok(true);
             }
@@ -367,11 +373,7 @@ impl BookmarkCollector {
     ) -> Result<Vec<BrowserProfile>> {
         let mut profiles = Vec::new();
         let user_data_dir = &installation.root_path;
-        let has_store = |path: &Path| -> Result<bool> {
-            Ok(Self::is_file_if_present(&path.join("Bookmarks"))?
-                || (include_reading_lists
-                    && Self::is_file_if_present(&path.join("Sync Data/LevelDB/CURRENT"))?))
-        };
+        let has_store = |path: &Path| Self::has_chromium_store(path, include_reading_lists);
 
         // Parse Local State for display names if available
         let mut name_map = BTreeMap::new();
@@ -1455,6 +1457,44 @@ mod tests {
         let profiles = BookmarkCollector::discover_reading_list_profiles(&installation)?;
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].path, profile);
+        Ok(())
+    }
+
+    #[test]
+    fn discovers_unknown_reading_list_only_installations() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let support = temp.path().join("Library/Application Support");
+        let roots = [
+            support.join("UnknownChromium"),
+            support.join("Vendor/NestedChromium"),
+            support.join("SingleProfileChromium"),
+        ];
+        for (index, root) in roots.iter().enumerate() {
+            let profile = if index == 2 {
+                root.clone()
+            } else {
+                root.join("Profile 1")
+            };
+            fs::create_dir_all(profile.join("Sync Data/LevelDB"))?;
+            fs::write(
+                profile.join("Sync Data/LevelDB/CURRENT"),
+                "MANIFEST-000001\n",
+            )?;
+        }
+        let installations =
+            BookmarkCollector::discover_installations_from_home(Some(temp.path().to_path_buf()))?;
+        assert_eq!(installations.len(), roots.len());
+        for root in roots {
+            let installation = installations
+                .iter()
+                .find(|item| item.root_path == root)
+                .unwrap();
+            assert!(BookmarkCollector::discover_profiles(installation)?.is_empty());
+            assert_eq!(
+                BookmarkCollector::discover_reading_list_profiles(installation)?.len(),
+                1
+            );
+        }
         Ok(())
     }
 

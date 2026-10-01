@@ -8,6 +8,7 @@ pub mod engine;
 pub mod models;
 pub mod quarantine;
 pub mod reporting;
+pub mod review;
 pub mod scheduler;
 pub mod security;
 pub mod state_machine;

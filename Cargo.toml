@@ -6,6 +6,9 @@ authors = ["Browser Sync Team"]
 description = "Collect, deduplicate, and health-check browser bookmarks safely"
 default-run = "browser-bookmark-sync"
 
+[features]
+native-gui = ["dep:eframe", "dep:rfd"]
+
 [dependencies]
 # CLI framework (latest)
 clap = { version = "4.5.60", features = ["derive", "cargo"] }
@@ -52,6 +55,10 @@ open = "5.4.0"
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 tempfile = "3.27.0"
 
+# Native review window; no browser engine or local web server.
+eframe = { version = "=0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "accesskit", "wayland", "x11"] }
+rfd = { version = "=0.15.4", optional = true }
+
 # SQLite for Firefox-based browsers (latest)
 rusqlite = { version = "0.33.0", features = ["backup", "bundled"] }
 
@@ -84,6 +91,11 @@ proptest = "1.9.0"
 [[test]]
 name = "integration_test"
 path = "src/tests/integration_test.rs"
+
+[[bin]]
+name = "bookmark-review"
+path = "src/bin/bookmark-review.rs"
+required-features = ["native-gui"]
 
 [lints.rust]
 unsafe_code = "forbid"

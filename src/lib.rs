@@ -27,6 +27,8 @@ pub mod firefox_sync_api;
 pub mod gui;
 pub mod hackbrowserdata;
 pub mod health;
+#[cfg(feature = "native-gui")]
+pub mod native_review;
 pub mod scheduler;
 pub mod sync;
 pub mod sync_flags;

@@ -2,7 +2,7 @@
 
 `bsync` is a macOS, pure-Rust utility for one job: collect bookmarks from every supported browser and profile, make a deterministic clean copy, and identify stale site or page links for review.
 
-It does not synchronize browsers, write browser profiles, upload bookmarks to cloud services, run a Web GUI, export passwords/cookies/history, or call a local AI model. The original browser data remains untouched; import a reviewed HTML copy yourself.
+It does not synchronize browsers, write browser profiles, upload bookmarks to cloud services, run a web server, export passwords/cookies/history, or call a local AI model. The original browser data remains untouched; import a reviewed HTML copy yourself.
 
 ## Supported workflow
 
@@ -68,9 +68,19 @@ Useful supporting commands are `collect`, `dedupe`, `list`, `validate`, and `mer
 
 Automatic AI organization is not part of the current product. If a future release exposes template organization, it must be an explicit file-only operation with a required rules/template file; it must never be part of export or health checking by default.
 
-## Deferred GUI
+## Native desktop review GUI
 
-The GUI is deferred. The current product has no supported Web GUI and no browser-based dashboard. A future GUI may be added as a separate native implementation; it will not be a web server.
+```bash
+cargo run --features native-gui --bin bookmark-review -- \
+  --input ./bookmarks-cleaned.html \
+  --db ./bookmark-health.sqlite --source-review ./source-review.json
+```
+
+The Rust desktop window uses egui/eframe, not HTML, JavaScript, a WebView, or a local server. It runs independently of ChatGPT. Start without arguments to open an HTML copy using the native file chooser. `--db` and `--source-review` are optional; missing health evidence is untested, never dead. This window reviews exported files; it does not silently start collection or network scanning.
+
+Search and filter results, inspect historical evidence, open an HTTP(S) address yourself, and mark individual or selected groups **keep** or **remove**. Nothing is preselected for removal. Undo or reset decisions before confirming the exact removal count and saving a new HTML copy plus audit. Each duplicate URL occurrence is independently selectable. Export checks the original file hash and retained bookmark/folder metadata, and refuses to overwrite existing output. The original HTML and real browser profiles remain untouched.
+
+Health results are historical evidence, not a live guarantee; results older than 24 hours are flagged. Manual removal of uncertain entries is your explicit choice, not automatic confirmation that they are dead. Source-coverage gaps remain visible even when all supplied URLs have been checked. The native toolkit supports desktop platforms, but platform acceptance must be tested separately; browser-source discovery is currently macOS-oriented. The legacy server GUI stays disabled.
 
 ## Safety boundaries
 

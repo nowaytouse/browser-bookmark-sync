@@ -105,10 +105,14 @@ pub fn atomic_write_file(path: &Path, data: &[u8]) -> Result<()> {
         if let Some(expected) = expected.as_ref() {
             ensure_file_unchanged(path, expected)?;
         }
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
         file.write_all(data)?;
         if let Some(permissions) = permissions {
             file.set_permissions(permissions)?;
