@@ -174,6 +174,8 @@ struct ReviewApp {
     receiver: mpsc::Receiver<Event>,
     busy: bool,
     message: String,
+    message_is_error: bool,
+    source_details_open: Option<bool>,
     pending_input: Option<PathBuf>,
     pending_browser_import: bool,
     confirm_export: Option<PathBuf>,
@@ -214,6 +216,8 @@ impl Default for ReviewApp {
             receiver,
             busy: false,
             message: String::new(),
+            message_is_error: false,
+            source_details_open: None,
             pending_input: None,
             pending_browser_import: false,
             confirm_export: None,
@@ -251,6 +255,7 @@ impl ReviewApp {
         };
         let sender = self.sender.clone();
         self.busy = true;
+        self.message_is_error = false;
         self.message = tr(self.zh(), "正在读取书签…", "Reading bookmarks…").into();
         std::thread::spawn(move || {
             let result = ReviewDocument::load(&path, db.as_deref(), source.as_deref());
@@ -282,6 +287,7 @@ impl ReviewApp {
         }
         self.pending_browser_import = false;
         self.busy = true;
+        self.message_is_error = false;
         self.message = tr(
             self.zh(),
             "正在读取浏览器、Profile 和阅读列表…",
@@ -295,6 +301,8 @@ impl ReviewApp {
     }
 
     fn accept_document(&mut self, doc: ReviewDocument, active_db: bool) {
+        self.message_is_error = false;
+        self.source_details_open = None;
         self.scan = None;
         self.scan_status = ScanStatus::default();
         self.scan_verified = false;
@@ -325,6 +333,7 @@ impl ReviewApp {
     fn poll(&mut self) {
         while let Ok(event) = self.receiver.try_recv() {
             self.busy = false;
+            self.message_is_error = false;
             match event {
                 Event::ScanStarted(Ok(handle)) => {
                     self.message = tr(self.zh(), "检测已独立启动。可关闭窗口，之后打开批次载入结果。", "Check started independently. You can close this window and reopen the batch to load results.").into();
@@ -369,8 +378,50 @@ impl ReviewApp {
                     self.accept_document(import.document, false);
                     self.sources = import.sources;
                     self.import_directory = Some(import.directory);
+                    let limitations = source_limitation_count(&self.sources);
+                    if limitations > 0 {
+                        self.message = format!(
+                            "{} {limitations} {}",
+                            tr(
+                                self.zh(),
+                                "已导入可读取的浏览器内容，但有",
+                                "Readable browser content imported with"
+                            ),
+                            tr(
+                                self.zh(),
+                                "个来源存在读取问题或覆盖限制；请查看来源明细。",
+                                "source read issues or coverage limitations; see source details."
+                            )
+                        );
+                    }
+                    self.source_details_open = self
+                        .sources
+                        .iter()
+                        .any(|row| {
+                            matches!(
+                                row.state,
+                                SourceState::Failed
+                                    | SourceState::PermissionDenied
+                                    | SourceState::Unverified
+                            )
+                        })
+                        .then_some(true);
                 }
-                Event::Loaded(Err(error), _, _) | Event::Imported(Err(error)) => {
+                Event::Imported(Err(error)) => {
+                    self.message_is_error = true;
+                    let summary = if self.doc.is_some() {
+                        tr(self.zh(), "浏览器导入失败；原有内容和清理决定未改变。", "Browser import failed; the previous document and decisions are unchanged.")
+                    } else {
+                        tr(
+                            self.zh(),
+                            "浏览器导入失败；没有导入新内容。",
+                            "Browser import failed; no new content was imported.",
+                        )
+                    };
+                    self.message = format!("{summary}\n{error:#}");
+                }
+                Event::Loaded(Err(error), _, _) => {
+                    self.message_is_error = true;
                     self.message = format!(
                         "{} {error:#}",
                         tr(
@@ -504,6 +555,7 @@ impl ReviewApp {
         };
         let (sender, proxy) = (self.sender.clone(), self.proxy.clone());
         self.busy = true;
+        self.message_is_error = false;
         self.message = tr(
             self.zh(),
             "正在准备独立检测…",
@@ -571,6 +623,7 @@ impl ReviewApp {
         };
         let (decisions, sender) = (self.decisions.clone(), self.sender.clone());
         self.busy = true;
+        self.message_is_error = false;
         self.message = tr(
             self.zh(),
             "正在导出新的 HTML…",
@@ -645,6 +698,22 @@ impl eframe::App for ReviewApp {
                     .inner_margin(12),
             )
             .show(ui, |ui| {
+                if self.message_is_error {
+                    egui::ScrollArea::vertical()
+                        .id_salt("import-error-details")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&self.message)
+                                        .small()
+                                        .color(ui.visuals().warn_fg_color),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    return;
+                }
                 ui.horizontal(|ui| {
                     if self.busy {
                         ui.spinner();
@@ -928,13 +997,31 @@ impl ReviewApp {
                 "Check evidence is attached. Inspect its age and verification backends in Details.",
             ));
         }
-        egui::CollapsingHeader::new(format!("{}  ·  {}", tr(zh, "已导入来源与覆盖范围", "Imported sources & coverage"), self.sources.len())).show(ui, |ui| {
+        let limitations = source_limitation_count(&self.sources);
+        if limitations > 0 {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!(
+                    "{} {limitations} {}",
+                    tr(zh, "来源覆盖不完整 ·", "Source coverage is incomplete ·"),
+                    tr(
+                        zh,
+                        "个来源存在限制或问题",
+                        "sources have limitations or issues"
+                    )
+                ),
+            );
+        }
+        egui::CollapsingHeader::new(format!("{}  ·  {}", tr(zh, "已导入来源与覆盖范围", "Imported sources & coverage"), self.sources.len())).open(self.source_details_open.take()).show(ui, |ui| {
             ui.colored_label(ui.visuals().warn_fg_color, tr(zh, "以下是已记录的来源；未知存储、Safari 自定义收藏夹映射等不能据此宣称全部覆盖。", "These are recorded sources. Unknown stores and custom Safari Favorites mappings are not proof of universal coverage."));
             if self.sources.is_empty() { ui.label(tr(zh, "此 HTML 没有附带浏览器来源报告。", "This HTML has no browser source report attached.")); }
             egui::ScrollArea::vertical().id_salt("sources-scroll").max_height(190.0).show(ui, |ui| {
                 let mut browser = "";
                 for row in &self.sources {
-                    if row.browser != browser { ui.strong(&row.browser); browser = &row.browser; }
+                    if row.browser != browser {
+                        ui.strong(if row.browser == "Unclassified directory" { tr(zh, "未识别的目录候选", "Unclassified directory candidates") } else { &row.browser });
+                        browser = &row.browser;
+                    }
                     ui.horizontal_wrapped(|ui| {
                         ui.label(&row.profile);
                         ui.weak(collection_label(zh, &row.collection));
@@ -944,6 +1031,9 @@ impl ReviewApp {
                         response.on_hover_text(&row.detail);
                         if let Some(count) = row.count { ui.label(count.to_string()); }
                     });
+                    if matches!(row.state, SourceState::Failed | SourceState::PermissionDenied | SourceState::Unverified) {
+                        ui.add(egui::Label::new(RichText::new(&row.detail).small()).wrap());
+                    }
                 }
             });
             ui.small(tr(zh, "数量为来源原始记录数，尚未去重。悬停状态可查看路径和原因。", "Counts are source records before deduplication. Hover a state for its path and explanation."));
@@ -1419,8 +1509,16 @@ fn collection_label(zh: bool, collection: &str) -> &str {
     match collection {
         "bookmarks" => tr(zh, "收藏夹", "Bookmarks"),
         "reading_list" => tr(zh, "阅读列表", "Reading list"),
+        "browser_discovery" => tr(zh, "来源发现（未验证）", "Source discovery (unverified)"),
         _ => collection,
     }
+}
+
+fn source_limitation_count(sources: &[SourceRow]) -> usize {
+    sources
+        .iter()
+        .filter(|row| !matches!(row.state, SourceState::Imported | SourceState::Empty))
+        .count()
 }
 
 fn source_label(zh: bool, state: SourceState) -> &'static str {
@@ -1510,5 +1608,87 @@ mod tests {
             "partial"
         );
         assert!(!app.scan_verified);
+    }
+
+    #[test]
+    fn first_browser_import_failure_reports_no_new_content() {
+        let mut app = ReviewApp {
+            busy: true,
+            ..Default::default()
+        };
+        app.preferences.language = LanguageChoice::English;
+        app.sender
+            .send(Event::Imported(Err(anyhow::anyhow!(
+                "Operation not permitted (os error 1)"
+            ))))
+            .unwrap();
+        app.poll();
+        assert!(app.doc.is_none());
+        assert!(!app.busy);
+        assert!(app.message_is_error);
+        assert_eq!(app.message, "Browser import failed; no new content was imported.\nOperation not permitted (os error 1)");
+    }
+
+    #[test]
+    fn browser_import_failure_preserves_document_decisions_sources_and_snapshot() {
+        let mut app = ReviewApp::default();
+        app.preferences.language = LanguageChoice::SimplifiedChinese;
+        let mut doc = fixture();
+        doc.coverage = Some(serde_json::json!({"collection_status":"partial"}));
+        app.accept_document(doc, false);
+        app.decide(vec![0], Some(Decision::Keep));
+        app.import_directory = Some(tempfile::tempdir().unwrap());
+        let document = app.doc.clone().unwrap();
+        let decisions = app.decisions.clone();
+        let sources = app.sources.clone();
+        let snapshot = app.import_directory.as_ref().unwrap().path().to_path_buf();
+        app.busy = true;
+        app.sender
+            .send(Event::Imported(Err(anyhow::anyhow!("Profile read failed"))))
+            .unwrap();
+        app.poll();
+        assert!(Arc::ptr_eq(&document, app.doc.as_ref().unwrap()));
+        assert_eq!(app.decisions, decisions);
+        assert_eq!(app.sources, sources);
+        assert_eq!(app.import_directory.as_ref().unwrap().path(), snapshot);
+        assert!(snapshot.exists());
+        assert!(!app.busy);
+        assert!(app.message_is_error);
+        assert!(app
+            .message
+            .starts_with("浏览器导入失败；原有内容和清理决定未改变。\n"));
+    }
+
+    #[test]
+    fn partial_browser_import_reports_limitations_and_opens_source_details() {
+        let report = serde_json::json!({"sources":{"external_files_and_directories":[
+            {"browser":"Chrome", "profile":"Default", "source_type":"reading_list", "status":"complete", "bookmark_count":3},
+            {"browser":"Chrome", "profile":"Empty", "source_type":"reading_list", "status":"complete", "bookmark_count":0},
+            {"browser":"Safari", "profile":"Denied", "source_type":"reading_list", "status":"permission_denied", "bookmark_count":0},
+            {"browser":"Firefox", "profile":"Default", "source_type":"reading_list", "status":"unsupported", "bookmark_count":0}
+        ]}});
+        let sources = native_sources::rows_from_report(&report);
+        let mut doc = fixture();
+        doc.coverage = Some(report);
+        let mut app = ReviewApp {
+            busy: true,
+            message_is_error: true,
+            ..Default::default()
+        };
+        app.preferences.language = LanguageChoice::English;
+        app.sender
+            .send(Event::Imported(Ok(BrowserImport {
+                document: doc,
+                directory: tempfile::tempdir().unwrap(),
+                sources,
+            })))
+            .unwrap();
+        app.poll();
+        assert!(app.doc.is_some());
+        assert!(!app.busy);
+        assert!(!app.message_is_error);
+        assert_eq!(source_limitation_count(&app.sources), 2);
+        assert_eq!(app.source_details_open, Some(true));
+        assert_eq!(app.message, "Readable browser content imported with 2 source read issues or coverage limitations; see source details.");
     }
 }

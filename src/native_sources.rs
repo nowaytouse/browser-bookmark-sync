@@ -44,8 +44,8 @@ pub struct BrowserImport {
 }
 
 /// Read browser/Profile snapshots and reading lists into an isolated HTML copy.
-/// Called on the GUI's worker thread, not its event loop. A reading-list error
-/// aborts the replacement instead of silently publishing an incomplete import.
+/// Called on the GUI's worker thread, not its event loop. Unread sources remain
+/// explicit issues beside successful reads, never silently empty collections.
 pub fn collect_browser_copy() -> Result<BrowserImport> {
     let directory = tempfile::Builder::new()
         .prefix("bookmark-cleaner-import-")
@@ -62,7 +62,7 @@ pub fn collect_browser_copy() -> Result<BrowserImport> {
         .build()
         .context("create browser-import worker runtime")?;
     runtime.block_on(async {
-        let (extra, reports) = reading_list::collect_for_export("all")
+        let (extra, reports) = reading_list::collect_for_import("all")
             .context("read supported browser/Profile reading lists")?;
         SyncEngine::new()?
             .export_to_html_with_report(
@@ -88,11 +88,29 @@ pub fn collect_browser_copy() -> Result<BrowserImport> {
         .as_ref()
         .map(rows_from_report)
         .unwrap_or_default();
+    validate_import_read_results(&document, &sources)?;
     Ok(BrowserImport {
         document,
         directory,
         sources,
     })
+}
+
+fn validate_import_read_results(document: &ReviewDocument, sources: &[SourceRow]) -> Result<()> {
+    if document.items.is_empty()
+        && sources
+            .iter()
+            .any(|row| !matches!(row.state, SourceState::Imported | SourceState::Empty))
+    {
+        let details = sources
+            .iter()
+            .filter(|row| !matches!(row.state, SourceState::Imported | SourceState::Empty))
+            .map(|row| format!("{} / {}: {}", row.browser, row.profile, row.detail))
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!("No bookmark links were imported and source coverage is incomplete. Existing content must not be replaced.\n{details}");
+    }
+    Ok(())
 }
 
 /// Accept either the detailed export report or a source-review summary. The
@@ -165,7 +183,10 @@ pub fn rows_from_report(report: &Value) -> Vec<SourceRow> {
             let source_type = string(source, "source_type").unwrap_or("unknown");
             let historical = source_type.to_ascii_lowercase().contains("backup");
             let reading = source_type == "reading_list";
-            let collection = if reading {
+            let discovery = source_type == "browser_discovery";
+            let collection = if discovery {
+                "browser_discovery"
+            } else if reading {
                 "reading_list"
             } else if historical {
                 "historical_backup"
@@ -179,7 +200,14 @@ pub fn rows_from_report(report: &Value) -> Vec<SourceRow> {
                 Some(error) => (state_from_error(error), None),
                 None => external_state(source, count),
             };
-            let mut detail = source_detail(source, if reading { "path" } else { "source_path" });
+            let mut detail = source_detail(
+                source,
+                if reading || discovery {
+                    "path"
+                } else {
+                    "source_path"
+                },
+            );
             if let Some(error) = error {
                 append_detail(&mut detail, error);
             }
@@ -188,7 +216,9 @@ pub fn rows_from_report(report: &Value) -> Vec<SourceRow> {
                     append_detail(&mut detail, &error.to_string());
                 }
             }
-            if historical {
+            if discovery {
+                append_detail(&mut detail, "Discovery could not inspect this candidate. It is not a verified browser/Profile or a successfully read empty collection.");
+            } else if historical {
                 append_detail(&mut detail, "Historical backup records; this does not prove the current browser's bookmarks are covered.");
             } else if source
                 .get("detected_jsonlz4_backup_paths")
@@ -381,6 +411,39 @@ fn external_profile_name(source: &Value, sources: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unverified_discovery_is_not_a_browser_or_empty_collection() {
+        let rows = rows_from_report(&json!({"sources":{"external_files_and_directories":[{
+            "source_type":"browser_discovery", "browser":"Unclassified directory", "profile":"discord",
+            "path":"/test/discord", "status":"unverified", "browser_identity_verified":false,
+            "error":"Operation not permitted (os error 1)"
+        }]}}));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].collection, "browser_discovery");
+        assert_eq!(rows[0].state, SourceState::PermissionDenied);
+        assert_eq!(rows[0].count, None);
+        assert!(rows[0].detail.contains("not a verified browser/Profile"));
+    }
+
+    #[test]
+    fn empty_partial_import_is_rejected_instead_of_replacing_previous_content() -> Result<()> {
+        let input =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/review-bookmarks.html");
+        let mut document = ReviewDocument::load(&input, None, None)?;
+        let denied = SourceRow {
+            browser: "Safari".into(),
+            profile: "Default".into(),
+            collection: "bookmarks".into(),
+            state: SourceState::PermissionDenied,
+            count: None,
+            detail: "Operation not permitted".into(),
+        };
+        validate_import_read_results(&document, std::slice::from_ref(&denied))?;
+        document.items.clear();
+        assert!(validate_import_read_results(&document, &[denied]).is_err());
+        Ok(())
+    }
 
     #[test]
     fn failed_missing_and_unsupported_are_not_empty() {

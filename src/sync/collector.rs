@@ -21,10 +21,21 @@ pub struct BookmarkCollector;
 impl BookmarkCollector {
     /// Discover all browser installations on macOS
     pub fn discover_installations() -> Result<Vec<BrowserInstallation>> {
+        let (installations, issues) = Self::discover_installations_with_report()?;
+        for issue in issues {
+            tracing::warn!("Browser discovery incomplete: {}", issue["error"]);
+        }
+        Ok(installations)
+    }
+
+    pub fn discover_installations_with_report(
+    ) -> Result<(Vec<BrowserInstallation>, Vec<serde_json::Value>)> {
         Self::discover_installations_from_home(std::env::var_os("HOME").map(PathBuf::from))
     }
 
-    fn discover_installations_from_home(home: Option<PathBuf>) -> Result<Vec<BrowserInstallation>> {
+    fn discover_installations_from_home(
+        home: Option<PathBuf>,
+    ) -> Result<(Vec<BrowserInstallation>, Vec<serde_json::Value>)> {
         let home = home.context("HOME is required for full browser profile discovery")?;
 
         let candidates = vec![
@@ -165,16 +176,17 @@ impl BookmarkCollector {
         ];
 
         let mut discovered = Vec::new();
+        let mut issues = Vec::new();
         for (name, kind, channel, path) in candidates {
-            if path.try_exists().with_context(|| {
-                format!("Cannot inspect browser installation candidate {path:?}")
-            })? {
-                discovered.push(BrowserInstallation {
+            match path.try_exists() {
+                Ok(true) => discovered.push(BrowserInstallation {
                     name: name.to_string(),
                     kind,
                     channel,
                     root_path: path,
-                });
+                }),
+                Ok(false) => {}
+                Err(error) => issues.push(Self::discovery_issue(&path, Some(name), &error.into())),
             }
         }
 
@@ -184,70 +196,67 @@ impl BookmarkCollector {
         let entries = fs::read_dir(&app_support)
             .with_context(|| format!("Cannot read Application Support at {app_support:?}"))?;
         for entry in entries {
-            let entry = entry.with_context(|| {
-                format!("Cannot read an entry under Application Support at {app_support:?}")
-            })?;
-            if entry
-                .file_type()
-                .with_context(|| format!("Cannot inspect Application Support entry {entry:?}"))?
-                .is_dir()
-            {
-                let top = entry.path();
-                let top_matches =
-                    Self::looks_like_chromium_root(&top)? || Self::looks_like_firefox_root(&top)?;
-                let mut roots = vec![top.clone()];
-                if !top_matches {
-                    let children = fs::read_dir(&top).with_context(|| {
-                        format!("Cannot read Application Support subdirectory {top:?}")
-                    })?;
-                    for child in children {
-                        let child = child.with_context(|| {
-                            format!(
-                                "Cannot read an entry in Application Support subdirectory {top:?}"
-                            )
-                        })?;
-                        let path = child.path();
-                        if child
-                            .file_type()
-                            .with_context(|| {
-                                format!("Cannot inspect Application Support child {path:?}")
-                            })?
-                            .is_dir()
-                            && (Self::looks_like_chromium_root(&path)?
-                                || Self::looks_like_firefox_root(&path)?)
-                        {
-                            roots.push(path);
-                        }
-                    }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    issues.push(Self::discovery_issue(&app_support, None, &error.into()));
+                    continue;
                 }
-
-                for root in roots {
-                    if discovered
-                        .iter()
-                        .any(|installation| installation.root_path == root)
-                    {
+            };
+            let top = entry.path();
+            let is_dir = match entry.file_type() {
+                Ok(kind) => kind.is_dir(),
+                Err(error) => {
+                    issues.push(Self::discovery_issue(&top, None, &error.into()));
+                    continue;
+                }
+            };
+            if !is_dir || discovered.iter().any(|item| item.root_path == top) {
+                continue;
+            }
+            let probe_failed = match Self::browser_at_root(&top) {
+                Ok(Some(installation)) => {
+                    discovered.push(installation);
+                    continue;
+                }
+                Ok(None) => false,
+                Err(error) => {
+                    issues.push(Self::discovery_issue(&top, None, &error));
+                    true
+                }
+            };
+            let children = match fs::read_dir(&top) {
+                Ok(children) => children,
+                Err(error) => {
+                    if !probe_failed {
+                        issues.push(Self::discovery_issue(&top, None, &error.into()));
+                    }
+                    continue;
+                }
+            };
+            for child in children {
+                let child = match child {
+                    Ok(child) => child,
+                    Err(error) => {
+                        issues.push(Self::discovery_issue(&top, None, &error.into()));
                         continue;
                     }
-                    let name = root
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let kind = if Self::looks_like_firefox_root(&root)? {
-                        Some(BrowserKind::Firefox(name.clone()))
-                    } else if Self::looks_like_chromium_root(&root)? {
-                        Some(BrowserKind::Chromium(name.clone()))
-                    } else {
-                        None
-                    };
-                    if let Some(kind) = kind {
-                        discovered.push(BrowserInstallation {
-                            name,
-                            kind,
-                            channel: None,
-                            root_path: root,
-                        });
+                };
+                let path = child.path();
+                let is_dir = match child.file_type() {
+                    Ok(kind) => kind.is_dir(),
+                    Err(error) => {
+                        issues.push(Self::discovery_issue(&path, None, &error.into()));
+                        continue;
                     }
+                };
+                if !is_dir || discovered.iter().any(|item| item.root_path == path) {
+                    continue;
+                }
+                match Self::browser_at_root(&path) {
+                    Ok(Some(installation)) => discovered.push(installation),
+                    Ok(None) => {}
+                    Err(error) => issues.push(Self::discovery_issue(&path, None, &error)),
                 }
             }
         }
@@ -255,7 +264,44 @@ impl BookmarkCollector {
         Self::deduplicate_installations(&mut discovered);
         discovered.sort_by(|left, right| left.name.cmp(&right.name));
 
-        Ok(discovered)
+        Ok((discovered, issues))
+    }
+
+    fn browser_at_root(path: &Path) -> Result<Option<BrowserInstallation>> {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let kind = if Self::looks_like_firefox_root(path)? {
+            BrowserKind::Firefox(name.clone())
+        } else if Self::looks_like_chromium_root(path)? {
+            BrowserKind::Chromium(name.clone())
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(BrowserInstallation {
+            name,
+            kind,
+            channel: None,
+            root_path: path.to_path_buf(),
+        }))
+    }
+
+    fn discovery_issue(
+        path: &Path,
+        browser: Option<&str>,
+        error: &anyhow::Error,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "source_type": "browser_discovery",
+            "browser": browser.unwrap_or("Unclassified directory"),
+            "profile": "",
+            "path": path,
+            "status": "unverified",
+            "browser_identity_verified": false,
+            "error": format!("Cannot inspect discovery candidate {path:?}: {error:#}"),
+        })
     }
 
     fn installation_identity(path: &Path) -> String {
@@ -585,8 +631,16 @@ impl BookmarkCollector {
         output_dir: &Path,
         exclude_onion: bool,
     ) -> Result<(BookmarkTree, InventoryReport, RunManifest)> {
-        let installations = Self::discover_installations()?;
-        Self::collect_discovered_installations(output_dir, exclude_onion, installations)
+        let (installations, issues) = Self::discover_installations_with_report()?;
+        let (tree, mut inventory, mut manifest) =
+            Self::collect_discovered_installations(output_dir, exclude_onion, installations)?;
+        for issue in issues {
+            if let Some(error) = issue["error"].as_str() {
+                inventory.warnings.push(error.to_owned());
+                manifest.warnings.push(error.to_owned());
+            }
+        }
+        Ok((tree, inventory, manifest))
     }
 
     fn collect_discovered_installations(
@@ -613,7 +667,7 @@ impl BookmarkCollector {
                 Ok(profiles) => profiles,
                 Err(error) => {
                     let message = format!(
-                        "Cannot complete profile discovery for '{}' at {:?}: {error}",
+                        "Cannot complete profile discovery for '{}' at {:?}: {error:#}",
                         inst.name, inst.root_path
                     );
                     warnings.push(message.clone());
@@ -668,7 +722,7 @@ impl BookmarkCollector {
                             Err(error) => {
                                 read_success = false;
                                 read_error = Some(format!(
-                                    "failed to harvest profile '{}' in '{}': {error}",
+                                    "failed to harvest profile '{}' in '{}': {error:#}",
                                     prof.name, inst.name
                                 ));
                             }
@@ -677,7 +731,7 @@ impl BookmarkCollector {
                     Err(error) => {
                         read_success = false;
                         read_error = Some(format!(
-                            "failed to snapshot profile '{}' in '{}': {error}",
+                            "failed to snapshot profile '{}' in '{}': {error:#}",
                             prof.name, inst.name
                         ));
                     }
@@ -1274,6 +1328,101 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn inaccessible_unclassified_directory_does_not_abort_browser_discovery() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir()?;
+        let support = temp.path().join("Library/Application Support");
+        let chrome = support.join("Google/Chrome");
+        fs::create_dir_all(chrome.join("Default"))?;
+        fs::write(chrome.join("Default/Bookmarks"), b"{}")?;
+        let unrelated = support.join("discord");
+        fs::create_dir(&unrelated)?;
+        fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o000))?;
+        if fs::read_dir(&unrelated).is_ok() {
+            fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o700))?;
+            return Ok(()); // Root can bypass this fixture's Unix permission barrier.
+        }
+        let result =
+            BookmarkCollector::discover_installations_from_home(Some(temp.path().to_path_buf()));
+        fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o700))?;
+        let (installations, issues) = result?;
+        assert!(installations.iter().any(|item| item.root_path == chrome));
+        assert!(!installations.iter().any(|item| item.root_path == unrelated));
+        assert!(issues.iter().any(
+            |issue| issue["path"] == unrelated.to_string_lossy().as_ref()
+                && issue["browser_identity_verified"] == false
+                && issue.get("bookmark_count").is_none()
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blocked_vendor_child_does_not_hide_readable_nested_browser() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir()?;
+        let vendor = temp.path().join("Library/Application Support/Vendor");
+        let browser = vendor.join("NestedBrowser");
+        fs::create_dir_all(browser.join("Default"))?;
+        fs::write(browser.join("Default/Bookmarks"), b"{}")?;
+        let blocked = vendor.join("BlockedApp");
+        fs::create_dir(&blocked)?;
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
+        let result =
+            BookmarkCollector::discover_installations_from_home(Some(temp.path().to_path_buf()));
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700))?;
+        let (installations, _) = result?;
+        assert!(installations
+            .iter()
+            .any(|installation| installation.root_path == browser));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn denied_known_browser_is_reported_while_readable_bookmarks_are_collected() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir()?;
+        let support = temp.path().join("Library/Application Support");
+        let denied = support.join("Google/Chrome");
+        fs::create_dir_all(&denied)?;
+        let brave = support.join("BraveSoftware/Brave-Browser/Default");
+        fs::create_dir_all(&brave)?;
+        fs::write(brave.join("Bookmarks"), br#"{"roots":{"bookmark_bar":{"id":"1","type":"folder","name":"Bar","children":[{"id":"2","type":"url","name":"Readable","url":"https://fixture.invalid/keep"}]}}}"#)?;
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o000))?;
+        if fs::read_dir(&denied).is_ok() {
+            fs::set_permissions(&denied, fs::Permissions::from_mode(0o700))?;
+            return Ok(());
+        }
+        let result = (|| {
+            let (installations, _) = BookmarkCollector::discover_installations_from_home(Some(
+                temp.path().to_path_buf(),
+            ))?;
+            BookmarkCollector::collect_discovered_installations(
+                &temp.path().join("output"),
+                false,
+                installations,
+            )
+        })();
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o700))?;
+        let (_, inventory, _) = result?;
+        assert_eq!(inventory.total_bookmarks, 1);
+        let chrome = inventory
+            .installations
+            .iter()
+            .find(|item| item.installation.name == "Google Chrome")
+            .unwrap();
+        assert!(chrome.profiles.is_empty());
+        assert!(chrome
+            .discovery_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Permission denied")));
+        Ok(())
+    }
+
     #[test]
     fn discovers_safari_and_technology_preview_as_separate_installations() {
         let temp = tempfile::tempdir().unwrap();
@@ -1287,7 +1436,7 @@ mod tests {
         fs::write(&technology_preview, b"technology-preview").unwrap();
         fs::create_dir_all(temp.path().join("Library/Application Support")).unwrap();
 
-        let installations =
+        let (installations, _) =
             BookmarkCollector::discover_installations_from_home(Some(temp.path().to_path_buf()))
                 .unwrap();
         let safari_installations: Vec<_> = installations
@@ -1481,7 +1630,7 @@ mod tests {
                 "MANIFEST-000001\n",
             )?;
         }
-        let installations =
+        let (installations, _) =
             BookmarkCollector::discover_installations_from_home(Some(temp.path().to_path_buf()))?;
         assert_eq!(installations.len(), roots.len());
         for root in roots {
