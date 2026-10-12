@@ -10,6 +10,15 @@ pub struct HealthDatabase {
     pub(crate) conn: Connection,
 }
 
+fn read_count(row: &rusqlite::Row<'_>, column: usize) -> SqlResult<usize> {
+    let value: i64 = row.get(column)?;
+    usize::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
+}
+
+fn sql_count(value: usize) -> SqlResult<i64> {
+    i64::try_from(value).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
 impl HealthDatabase {
     /// Open SQLite database connection and run schema migrations
     pub fn open<P: AsRef<Path>>(path: P) -> SqlResult<Self> {
@@ -51,13 +60,11 @@ impl HealthDatabase {
             [],
         )?;
 
-        let current_version: usize = tx
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM health_schema_version",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        let current_version = tx.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM health_schema_version",
+            [],
+            |row| read_count(row, 0),
+        )?;
 
         if current_version < 1 {
             tx.execute(
@@ -423,8 +430,8 @@ impl HealthDatabase {
                     Ok((
                         row.get(0)?,
                         row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
+                        read_count(row, 2)?,
+                        read_count(row, 3)?,
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
@@ -444,13 +451,22 @@ impl HealthDatabase {
 
         if let Some((id, last_r_id, total, cons_fail, first_fail, _, last_succ)) = existing {
             let is_same_run = last_r_id == run_id;
-            let new_total = if is_same_run { total } else { total + 1 };
+            let counter_overflow = || {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
+                    "Health summary counter overflow",
+                )))
+            };
+            let new_total = if is_same_run {
+                total
+            } else {
+                total.checked_add(1).ok_or_else(counter_overflow)?
+            };
             let (new_cons_fail, new_first_fail, new_last_fail, new_last_succ) = if is_failure {
                 (
                     if is_same_run {
                         cons_fail
                     } else {
-                        cons_fail + 1
+                        cons_fail.checked_add(1).ok_or_else(counter_overflow)?
                     },
                     first_fail.or_else(|| Some(now_str.clone())),
                     Some(now_str.clone()),
@@ -473,8 +489,8 @@ impl HealthDatabase {
                     run_id,
                     now_str,
                     verdict.as_str(),
-                    new_total,
-                    new_cons_fail,
+                    sql_count(new_total)?,
+                    sql_count(new_cons_fail)?,
                     new_first_fail,
                     new_last_fail,
                     new_last_succ,
@@ -549,7 +565,15 @@ impl HealthDatabase {
                 "SELECT total_checks, consecutive_failures, first_failed_at, last_failed_at, last_success_at
                  FROM health_summaries WHERE bookmark_id = ?1",
                 params![bookmark_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        read_count(row, 0)?,
+                        read_count(row, 1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()
     }
@@ -1118,10 +1142,7 @@ impl HealthDatabase {
              GROUP BY current_verdict
              ORDER BY COUNT(*) DESC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let count: i64 = row.get(1)?;
-            Ok((row.get(0)?, count as usize))
-        })?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, read_count(row, 1)?)))?;
         let mut results = Vec::new();
         for r in rows {
             results.push(r?);
@@ -1343,8 +1364,8 @@ impl HealthDatabase {
                     latest.run_id,
                     latest.checked_at,
                     current_verdict.as_str(),
-                    total_checks as i64,
-                    evidences.len() as i64,
+                    sql_count(total_checks)?,
+                    sql_count(evidences.len())?,
                     first_failed_at,
                     last_failed_at,
                     last_success_at,
@@ -1371,6 +1392,79 @@ mod tests {
     use super::*;
     use crate::health::models::BackendObservation;
     use crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
+
+    #[test]
+    fn rejects_negative_database_counts() {
+        let db = HealthDatabase::in_memory().unwrap();
+        let result = db.conn.query_row("SELECT -1", [], |row| read_count(row, 0));
+
+        assert!(matches!(
+            result,
+            Err(rusqlite::Error::IntegralValueOutOfRange(0, -1))
+        ));
+    }
+
+    #[test]
+    fn migration_rejects_negative_schema_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE health_schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+             INSERT INTO health_schema_version VALUES (-1, 'invalid');",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            HealthDatabase { conn }.migrate(),
+            Err(rusqlite::Error::IntegralValueOutOfRange(0, -1))
+        ));
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn summary_counter_overflow_rolls_back_check() {
+        for column in ["total_checks", "consecutive_failures"] {
+            let db = HealthDatabase::in_memory().unwrap();
+            db.record_check_result(
+                "run-1",
+                "check-1",
+                "bm-1",
+                "https://example.com",
+                HealthVerdict::TemporaryFailure,
+                &[],
+            )
+            .unwrap();
+            db.conn
+                .execute(
+                    &format!("UPDATE health_summaries SET {column} = ?1"),
+                    params![i64::MAX],
+                )
+                .unwrap();
+
+            let result = db.record_check_result(
+                "run-2",
+                "check-2",
+                "bm-1",
+                "https://example.com",
+                HealthVerdict::TemporaryFailure,
+                &[],
+            );
+            assert!(matches!(
+                result,
+                Err(rusqlite::Error::ToSqlConversionFailure(_))
+            ));
+            let stored: (i64, i64) = db
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT {column}, (SELECT COUNT(*) FROM health_checks) FROM health_summaries"
+                    ),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, (i64::MAX, 1));
+        }
+    }
 
     #[test]
     fn test_db_migration_and_recording() {
@@ -1633,8 +1727,8 @@ mod tests {
                     Ok((
                         row.get(0)?,
                         row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
+                        read_count(row, 2)?,
+                        read_count(row, 3)?,
                         row.get(4)?,
                         row.get(5)?,
                     ))

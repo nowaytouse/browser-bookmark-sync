@@ -1,40 +1,31 @@
-# Native review handoff — 2026-10-01
+# Native Bookmark Cleaner handoff — 2026-10-12
 
-The optional `bookmark-review` binary is a Rust/egui desktop application, not a web page or WebView. It only reads exported HTML copies and optional health/source evidence. Collection and network checking remain separate CLI operations.
+`bookmark-review` is a Rust/egui desktop application, not a web page or WebView. The main window follows one workflow: import, exact deduplication, check/review, then export a new consolidated HTML. There is no navigation sidebar.
 
-## Use
+## GUI workflow
 
-```sh
-cargo run --features native-gui --bin bookmark-review -- \
-  --input /path/to/export.html \
-  --db /path/to/bookmark-health.sqlite \
-  --source-review /path/to/source-review.json
-```
+1. Open **Import HTML** or **Import browsers**. Browser import reads temporary copies and shows browser, Profile, collection, state and raw count. Missing, unsupported, unverified and successfully read empty sources are different states. A failed refresh keeps the previously loaded document.
+2. Exact duplicate URLs are initially marked for removal after their first occurrence. These are copy-cleanup decisions, not dead-link verdicts, and can be reset or undone. Uncertain and untested URLs remain retained unless the user explicitly chooses removal.
+3. On macOS, **Start check** creates a private fresh batch with its own input, engine and empty database. It uses the existing launchd supervisor, independently of the App and ChatGPT, without an overall deadline. Python 3 and a reachable local HTTP proxy are required; the bundled App includes the engine. The default session proxy is `http://127.0.0.1:6152` and can be changed in Settings.
+4. **Refresh progress** is manual and displays the last reported batch state, not a fresh process-liveness check. There is no agent progress monitor or automatic polling loop. **Load check results** attaches read-only evidence while preserving review decisions. **Open check batch** reopens a batch after closing the App. Successful process exit is not accepted as complete until the immutable input and all planned site/content targets reconcile with completed database runs.
+5. Search title, URL or folder; filter by verdict or decision. Checkbox selection is separate from keep/remove decisions. Select all filtered results includes rows outside the visible viewport, with hidden selections counted. Review evidence in the optional inspector, decide individually or in bulk, and use Undo as needed.
+6. **Export HTML** asks for a new destination and confirms retained/removal counts. It publishes new HTML plus a sibling `*.review-audit.json`, refusing to overwrite the input or any existing output. The original HTML and live browser Profiles are untouched.
 
-All arguments are optional. Without them, use the native file chooser. Select optional evidence files before opening the HTML; changing these selections applies to the next load, not the current document.
+Settings (`⌘,`) provide system/light/dark appearance, blue/teal/monochrome accents, system/English/Simplified Chinese language, list density, interface scale and inspector visibility. Display changes can be previewed, applied or cancelled. Only display preferences are persisted; bookmark contents and paths are not saved in that file. About and optional existing evidence attachments share the settings window. `⌘O`, `⌘S` and `⌘Z` import, export and undo.
 
-Search title, URL or folder path; filter by historical verdict or manual decision. Checkbox selection is separate from keep/remove decisions. “仅全选当前筛选结果” replaces the selection with every matching occurrence, including rows outside the visible viewport. Hidden selections are counted explicitly. Individual duplicate URL occurrences can be reviewed separately. Undo reverses the last decision action.
+## Safety and verification
 
-“另存审阅副本” asks for a new destination, then confirms retained and removed counts. It creates the HTML and a sibling `*.review-audit.json`; it never replaces the original or an existing destination. No database means untested, not dead. No entry is automatically marked for removal. Manual removal is not presented as a health verdict.
+The export model verifies input hashes, retained anchors, folder headings, metadata and order before publishing. Private output uses Unix permissions 0600 and no-clobber publication. Evidence is read through a read-only SQLite connection; only completed content-check evidence is attached to exact URLs. A manual removal is never represented as a health verdict.
 
-The model checks input hashes, retained anchors, folder headings and order before publishing. Temporary output is private on Unix (0600); output publication refuses clobbering. The health database is opened read-only and only completed content-check evidence is attached to exact URLs.
+The current validation covers 428 tests across 11 suites, launcher mock tests, formatting, and all-target Clippy with warnings denied. Regression cases include duplicate occurrences, Unicode folders, metadata, stale input, invalid decisions, output/audit collisions, private permissions, source-state semantics, immutable batch input, complete target coverage and evidence reload preserving decisions.
 
-## Verification and remaining acceptance
+Native macOS UI acceptance exercised settings/theme/language previews, search, filtered selection, bulk removal, Undo, inspector and native-dialog export. The five-entry fixture exported four retained links and one exact-duplicate removal, retaining uncertain/non-web links and metadata. The original tracked fixture stayed unchanged. Evidence is under ignored `target/native-gui-20261010/test-evidence/`.
 
-- Full native-feature test run: 402 tests across 11 suites passed; Clippy all targets with `-D warnings` passed.
-- Regression coverage includes duplicate occurrences, nested Chinese folders, metadata, unchanged input, stale input, invalid decision IDs, output/audit collisions, private output permissions, read-only database evidence, filtered bulk decisions and undo.
-- macOS optimized build completed and the packaged application opened. Chinese text and the accessibility tree were present. A five-entry fixture loaded and marking only duplicate A for removal changed the count from 0 to 1, leaving duplicate B undecided.
-- A subsequent native UI pass verified single removal, undo, search, selecting both filtered duplicates, bulk removal and explicit native-dialog export. The actual saved fixture contains three retained anchors; its audit records five source entries, two removals (duplicate A and B), and three retained entries. The original tracked fixture is unchanged. Evidence is in ignored `target/gui-acceptance-20261001.html` and its sibling review audit.
-- The fresh 23,742-entry real export and its source audit loaded in the native window. Searching `github` produced 4,547 matches; selecting all matched entries, scrolling three pages, clearing selection/search, and cancelling the native Save dialog worked. The final window retained all 23,742 entries with zero selection/removal decisions and visibly reported partial source coverage. Input SHA-256 stayed unchanged. This is a functional UI check, not a frame-time benchmark.
-- Windows/Linux builds and UI have not been tested. The toolkit is cross-platform, but browser collection remains macOS-oriented.
-- Universal source coverage is still incomplete: Safari custom Favorites/profile mapping, independent Safari Technology Preview bookmark storage, and Gecko reading-list support remain unverified. No GUI success closes these source gaps.
+The delivered App is a development build with local ad-hoc signing, not a notarized release. Its bundled engine is verified against the build output. A new real network scan was not started during this GUI handoff; the user controls subsequent runs from the App. The earlier `clean-20261001-aMMCpA` batch is historical evidence, not a current running task.
 
-No live browser profile was modified. At the user's renewed request, a fresh independent scan was started at 2026-10-01 20:50:10 +08 from `bookmark-health-run/clean-20261001-aMMCpA`, using a new database and newly exported 23,742 URLs. The immutable batch launcher is managed by launchd, not the chat client's process tree. The initial read-only snapshot contained 80 attempts, 76 real requests, no cache hits, 55 HTTP 200 responses and 74 saved targets; these are startup figures, not completion evidence. Both site and content coverage still require final verification.
+## Known boundaries
 
-The launcher and its three mocked safety tests are in `scripts/`. The permanent per-batch request/manifest and parent-directory file lock prevent duplicate starts. Successful process exit is explicitly pending coverage verification, not task completion. Never relaunch this batch or delete its request/lock.
-
-## Remaining acceptance
-
-1. Exercise dirty-document discard/cancel, save success followed by close, and existing-output rejection through the GUI (model guards already have regression coverage).
-2. Verify final site/content plan coverage when the new scan exits, then create a new cleaned HTML copy from qualified dead-link evidence; do not infer death from untested or transient failures.
-3. Resolve or explicitly document the remaining browser-source gaps and perform platform-specific Windows/Linux acceptance before claiming those platforms verified.
+- Universal source coverage is not verified: Safari custom Favorites/Profile mappings, independent Safari Technology Preview storage and Gecko reading-list support remain gaps. Successful import of discovered sources or completion of their network check cannot close these gaps.
+- Windows/Linux builds and UI have not been accepted. The toolkit is cross-platform, but independent launch and browser collection in this handoff remain macOS-oriented.
+- The new GUI scan-start path has regression and mock coverage, but a fresh live network run was intentionally left for the user. Historical evidence is not current network truth.
+- Existing-output rejection and dirty-document guards have model tests; they are not claimed as a complete native-dialog acceptance matrix.
