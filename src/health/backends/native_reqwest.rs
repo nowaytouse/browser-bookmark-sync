@@ -103,6 +103,8 @@ impl NativeReqwestBackend {
         });
 
         let mut builder = Client::builder()
+            // Route evidence must describe the actual connection, not inherited proxy settings.
+            .no_proxy()
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(30))
@@ -404,6 +406,97 @@ mod tests {
             .unwrap_err()
             .starts_with("SecurityBlocked:"));
         assert!(validate_resolved_addresses(&[private], true).is_ok());
+    }
+
+    #[test]
+    fn explicit_routes_ignore_inherited_proxies() {
+        // A child test process isolates environment changes from parallel tests.
+        for route in ["direct", "proxy"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            socket
+                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .unwrap();
+                            let mut bytes = [0; 2048];
+                            let size = socket.read(&mut bytes).unwrap();
+                            let request = String::from_utf8_lossy(&bytes[..size]);
+                            if route == "proxy" {
+                                assert!(request.starts_with("GET http://127.0.0.1:9/route "));
+                            } else {
+                                assert!(request.starts_with("GET /route "));
+                            }
+                            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").unwrap();
+                            break;
+                        }
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(10))
+                        }
+                        Err(error) => panic!("route fixture was not reached: {error}"),
+                    }
+                }
+            });
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "health::backends::native_reqwest::tests::route_fixture_child",
+                    "--nocapture",
+                ])
+                .env("BOOKMARK_ROUTE_FIXTURE", route)
+                .env("BOOKMARK_ROUTE_ADDRESS", address.to_string())
+                .env("HTTP_PROXY", "http://127.0.0.1:1")
+                .env("http_proxy", "http://127.0.0.1:1")
+                .env("HTTPS_PROXY", "http://127.0.0.1:1")
+                .env("https_proxy", "http://127.0.0.1:1")
+                .env("ALL_PROXY", "http://127.0.0.1:1")
+                .env("all_proxy", "http://127.0.0.1:1")
+                .env("NO_PROXY", "")
+                .env("no_proxy", "")
+                .output()
+                .unwrap();
+            server.join().unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+        }
+    }
+
+    #[tokio::test]
+    async fn route_fixture_child() {
+        let Ok(route) = std::env::var("BOOKMARK_ROUTE_FIXTURE") else {
+            return;
+        };
+        let address = std::env::var("BOOKMARK_ROUTE_ADDRESS").unwrap();
+        let proxy = (route == "proxy").then(|| format!("http://{address}"));
+        let target = if proxy.is_some() {
+            "http://127.0.0.1:9/route".into()
+        } else {
+            format!("http://{address}/route")
+        };
+        let client = NativeReqwestBackend::build_client(proxy.as_deref(), 5, true).unwrap();
+        assert_eq!(
+            client
+                .get(target)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
     }
 
     async fn probe_html(path: &str, html: &str) -> BackendObservation {

@@ -272,8 +272,11 @@ impl ConfigHashInput {
             } else {
                 "direct".to_string()
             },
-            request_strategy: format!("head_then_get_html_content_v2:{:?}", context.probe_scope)
-                .to_ascii_lowercase(),
+            request_strategy: format!(
+                "head_then_get_html_content_v3_explicit_route:{:?}",
+                context.probe_scope
+            )
+            .to_ascii_lowercase(),
             timeout_secs: context.timeout_secs,
             allow_private_ips: context.allow_private_ips,
             rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION.to_string(),

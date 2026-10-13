@@ -1,4 +1,4 @@
-//! Local display preferences, deliberately separate from bookmark data and paths.
+//! Local display and network preferences, separate from bookmark data and paths.
 
 use std::env;
 use std::fs::{self, File};
@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
+
+use crate::health::targets::DnsPolicy;
 
 /// Smallest supported text multiplier.
 pub const MIN_TEXT_SCALE: f32 = 0.9;
@@ -78,7 +80,137 @@ pub enum AccentChoice {
     Monochrome,
 }
 
-/// Persisted display settings only; never add bookmark contents or source paths.
+/// Connection route for user-started checks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkRoute {
+    /// Send requests through a local HTTP proxy.
+    #[default]
+    LocalHttpProxy,
+    /// Connect directly without inheriting proxy environment settings.
+    Direct,
+}
+
+/// Allowed local proxy host names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyHost {
+    /// Use the IPv4 loopback address.
+    #[default]
+    Ipv4Loopback,
+    /// Use the localhost name.
+    Localhost,
+}
+
+/// Resolver routing presets; confirmation always uses two distinct providers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsStrategy {
+    /// Prefer AliDNS for Chinese domains and Cloudflare elsewhere.
+    #[default]
+    Automatic,
+    /// Prefer Cloudflare for every domain.
+    CloudflareFirst,
+    /// Prefer AliDNS for every domain.
+    AliDnsFirst,
+}
+
+/// Non-secret connection settings copied into each new check batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkSettings {
+    /// Explicit direct or local proxy route.
+    pub route: NetworkRoute,
+    /// Allowed local proxy host.
+    pub proxy_host: ProxyHost,
+    /// Local HTTP proxy port.
+    pub proxy_port: u16,
+    /// Timeout per request, never an overall scan deadline.
+    pub timeout_secs: u64,
+    /// Resolver routing for direct-connection DNS diagnostics.
+    pub dns_strategy: DnsStrategy,
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self {
+            route: NetworkRoute::LocalHttpProxy,
+            proxy_host: ProxyHost::Ipv4Loopback,
+            proxy_port: 6152,
+            timeout_secs: 10,
+            dns_strategy: DnsStrategy::Automatic,
+        }
+    }
+}
+
+impl NetworkSettings {
+    /// Reject invalid network settings instead of silently changing user choices.
+    pub fn validate(self) -> Result<(), String> {
+        if self.route == NetworkRoute::LocalHttpProxy && self.proxy_port == 0 {
+            return Err("Local proxy port must be between 1 and 65535".into());
+        }
+        if !(5..=60).contains(&self.timeout_secs) {
+            return Err("Request timeout must be between 5 and 60 seconds".into());
+        }
+        Ok(())
+    }
+
+    /// Local proxy URL, or no proxy for the explicit direct route.
+    pub fn proxy_url(self) -> Option<String> {
+        (self.route == NetworkRoute::LocalHttpProxy).then(|| {
+            let host = match self.proxy_host {
+                ProxyHost::Ipv4Loopback => "127.0.0.1",
+                ProxyHost::Localhost => "localhost",
+            };
+            format!("http://{host}:{}", self.proxy_port)
+        })
+    }
+
+    /// Reuse the existing routing policy without weakening DNS confirmation.
+    pub fn dns_policy(self) -> DnsPolicy {
+        let mut policy = DnsPolicy::default();
+        let resolver = match self.dns_strategy {
+            DnsStrategy::Automatic => return policy,
+            DnsStrategy::CloudflareFirst => "cloudflare",
+            DnsStrategy::AliDnsFirst => "alidns",
+        };
+        policy.default_resolvers = vec![resolver.into()];
+        policy.china_resolvers = vec![resolver.into()];
+        policy
+    }
+
+    /// Check only the loopback TCP listener; this does not verify HTTP proxying.
+    pub fn check_proxy_connection(self) -> Result<(), String> {
+        self.validate()?;
+        if self.route != NetworkRoute::LocalHttpProxy {
+            return Err("Direct connections do not use a local proxy".into());
+        }
+        // Literal loopback addresses avoid external DNS and web requests.
+        let loopback = [
+            std::net::SocketAddr::from(([127, 0, 0, 1], self.proxy_port)),
+            std::net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], self.proxy_port)),
+        ];
+        let addresses = match self.proxy_host {
+            ProxyHost::Ipv4Loopback => &loopback[..1],
+            ProxyHost::Localhost => &loopback[..],
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut last_error = String::new();
+        for address in addresses {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match std::net::TcpStream::connect_timeout(address, remaining) {
+                Ok(_) => return Ok(()),
+                Err(error) => last_error = error.to_string(),
+            }
+        }
+        Err(format!(
+            "Could not reach local proxy port {}: {last_error}",
+            self.proxy_port
+        ))
+    }
+}
+
+/// Persisted app settings only; never add bookmark contents or source paths.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NativePreferences {
@@ -94,6 +226,8 @@ pub struct NativePreferences {
     pub text_scale: f32,
     /// Whether to show the selected bookmark's details panel.
     pub show_details: bool,
+    /// Connection settings applied only to newly started checks.
+    pub network: NetworkSettings,
 }
 
 impl Default for NativePreferences {
@@ -105,6 +239,7 @@ impl Default for NativePreferences {
             accent: AccentChoice::Blue,
             text_scale: 1.0,
             show_details: true,
+            network: NetworkSettings::default(),
         }
     }
 }
@@ -142,6 +277,9 @@ pub enum PreferencesError {
     /// A settings file unexpectedly exceeds the small display-only limit.
     #[error("Display preferences are too large; default settings are in use")]
     TooLarge,
+    /// Connection settings failed validation; the existing file is unchanged.
+    #[error("Network preferences are invalid: {0}")]
+    InvalidNetwork(String),
 }
 
 /// Preferences plus a recoverable diagnostic; missing files have no diagnostic.
@@ -223,14 +361,23 @@ impl PreferencesStore {
         if bytes.len() as u64 > MAX_PREFERENCES_BYTES {
             return Err(PreferencesError::TooLarge);
         }
-        serde_json::from_slice::<NativePreferences>(&bytes)
+        let preferences = serde_json::from_slice::<NativePreferences>(&bytes)
             .map(NativePreferences::normalized)
-            .map_err(PreferencesError::InvalidConfiguration)
+            .map_err(PreferencesError::InvalidConfiguration)?;
+        preferences
+            .network
+            .validate()
+            .map_err(PreferencesError::InvalidNetwork)?;
+        Ok(preferences)
     }
 
     /// Atomically replace normalized settings using a same-directory temporary file.
     /// On Unix the app directory and settings file are private (0700 and 0600).
     pub fn save(&self, preferences: &NativePreferences) -> Result<(), PreferencesError> {
+        preferences
+            .network
+            .validate()
+            .map_err(PreferencesError::InvalidNetwork)?;
         let bytes = serde_json::to_vec_pretty(&preferences.normalized())
             .map_err(PreferencesError::InvalidConfiguration)?;
         let parent = self
@@ -342,6 +489,7 @@ mod tests {
             accent: AccentChoice::Teal,
             text_scale: 1.2,
             show_details: false,
+            network: NetworkSettings::default(),
         };
         store.save(&preferences).unwrap();
         let loaded = store.load();
@@ -358,6 +506,7 @@ mod tests {
         assert_eq!(preferences.theme, ThemeChoice::Dark);
         assert_eq!(preferences.language, LanguageChoice::System);
         assert_eq!(preferences.accent, AccentChoice::Blue);
+        assert_eq!(preferences.network, NetworkSettings::default());
     }
 
     #[test]
@@ -433,6 +582,142 @@ mod tests {
             r#"{"bookmark_path":"must-not-be-persisted"}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn network_settings_round_trip_and_keep_confirmation_providers_distinct() {
+        for strategy in [
+            DnsStrategy::Automatic,
+            DnsStrategy::CloudflareFirst,
+            DnsStrategy::AliDnsFirst,
+        ] {
+            let network = NetworkSettings {
+                route: NetworkRoute::Direct,
+                dns_strategy: strategy,
+                timeout_secs: 30,
+                ..NetworkSettings::default()
+            };
+            network.validate().unwrap();
+            assert!(network.proxy_url().is_none());
+            let policy = network.dns_policy();
+            policy.validate().unwrap();
+            assert_eq!(policy.confirmation_resolvers, ["cloudflare", "alidns"]);
+            let expected = match strategy {
+                DnsStrategy::Automatic => ("cloudflare", "alidns"),
+                DnsStrategy::CloudflareFirst => ("cloudflare", "cloudflare"),
+                DnsStrategy::AliDnsFirst => ("alidns", "alidns"),
+            };
+            assert_eq!(policy.resolver_ids_for_host("example.com"), [expected.0]);
+            assert_eq!(policy.resolver_ids_for_host("example.cn"), [expected.1]);
+            let preferences = NativePreferences {
+                network,
+                ..NativePreferences::default()
+            };
+            assert_eq!(
+                serde_json::from_str::<NativePreferences>(
+                    &serde_json::to_string(&preferences).unwrap()
+                )
+                .unwrap(),
+                preferences
+            );
+        }
+        assert_eq!(
+            NetworkSettings::default().proxy_url().as_deref(),
+            Some("http://127.0.0.1:6152")
+        );
+        assert_eq!(
+            NetworkSettings {
+                proxy_host: ProxyHost::Localhost,
+                ..NetworkSettings::default()
+            }
+            .proxy_url()
+            .as_deref(),
+            Some("http://localhost:6152")
+        );
+    }
+
+    #[test]
+    fn invalid_network_settings_are_not_saved_or_silently_normalized() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = PreferencesStore {
+            path: directory.path().join("preferences.json"),
+        };
+        let previous = NativePreferences::default();
+        store.save(&previous).unwrap();
+        let bytes = fs::read(store.path()).unwrap();
+        for network in [
+            NetworkSettings {
+                proxy_port: 0,
+                ..NetworkSettings::default()
+            },
+            NetworkSettings {
+                timeout_secs: 4,
+                ..NetworkSettings::default()
+            },
+            NetworkSettings {
+                timeout_secs: 61,
+                ..NetworkSettings::default()
+            },
+        ] {
+            let invalid = NativePreferences {
+                network,
+                ..previous
+            };
+            assert!(matches!(
+                store.save(&invalid),
+                Err(PreferencesError::InvalidNetwork(_))
+            ));
+            assert_eq!(fs::read(store.path()).unwrap(), bytes);
+        }
+        let invalid = br#"{"network":{"timeout_secs":0}}"#;
+        fs::write(store.path(), invalid).unwrap();
+        assert!(matches!(
+            store.load().error,
+            Some(PreferencesError::InvalidNetwork(_))
+        ));
+        assert_eq!(fs::read(store.path()).unwrap(), invalid);
+        assert!(serde_json::from_str::<NativePreferences>(
+            r#"{"network":{"proxy_password":"secret"}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn proxy_connection_check_only_tests_a_loopback_listener() {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let network = NetworkSettings {
+            proxy_port: listener.local_addr().unwrap().port(),
+            ..NetworkSettings::default()
+        };
+        network.check_proxy_connection().unwrap();
+        assert!(NetworkSettings {
+            route: NetworkRoute::Direct,
+            ..network
+        }
+        .check_proxy_connection()
+        .is_err());
+        assert!(NetworkSettings {
+            proxy_port: 0,
+            ..network
+        }
+        .check_proxy_connection()
+        .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn localhost_proxy_check_supports_an_ipv6_loopback_listener() {
+        let Ok(listener) = std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)) else {
+            // Some test hosts have IPv6 disabled; no external address is a fallback.
+            return;
+        };
+        NetworkSettings {
+            proxy_host: ProxyHost::Localhost,
+            proxy_port: listener.local_addr().unwrap().port(),
+            ..NetworkSettings::default()
+        }
+        .check_proxy_connection()
+        .unwrap();
     }
 
     #[cfg(unix)]

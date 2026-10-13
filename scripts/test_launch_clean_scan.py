@@ -24,6 +24,100 @@ class FakeChild:
 
 
 class LaunchTest(unittest.TestCase):
+    def prepare(self, batch):
+        batch.mkdir()
+        files = scan.paths(batch)
+        files["binary"].write_bytes(b"fixed bsync copy")
+        files["binary"].chmod(0o700)
+        files["input"].write_bytes(b"exported HTML copy")
+        files["dns_policy"].write_text(scan.json.dumps({
+            "default_resolvers": ["cloudflare"], "china_resolvers": ["alidns"],
+            "confirmation_resolvers": ["cloudflare", "alidns"],
+        }))
+        return files
+
+    def test_command_preserves_fixed_safety_settings_and_explicit_route(self):
+        files = scan.paths(Path("/batch"))
+        direct = scan.command(files, None, 30, files["dns_policy"])
+        self.assertNotIn("--proxy", direct)
+        self.assertEqual(direct[direct.index("--timeout") + 1], "30")
+        self.assertEqual(direct[direct.index("--dns-policy") + 1], "/batch/dns-policy.json")
+        self.assertIn("--slow", direct)
+        for option, value in [("--concurrency", "2"), ("--scope", "content"),
+                              ("--secondary", "curl"), ("--limit", "0")]:
+            self.assertEqual(direct[direct.index(option) + 1], value)
+        proxy = scan.command(files, "http://localhost:6152")
+        self.assertEqual(proxy[proxy.index("--proxy") + 1], "http://localhost:6152")
+        self.assertEqual(proxy[proxy.index("--timeout") + 1], "10")
+
+    def test_direct_verify_is_read_only_and_does_not_test_a_proxy(self):
+        with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1]) as temporary:
+            batch = Path(temporary) / "fresh-batch"
+            files = self.prepare(batch)
+            with patch.object(scan, "validate_proxy") as proxy, patch.object(scan, "competing_scans", return_value=[]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    scan.verify_only(batch, scan.digest(files["binary"]), scan.digest(files["input"]),
+                                     None, 30, files["dns_policy"], scan.digest(files["dns_policy"]))
+            proxy.assert_not_called()
+            self.assertFalse(files["request"].exists())
+            self.assertFalse(files["manifest"].exists())
+
+    def test_worker_uses_saved_timeout_and_dns_without_running_scan(self):
+        with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1]) as temporary:
+            batch = Path(temporary) / "fresh-batch"
+            files = self.prepare(batch)
+            dns_hash = scan.digest(files["dns_policy"])
+            with patch.object(scan.subprocess, "run"):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    scan.launch(batch, scan.digest(files["binary"]), scan.digest(files["input"]),
+                                None, 30, files["dns_policy"], dns_hash)
+            request = scan.json.loads(files["request"].read_text())
+            self.assertEqual(request["dns_policy_sha256"], dns_hash)
+            with patch.object(scan, "validate_proxy") as proxy, patch.object(scan, "competing_scans", return_value=[]), \
+                    patch.object(scan.subprocess, "Popen", return_value=FakeChild()) as popen, \
+                    patch.object(scan, "remove_service"):
+                self.assertEqual(scan.worker(batch), 7)
+            proxy.assert_not_called()
+            executed = popen.call_args.args[0]
+            self.assertEqual(executed[executed.index("--timeout") + 1], "30")
+            self.assertNotIn("--proxy", executed)
+            manifest = scan.json.loads(files["manifest"].read_text())
+            self.assertEqual(manifest["network"]["dns_policy_sha256"], dns_hash)
+            self.assertEqual(manifest["network"]["route"], "direct")
+            self.assertEqual(manifest["network"]["timeout_secs"], 30)
+            self.assertIsNone(manifest["deadline_at"])
+
+    def test_changed_dns_policy_never_starts_child(self):
+        with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1]) as temporary:
+            batch = Path(temporary) / "fresh-batch"
+            files = self.prepare(batch)
+            with patch.object(scan.subprocess, "run"):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    scan.launch(batch, scan.digest(files["binary"]), scan.digest(files["input"]),
+                                None, dns_policy=files["dns_policy"])
+            files["dns_policy"].write_text("{}")
+            with patch.object(scan.subprocess, "Popen") as popen, patch.object(scan, "remove_service"):
+                self.assertEqual(scan.worker(batch), 1)
+            popen.assert_not_called()
+            self.assertIn("DNS policy SHA-256 mismatch", scan.json.loads(files["manifest"].read_text())["error"])
+            self.assertFalse(files["db"].exists())
+
+    def test_invalid_timeout_hash_or_confirmation_refuses_before_request(self):
+        with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1]) as temporary:
+            batch = Path(temporary) / "fresh-batch"
+            files = self.prepare(batch)
+            for timeout in (4, 61, True):
+                with self.assertRaisesRegex(RuntimeError, "timeout"):
+                    scan.launch(batch, scan.digest(files["binary"]), scan.digest(files["input"]), None, timeout)
+            with self.assertRaisesRegex(RuntimeError, "SHA-256 mismatch"):
+                scan.launch(batch, scan.digest(files["binary"]), scan.digest(files["input"]), None,
+                            dns_policy=files["dns_policy"], dns_policy_hash="0" * 64)
+            files["dns_policy"].write_text('{"confirmation_resolvers":["cloudflare","cloudflare"]}')
+            with self.assertRaisesRegex(RuntimeError, "distinct"):
+                scan.launch(batch, scan.digest(files["binary"]), scan.digest(files["input"]), None,
+                            dns_policy=files["dns_policy"])
+            self.assertFalse(files["request"].exists())
+
     def test_verify_only_is_read_only(self):
         with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1]) as temporary:
             batch = Path(temporary) / "fresh-batch"

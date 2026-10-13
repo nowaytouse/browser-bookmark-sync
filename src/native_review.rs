@@ -2,7 +2,8 @@
 
 use crate::health::review::{audit_path_for, Decision, ReviewDocument};
 use crate::native_preferences::{
-    AccentChoice, DisplayDensity, LanguageChoice, NativePreferences, PreferencesStore, ThemeChoice,
+    AccentChoice, DisplayDensity, DnsStrategy, LanguageChoice, NativePreferences, NetworkRoute,
+    NetworkSettings, PreferencesStore, ProxyHost, ThemeChoice,
 };
 use crate::native_scan::{self, ScanHandle, ScanStatus};
 use crate::native_sources::{self, BrowserImport, SourceRow, SourceState};
@@ -24,6 +25,7 @@ enum Event {
     Loaded(anyhow::Result<ReviewDocument>, bool, Option<ScanHandle>),
     Imported(anyhow::Result<BrowserImport>),
     ScanStarted(anyhow::Result<ScanHandle>),
+    ProxyChecked(NetworkSettings, Result<(), String>),
     EvidenceLoaded(anyhow::Result<(ReviewDocument, bool)>),
     Exported(anyhow::Result<(PathBuf, usize, usize)>),
 }
@@ -184,11 +186,13 @@ struct ReviewApp {
     store: Option<PreferencesStore>,
     settings: Option<NativePreferences>,
     settings_tab: u8,
+    settings_error: Option<String>,
+    proxy_test_running: bool,
+    proxy_test_result: Option<(NetworkSettings, Result<(), String>)>,
     scan: Option<ScanHandle>,
     scan_status: ScanStatus,
     pending_scan: Option<ScanHandle>,
     scan_verified: bool,
-    proxy: String,
 }
 
 impl Default for ReviewApp {
@@ -226,11 +230,13 @@ impl Default for ReviewApp {
             store: None,
             settings: None,
             settings_tab: 0,
+            settings_error: None,
+            proxy_test_running: false,
+            proxy_test_result: None,
             scan: None,
             scan_status: ScanStatus::default(),
             pending_scan: None,
             scan_verified: false,
-            proxy: "http://127.0.0.1:6152".into(),
         }
     }
 }
@@ -238,6 +244,14 @@ impl Default for ReviewApp {
 impl ReviewApp {
     fn zh(&self) -> bool {
         self.preferences.language.prefers_chinese()
+    }
+
+    fn open_settings(&mut self) {
+        if self.settings.is_none() {
+            self.settings = Some(self.preferences);
+            self.settings_error = None;
+            self.proxy_test_result = None;
+        }
     }
 
     fn load(&mut self, path: PathBuf) {
@@ -332,6 +346,11 @@ impl ReviewApp {
 
     fn poll(&mut self) {
         while let Ok(event) = self.receiver.try_recv() {
+            if let Event::ProxyChecked(network, result) = event {
+                self.proxy_test_running = false;
+                self.proxy_test_result = Some((network, result));
+                continue;
+            }
             self.busy = false;
             self.message_is_error = false;
             match event {
@@ -346,6 +365,7 @@ impl ReviewApp {
                         tr(self.zh(), "检测未启动：", "Check did not start:")
                     )
                 }
+                Event::ProxyChecked(_, _) => unreachable!("proxy results were handled above"),
                 Event::EvidenceLoaded(Ok((mut doc, verified))) => {
                     if self
                         .doc
@@ -553,7 +573,7 @@ impl ReviewApp {
         let Some(doc) = self.doc.clone() else {
             return;
         };
-        let (sender, proxy) = (self.sender.clone(), self.proxy.clone());
+        let (sender, network) = (self.sender.clone(), self.preferences.network);
         self.busy = true;
         self.message_is_error = false;
         self.message = tr(
@@ -567,7 +587,7 @@ impl ReviewApp {
                 &doc.input_path,
                 &doc.input_hash,
                 doc.coverage.as_ref(),
-                &proxy,
+                network,
             )));
         });
     }
@@ -648,7 +668,7 @@ impl eframe::App for ReviewApp {
             ui.disable();
         }
         self.poll();
-        if self.busy {
+        if self.busy || self.proxy_test_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if ctx.input(|i| i.viewport().close_requested()) && (self.busy || self.dirty()) {
@@ -658,7 +678,7 @@ impl eframe::App for ReviewApp {
             }
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
-            self.settings = Some(self.preferences);
+            self.open_settings();
         }
         let has_modal = self.pending_input.is_some()
             || self.pending_browser_import
@@ -802,7 +822,7 @@ impl ReviewApp {
                     .on_hover_text("⌘ ,")
                     .clicked()
                 {
-                    self.settings = Some(self.preferences);
+                    self.open_settings();
                 }
                 if self.doc.is_some() {
                     ui.add_enabled_ui(!self.busy, |ui| {
@@ -1287,14 +1307,16 @@ impl ReviewApp {
         let zh = draft.language.prefers_chinese();
         let mut open = true;
         let mut save = false;
-        let mut cancel = false;
+        let mut cancel = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         egui::Window::new(tr(zh, "设置", "Settings")).id(egui::Id::new("settings-window")).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).open(&mut open).collapsible(false).resizable(false).default_width(510.0).show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut self.settings_tab, 0, tr(zh, "外观", "Appearance"));
                 ui.selectable_value(&mut self.settings_tab, 1, tr(zh, "导入与证据", "Import & evidence"));
-                ui.selectable_value(&mut self.settings_tab, 2, tr(zh, "关于", "About"));
+                ui.selectable_value(&mut self.settings_tab, 2, tr(zh, "网络与检测", "Network & checks"));
+                ui.selectable_value(&mut self.settings_tab, 3, tr(zh, "关于", "About"));
             });
             ui.separator();
+            egui::ScrollArea::vertical().id_salt("settings-content").max_height(ctx.content_rect().height() * 0.55).show(ui, |ui| {
             match self.settings_tab {
                 0 => {
                     ui.strong(tr(zh, "主题", "Theme"));
@@ -1322,9 +1344,6 @@ impl ReviewApp {
                 1 => {
                     ui.label(tr(zh, "导入 HTML 或自动读取已发现的浏览器与 Profile。阅读列表的支持情况会单独列出。", "Import HTML or read discovered browsers and profiles. Reading-list support is reported separately."));
                     ui.add_space(8.0);
-                    ui.strong(tr(zh, "独立检测的本地 HTTP 代理", "Local HTTP proxy for independent checks"));
-                    ui.text_edit_singleline(&mut self.proxy);
-                    ui.small(tr(zh, "仅接受 localhost / 127.0.0.1；启动前校验连接。此地址仅用于本次 App 会话。", "Only localhost / 127.0.0.1 is accepted, and connectivity is checked before launch. This address is session-only."));
                     ui.strong(tr(zh, "已有检测结果（可选）", "Existing check results (optional)"));
                     if ui.add_enabled(!self.busy, egui::Button::new(tr(zh, "选择健康数据库…", "Choose health database…"))).clicked() {
                         if let Some(path) = rfd::FileDialog::new().add_filter("SQLite", &["sqlite", "db"]).pick_file() { self.db = Some(path); }
@@ -1337,6 +1356,72 @@ impl ReviewApp {
                     ui.separator();
                     ui.label(tr(zh, "未决定的书签会保留；精确重复按完整 URL 匹配。导出时保留第一个重复项及原有文件夹。", "Undecided bookmarks are retained. Exact duplicates match the full URL; the first occurrence and original folders are kept."));
                 }
+                2 => {
+                    ui.label(tr(zh, "仅用于下一批新检测。应用设置不会更改已启动的检测，也不会修改系统网络设置。", "Used for the next new check batch. Applying settings does not change running checks or system networking."));
+                    ui.separator();
+                    ui.strong(tr(zh, "连接方式", "Connection route"));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.radio_value(&mut draft.network.route, NetworkRoute::LocalHttpProxy, tr(zh, "本地 HTTP 代理", "Local HTTP proxy"));
+                        ui.radio_value(&mut draft.network.route, NetworkRoute::Direct, tr(zh, "明确直连", "Explicit direct"));
+                    });
+                    let proxy_enabled = draft.network.route == NetworkRoute::LocalHttpProxy;
+                    ui.add_enabled_ui(proxy_enabled, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(tr(zh, "代理主机", "Proxy host"));
+                            ui.selectable_value(&mut draft.network.proxy_host, ProxyHost::Ipv4Loopback, "127.0.0.1");
+                            ui.selectable_value(&mut draft.network.proxy_host, ProxyHost::Localhost, "localhost");
+                        });
+                        ui.horizontal(|ui| {
+                            let label = ui.label(tr(zh, "代理端口", "Proxy port"));
+                            ui.add(egui::DragValue::new(&mut draft.network.proxy_port).range(0..=u16::MAX)).labelled_by(label.id);
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(proxy_enabled && draft.network.validate().is_ok() && !self.proxy_test_running, egui::Button::new(tr(zh, "检查代理端口", "Check proxy port"))).clicked() {
+                            let network = draft.network;
+                            let sender = self.sender.clone();
+                            self.proxy_test_running = true;
+                            self.proxy_test_result = None;
+                            std::thread::spawn(move || {
+                                let _ = sender.send(Event::ProxyChecked(network, network.check_proxy_connection()));
+                            });
+                        }
+                        if self.proxy_test_running { ui.spinner(); ui.label(tr(zh, "正在检查…", "Checking…")); }
+                    });
+                    if let Some((network, result)) = &self.proxy_test_result {
+                        if *network == draft.network {
+                            match result {
+                                Ok(()) => { ui.label(tr(zh, "本地端口可连接；尚未验证 HTTP 代理或外网。", "Local port is reachable. HTTP proxying and internet access are not verified.")); }
+                                Err(error) => { ui.colored_label(ui.visuals().error_fg_color, format!("{} {error}", tr(zh, "本地端口不可连接：", "Local port was not reachable:"))); }
+                            }
+                        }
+                    }
+                    ui.small(if proxy_enabled {
+                        tr(zh, "仅接受本机 HTTP 代理；启动前检查端口连接。不保存账号或密码。", "Local HTTP proxies only. The port is checked before launch. No credentials are stored.")
+                    } else {
+                        tr(zh, "不继承环境代理。直连会向目标网站暴露本机网络出口；请确认此方式符合你的网络需求。", "Ignores environment proxies. Sites see your direct network connection; choose this only when it suits your network.")
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        let label = ui.label(tr(zh, "单次请求超时", "Request timeout"));
+                        ui.add(egui::DragValue::new(&mut draft.network.timeout_secs).range(5..=60).suffix(tr(zh, " 秒", " s"))).labelled_by(label.id);
+                    });
+                    ui.small(tr(zh, "超时只是暂时失败，不会因此判为死亡。", "A timeout is a temporary failure, not proof that a bookmark is dead."));
+                    ui.separator();
+                    ui.strong(tr(zh, "DNS 辅助证据（加密 DoH）", "DNS evidence (encrypted DoH)"));
+                    ui.add_enabled_ui(!proxy_enabled, |ui| {
+                        ui.radio_value(&mut draft.network.dns_strategy, DnsStrategy::Automatic, tr(zh, "自动：国内域名优先 AliDNS，其余优先 Cloudflare", "Automatic: AliDNS for Chinese domains, Cloudflare otherwise"));
+                        ui.radio_value(&mut draft.network.dns_strategy, DnsStrategy::CloudflareFirst, tr(zh, "优先 Cloudflare", "Cloudflare first"));
+                        ui.radio_value(&mut draft.network.dns_strategy, DnsStrategy::AliDnsFirst, tr(zh, "优先 AliDNS", "AliDNS first"));
+                    });
+                    ui.small(if proxy_enabled {
+                        tr(zh, "代理模式不执行独立直连 DNS 检查，域名由代理处理。上述策略保留至以后切换直连时使用。", "Proxy mode does not run independent direct DNS checks. The proxy handles hostnames; this choice is saved for future direct checks.")
+                    } else {
+                        tr(zh, "仅作为站点失败时的辅助证据，不替换 HTTP 的系统解析器。NXDOMAIN 仍须由 Cloudflare 与 AliDNS 分别复核，才可用于确认死亡。", "Extra evidence for failed sites, not a replacement for HTTP system resolution. NXDOMAIN still needs independent Cloudflare and AliDNS confirmation.")
+                    });
+                    ui.separator();
+                    ui.small(tr(zh, "保守检测：并发 2 · 慢速限流 · curl 复核 · 全量检查。401/403/429、TLS、DNS 和代理临时错误均保留待复核。", "Conservative checks: concurrency 2, slow rate limits, curl confirmation, no target limit. Protected responses and temporary TLS, DNS or proxy errors remain for review."));
+                }
                 _ => {
                     ui.heading("Bookmark Cleaner");
                     ui.label(format!("{} {}", tr(zh, "版本", "Version"), env!("CARGO_PKG_VERSION")));
@@ -1347,12 +1432,19 @@ impl ReviewApp {
                     ui.label(tr(zh, "快捷键：⌘O 导入 · ⌘S 导出 · ⌘Z 撤销 · ⌘, 设置", "Shortcuts: ⌘O Import · ⌘S Export · ⌘Z Undo · ⌘, Settings"));
                 }
             }
+            });
+            if draft.network.validate().is_err() {
+                ui.colored_label(ui.visuals().error_fg_color, tr(zh, "代理端口须为 1–65535；请求超时须为 5–60 秒。", "Use a proxy port from 1 to 65535 and a request timeout from 5 to 60 seconds."));
+            }
+            if let Some(error) = &self.settings_error {
+                ui.colored_label(ui.visuals().error_fg_color, format!("{} {error}", tr(zh, "设置未保存：", "Settings were not saved:")));
+            }
             ui.separator();
             ui.horizontal(|ui| {
                 if ui.button(tr(zh, "恢复默认", "Restore defaults")).clicked() { draft = NativePreferences::default(); }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    save = ui.button(tr(zh, "应用", "Apply")).clicked();
-                    cancel = ui.button(tr(zh, "取消", "Cancel")).clicked();
+                    save = ui.add_enabled(draft.network.validate().is_ok(), egui::Button::new(tr(zh, "应用", "Apply"))).clicked();
+                    cancel |= ui.button(tr(zh, "取消", "Cancel")).clicked();
                 });
             });
         });
@@ -1366,15 +1458,18 @@ impl ReviewApp {
                 Ok(()) => {
                     self.preferences = draft.normalized();
                     self.settings = None;
+                    self.settings_error = None;
                     apply_style(ctx, self.preferences);
                 }
                 Err(error) => {
                     self.message = error.to_string();
+                    self.settings_error = Some(error.to_string());
                     self.settings = Some(draft);
                 }
             }
         } else if !open || cancel {
             self.settings = None;
+            self.settings_error = None;
             apply_style(ctx, self.preferences);
         } else {
             if self.settings != Some(draft) {
@@ -1608,6 +1703,35 @@ mod tests {
             "partial"
         );
         assert!(!app.scan_verified);
+    }
+
+    #[test]
+    fn reopening_settings_does_not_discard_an_active_network_draft() {
+        let mut app = ReviewApp::default();
+        app.open_settings();
+        app.settings.as_mut().unwrap().network.route = NetworkRoute::Direct;
+        app.settings.as_mut().unwrap().network.timeout_secs = 30;
+        app.open_settings();
+        assert_eq!(app.settings.unwrap().network.route, NetworkRoute::Direct);
+        assert_eq!(app.settings.unwrap().network.timeout_secs, 30);
+        assert_eq!(app.preferences.network, NetworkSettings::default());
+    }
+
+    #[test]
+    fn proxy_test_result_does_not_clear_a_parallel_import_busy_state() {
+        let mut app = ReviewApp {
+            busy: true,
+            proxy_test_running: true,
+            ..Default::default()
+        };
+        let network = NetworkSettings::default();
+        app.sender
+            .send(Event::ProxyChecked(network, Ok(())))
+            .unwrap();
+        app.poll();
+        assert!(app.busy);
+        assert!(!app.proxy_test_running);
+        assert_eq!(app.proxy_test_result, Some((network, Ok(()))));
     }
 
     #[test]

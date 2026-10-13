@@ -1,5 +1,6 @@
 //! User-started checks reuse the existing independent supervisor.
 
+use crate::native_preferences::NetworkSettings;
 use anyhow::{ensure, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -153,11 +154,12 @@ pub fn begin(
     input: &Path,
     expected_hash: &str,
     report: Option<&Value>,
-    proxy: &str,
+    network: NetworkSettings,
 ) -> Result<ScanHandle> {
+    network.validate().map_err(anyhow::Error::msg)?;
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (input, expected_hash, report, proxy);
+        let _ = (input, expected_hash, report, network);
         anyhow::bail!("Independent checks currently require macOS");
     }
     #[cfg(target_os = "macos")]
@@ -196,6 +198,11 @@ pub fn begin(
         if let Some(report) = report {
             write_new(&handle.report(), &serde_json::to_vec_pretty(report)?)?;
         }
+        let dns_policy = handle.directory.join("dns-policy.json");
+        write_new(
+            &dns_policy,
+            &serde_json::to_vec_pretty(&network.dns_policy())?,
+        )?;
         let launcher = handle.directory.join("launch-clean-scan.py");
         write_new(&launcher, include_bytes!("../scripts/launch-clean-scan.py"))?;
         let python = [
@@ -208,6 +215,7 @@ pub fn begin(
         .context("Python 3 is required for the independent check supervisor")?;
         let input_hash = sha256(&handle.input())?;
         let binary_hash = sha256(&handle.directory.join("bsync"))?;
+        let dns_hash = sha256(&dns_policy)?;
         for verify in [true, false] {
             let mut command = Command::new(python);
             command
@@ -218,8 +226,17 @@ pub fn begin(
                 .arg(&input_hash)
                 .arg("--binary-sha256")
                 .arg(&binary_hash)
-                .arg("--proxy")
-                .arg(proxy);
+                .arg("--timeout")
+                .arg(network.timeout_secs.to_string())
+                .arg("--dns-policy")
+                .arg(&dns_policy)
+                .arg("--dns-policy-sha256")
+                .arg(&dns_hash);
+            if let Some(proxy) = network.proxy_url() {
+                command.arg("--proxy").arg(proxy);
+            } else {
+                command.arg("--direct");
+            }
             if verify {
                 command.arg("--verify-only");
             }
@@ -269,6 +286,17 @@ fn sha256(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_network_is_rejected_before_batch_preparation() {
+        let network = NetworkSettings {
+            timeout_secs: 0,
+            ..NetworkSettings::default()
+        };
+        let error = begin(Path::new("nonexistent-input"), "unused", None, network)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("Request timeout"));
+    }
     #[test]
     fn missing_receipt_is_not_completion_and_abort_is_preserved() {
         let directory = tempfile::tempdir().unwrap();
