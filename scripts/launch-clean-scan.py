@@ -121,6 +121,8 @@ def validate_network(files, request):
     policy = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(policy, dict):
         raise RuntimeError("DNS policy must be an object")
+    if not isinstance(policy.get("dns_fallback_on_error", False), bool):
+        raise RuntimeError("DNS fallback must be a boolean")
     overrides = policy.get("domain_overrides", {})
     if not isinstance(overrides, dict):
         raise RuntimeError("DNS domain overrides must be an object")

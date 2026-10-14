@@ -68,6 +68,9 @@ pub struct DnsPolicy {
     pub domain_overrides: BTreeMap<String, Vec<String>>,
     #[serde(default = "confirmation_resolvers")]
     pub confirmation_resolvers: Vec<String>,
+    /// Try a distinct provider on temporary DNS failures, not on security blocks.
+    #[serde(default)]
+    pub dns_fallback_on_error: bool,
 }
 
 impl Default for DnsPolicy {
@@ -78,6 +81,7 @@ impl Default for DnsPolicy {
             china_suffixes: china_suffixes(),
             domain_overrides: BTreeMap::new(),
             confirmation_resolvers: confirmation_resolvers(),
+            dns_fallback_on_error: false,
         }
     }
 }
@@ -109,7 +113,12 @@ impl DnsPolicy {
         if self.default_resolvers.is_empty()
             || self.china_resolvers.is_empty()
             || self.domain_overrides.values().any(Vec::is_empty)
-            || self.confirmation_resolvers.len() < 2
+            || self
+                .confirmation_resolvers
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                < 2
         {
             return Err(
                 "DNS policy requires non-empty routing lists and two confirmation resolvers"
@@ -533,6 +542,14 @@ mod tests {
             policy.resolver_ids_for_host("notexample.com"),
             ["cloudflare"]
         );
+    }
+
+    #[test]
+    fn dns_confirmation_requires_distinct_providers_and_old_policy_has_no_error_fallback() {
+        let mut policy: DnsPolicy = serde_json::from_str("{}").unwrap();
+        assert!(!policy.dns_fallback_on_error);
+        policy.confirmation_resolvers = vec!["cloudflare".into(), "cloudflare".into()];
+        assert!(policy.validate().is_err());
     }
 
     #[test]

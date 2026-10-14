@@ -60,6 +60,18 @@ class LaunchTest(unittest.TestCase):
                                      None, 30, files["dns_policy"], scan.digest(files["dns_policy"]))
             proxy.assert_not_called()
             self.assertFalse(files["request"].exists())
+
+    def test_dns_backup_toggle_is_snapshotted_and_invalid_type_is_rejected(self):
+        with tempfile.TemporaryDirectory(dir=SCRIPT.parents[1]) as temporary:
+            batch = Path(temporary) / "fresh-batch"
+            files = self.prepare(batch)
+            files["dns_policy"].write_text('{"dns_fallback_on_error":"false"}')
+            with self.assertRaisesRegex(RuntimeError, "boolean"):
+                scan.network_request(files, None, dns_policy=files["dns_policy"])
+            for enabled in (True, False):
+                files["dns_policy"].write_text(scan.json.dumps({"dns_fallback_on_error": enabled}))
+                request = scan.network_request(files, None, dns_policy=files["dns_policy"])
+                self.assertEqual(request["dns_policy_sha256"], scan.digest(files["dns_policy"]))
             self.assertFalse(files["manifest"].exists())
 
     def test_worker_uses_saved_timeout_and_dns_without_running_scan(self):

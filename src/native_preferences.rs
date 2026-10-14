@@ -76,6 +76,8 @@ pub enum AccentChoice {
     Blue,
     /// Teal accent palette.
     Teal,
+    /// Violet accent palette.
+    Violet,
     /// Neutral black or white accent palette.
     Monochrome,
 }
@@ -115,6 +117,46 @@ pub enum DnsStrategy {
     AliDnsFirst,
 }
 
+/// Relative width of the list and evidence inspector.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutChoice {
+    #[default]
+    Balanced,
+    WideList,
+    WideDetails,
+}
+
+impl LayoutChoice {
+    pub fn inspector_fraction(self) -> f32 {
+        match self {
+            Self::Balanced => 0.30,
+            Self::WideList => 0.22,
+            Self::WideDetails => 0.42,
+        }
+    }
+}
+
+/// Native text face, independent of language.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FontChoice {
+    #[default]
+    System,
+    Readable,
+}
+
+/// Default bookmark grouping, with stable occurrence IDs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupChoice {
+    #[default]
+    Folder,
+    Website,
+    Status,
+    None,
+}
+
 /// Non-secret connection settings copied into each new check batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -129,6 +171,8 @@ pub struct NetworkSettings {
     pub timeout_secs: u64,
     /// Resolver routing for direct-connection DNS diagnostics.
     pub dns_strategy: DnsStrategy,
+    /// Try the other DoH provider when the primary provider temporarily fails.
+    pub dns_fallback_on_error: bool,
 }
 
 impl Default for NetworkSettings {
@@ -139,6 +183,7 @@ impl Default for NetworkSettings {
             proxy_port: 6152,
             timeout_secs: 10,
             dns_strategy: DnsStrategy::Automatic,
+            dns_fallback_on_error: true,
         }
     }
 }
@@ -169,6 +214,7 @@ impl NetworkSettings {
     /// Reuse the existing routing policy without weakening DNS confirmation.
     pub fn dns_policy(self) -> DnsPolicy {
         let mut policy = DnsPolicy::default();
+        policy.dns_fallback_on_error = self.dns_fallback_on_error;
         let resolver = match self.dns_strategy {
             DnsStrategy::Automatic => return policy,
             DnsStrategy::CloudflareFirst => "cloudflare",
@@ -228,6 +274,10 @@ pub struct NativePreferences {
     pub show_details: bool,
     /// Connection settings applied only to newly started checks.
     pub network: NetworkSettings,
+    pub layout: LayoutChoice,
+    pub font: FontChoice,
+    pub grouping: GroupChoice,
+    pub developer_mode: bool,
 }
 
 impl Default for NativePreferences {
@@ -240,6 +290,10 @@ impl Default for NativePreferences {
             text_scale: 1.0,
             show_details: true,
             network: NetworkSettings::default(),
+            layout: LayoutChoice::default(),
+            font: FontChoice::default(),
+            grouping: GroupChoice::default(),
+            developer_mode: false,
         }
     }
 }
@@ -490,11 +544,44 @@ mod tests {
             text_scale: 1.2,
             show_details: false,
             network: NetworkSettings::default(),
+            ..NativePreferences::default()
         };
         store.save(&preferences).unwrap();
         let loaded = store.load();
         assert_eq!(loaded.preferences, preferences);
         assert!(loaded.error.is_none());
+    }
+
+    #[test]
+    fn new_display_and_developer_settings_are_backward_compatible() {
+        let old: NativePreferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.layout, LayoutChoice::Balanced);
+        assert_eq!(old.font, FontChoice::System);
+        assert_eq!(old.grouping, GroupChoice::Folder);
+        assert!(!old.developer_mode);
+        for layout in [
+            LayoutChoice::Balanced,
+            LayoutChoice::WideList,
+            LayoutChoice::WideDetails,
+        ] {
+            let prefs = NativePreferences {
+                layout,
+                font: FontChoice::Readable,
+                grouping: GroupChoice::Website,
+                developer_mode: true,
+                accent: AccentChoice::Violet,
+                ..old
+            };
+            assert_eq!(
+                serde_json::from_str::<NativePreferences>(&serde_json::to_string(&prefs).unwrap())
+                    .unwrap(),
+                prefs
+            );
+        }
+        let mut network = NetworkSettings::default();
+        let enabled = network.dns_policy().hash().unwrap();
+        network.dns_fallback_on_error = false;
+        assert_ne!(enabled, network.dns_policy().hash().unwrap());
     }
 
     #[test]

@@ -218,12 +218,20 @@ async fn run_dns_policy<B: ProbeBackend>(
     let Some(primary_backend) = backend(&primary_id) else {
         return Vec::new();
     };
-    let Ok(primary) = primary_backend.probe(target, context).await else {
-        return Vec::new();
+    let primary = primary_backend.probe(target, context).await;
+    let needs_second = match &primary {
+        Ok(observation) => {
+            is_nxdomain(observation)
+                || (policy.dns_fallback_on_error
+                    && (observation.error_kind.as_deref() == Some("DnsTemporaryError")
+                        || observation.dns_rcode.as_deref().is_some_and(|rcode| {
+                            matches!(rcode, "TEMPORARY_ERROR" | "SERVFAIL" | "REFUSED")
+                        })))
+        }
+        Err(_) => policy.dns_fallback_on_error,
     };
-    let needs_confirmation = is_nxdomain(&primary);
-    let mut observations = vec![primary];
-    if needs_confirmation {
+    let mut observations: Vec<_> = primary.into_iter().collect();
+    if needs_second {
         if let Some(confirm_backend) = policy
             .confirmation_resolvers
             .iter()
@@ -976,6 +984,92 @@ impl HealthEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SyntheticDns {
+        rcode: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl ProbeBackend for SyntheticDns {
+        fn backend_id(&self) -> &'static str {
+            "hickory_dns"
+        }
+        async fn probe(
+            &self,
+            _target: &ProbeTarget,
+            _context: &ProbeContext,
+        ) -> Result<BackendObservation, String> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.rcode == "ERR" {
+                return Err("synthetic temporary failure".into());
+            }
+            Ok(BackendObservation {
+                backend: "hickory_dns".into(),
+                dns_rcode: Some(self.rcode.into()),
+                resolver_id: Some("synthetic".into()),
+                ..Default::default()
+            })
+        }
+    }
+    #[tokio::test]
+    async fn dns_backup_is_optional_for_errors_but_confirmation_is_mandatory_for_nxdomain() {
+        let target = ProbeTarget::from_url("synthetic", "https://synthetic.example.test/").unwrap();
+        let context = ProbeContext {
+            run_id: "synthetic".into(),
+            check_id: "synthetic".into(),
+            proxy_url: None,
+            timeout_secs: 5,
+            slow_mode: true,
+            probe_scope: ProbeScope::Site,
+            dns_policy_hash: "synthetic".into(),
+            allow_private_ips: false,
+            history_db_path: None,
+            secondary_backends: Vec::new(),
+            artifact_dir: None,
+        };
+        for (rcode, enabled, expected_second) in [
+            ("ERR", true, 1),
+            ("ERR", false, 0),
+            ("TEMPORARY_ERROR", true, 1),
+            ("SERVFAIL", false, 0),
+            ("NOERROR", true, 0),
+            ("NXDOMAIN", false, 1),
+            ("NXDOMAIN", true, 1),
+        ] {
+            let primary = SyntheticDns {
+                rcode,
+                calls: 0.into(),
+            };
+            let secondary = SyntheticDns {
+                rcode: "NXDOMAIN",
+                calls: 0.into(),
+            };
+            let policy = DnsPolicy {
+                dns_fallback_on_error: enabled,
+                ..Default::default()
+            };
+            let observations =
+                run_dns_policy(&policy, &target, &context, Some(&primary), Some(&secondary)).await;
+            assert_eq!(
+                secondary.calls.load(std::sync::atomic::Ordering::Relaxed),
+                expected_second,
+                "{rcode} fallback={enabled}"
+            );
+            if rcode != "NXDOMAIN" {
+                assert!(observations.iter().filter(|obs| is_nxdomain(obs)).count() <= 1);
+                assert_ne!(
+                    StateMachine::resolve_final_verdict_for_scope(
+                        &observations,
+                        &BookmarkHistoryStats::default(),
+                        Utc::now(),
+                        ProbeScope::Site
+                    ),
+                    HealthVerdict::ConfirmedDead
+                );
+            }
+        }
+    }
 
     #[test]
     fn success_and_protected_results_stop_same_day_retries() {

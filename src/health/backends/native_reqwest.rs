@@ -416,17 +416,19 @@ mod tests {
             let address = listener.local_addr().unwrap();
             listener.set_nonblocking(true).unwrap();
             let server = std::thread::spawn(move || {
-                use std::io::{Read, Write};
-                let deadline = Instant::now() + Duration::from_secs(5);
+                use std::io::{BufRead, BufReader, Write};
+                let deadline = Instant::now() + Duration::from_secs(10);
                 loop {
                     match listener.accept() {
                         Ok((mut socket, _)) => {
+                            // macOS accepted sockets inherit the listener's nonblocking flag.
+                            socket.set_nonblocking(false).unwrap();
                             socket
-                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .set_read_timeout(Some(Duration::from_secs(10)))
                                 .unwrap();
-                            let mut bytes = [0; 2048];
-                            let size = socket.read(&mut bytes).unwrap();
-                            let request = String::from_utf8_lossy(&bytes[..size]);
+                            // TCP may split the request line; share the child's timeout budget.
+                            let mut request = String::new();
+                            BufReader::new(&mut socket).read_line(&mut request).unwrap();
                             if route == "proxy" {
                                 assert!(request.starts_with("GET http://127.0.0.1:9/route "));
                             } else {
@@ -463,12 +465,14 @@ mod tests {
                 .env("no_proxy", "")
                 .output()
                 .unwrap();
-            server.join().unwrap();
+            let fixture_result = server.join();
             assert!(
                 result.status.success(),
-                "{}",
-                String::from_utf8_lossy(&result.stdout)
+                "stdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
             );
+            fixture_result.unwrap();
             assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
         }
     }
@@ -485,7 +489,7 @@ mod tests {
         } else {
             format!("http://{address}/route")
         };
-        let client = NativeReqwestBackend::build_client(proxy.as_deref(), 5, true).unwrap();
+        let client = NativeReqwestBackend::build_client(proxy.as_deref(), 10, true).unwrap();
         assert_eq!(
             client
                 .get(target)

@@ -1,9 +1,11 @@
 //! Native bookmark cleaning workspace. All changes are exported to a new HTML copy.
 
 use crate::health::review::{audit_path_for, Decision, ReviewDocument};
+use crate::native_groups::{self, BookmarkGroup, GroupRow};
 use crate::native_preferences::{
-    AccentChoice, DisplayDensity, DnsStrategy, LanguageChoice, NativePreferences, NetworkRoute,
-    NetworkSettings, PreferencesStore, ProxyHost, ThemeChoice,
+    AccentChoice, DisplayDensity, DnsStrategy, FontChoice, GroupChoice, LanguageChoice,
+    LayoutChoice, NativePreferences, NetworkRoute, NetworkSettings, PreferencesStore, ProxyHost,
+    ThemeChoice,
 };
 use crate::native_scan::{self, ScanHandle, ScanStatus};
 use crate::native_sources::{self, BrowserImport, SourceRow, SourceState};
@@ -18,6 +20,42 @@ fn tr(zh: bool, chinese: &'static str, english: &'static str) -> &'static str {
         chinese
     } else {
         english
+    }
+}
+
+fn group_label(zh: bool, choice: GroupChoice) -> &'static str {
+    match choice {
+        GroupChoice::Folder => tr(zh, "按文件夹分组", "Group by folder"),
+        GroupChoice::Website => tr(zh, "按网站分组", "Group by website"),
+        GroupChoice::Status => tr(zh, "按检查状态分组", "Group by check status"),
+        GroupChoice::None => tr(zh, "平铺列表", "Flat list"),
+    }
+}
+
+fn app_mark(ui: &mut egui::Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let ink = ui.visuals().hyperlink_color;
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(12),
+        ui.visuals().selection.bg_fill,
+    );
+    let at = |x: f32, y: f32| egui::pos2(rect.left() + x * size, rect.top() + y * size);
+    for polygon in [
+        vec![
+            at(0.30, 0.22),
+            at(0.70, 0.22),
+            at(0.70, 0.62),
+            at(0.30, 0.62),
+        ],
+        vec![at(0.30, 0.62), at(0.50, 0.62), at(0.30, 0.78)],
+        vec![at(0.50, 0.62), at(0.70, 0.62), at(0.70, 0.78)],
+    ] {
+        ui.painter().add(egui::epaint::PathShape::convex_polygon(
+            polygon,
+            ink,
+            egui::Stroke::NONE,
+        ));
     }
 }
 
@@ -87,9 +125,9 @@ fn install_chinese_font(ctx: &egui::Context) {
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     ];
+    let mut fonts = egui::FontDefinitions::default();
     for path in paths {
         if let Ok(bytes) = std::fs::read(path) {
-            let mut fonts = egui::FontDefinitions::default();
             fonts
                 .font_data
                 .insert("cjk".into(), Arc::new(egui::FontData::from_owned(bytes)));
@@ -97,10 +135,26 @@ fn install_chinese_font(ctx: &egui::Context) {
             for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
                 fonts.families.entry(family).or_default().push("cjk".into());
             }
-            ctx.set_fonts(fonts);
             break;
         }
     }
+    let interface = fonts.families[&egui::FontFamily::Proportional].clone();
+    #[cfg(target_os = "macos")]
+    let interface = {
+        let mut interface = interface;
+        if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+            fonts.font_data.insert(
+                "system-ui".into(),
+                Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            interface.insert(0, "system-ui".into());
+        }
+        interface
+    };
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("interface".into()), interface);
+    ctx.set_fonts(fonts);
 }
 
 fn apply_style(ctx: &egui::Context, preferences: NativePreferences) {
@@ -125,6 +179,15 @@ fn apply_style(ctx: &egui::Context, preferences: NativePreferences) {
             .text_styles
             .insert(egui::TextStyle::Heading, egui::FontId::proportional(23.0));
         let dark = style.visuals.dark_mode;
+        let family = match preferences.font {
+            FontChoice::System => egui::FontFamily::Name("interface".into()),
+            FontChoice::Readable => egui::FontFamily::Proportional,
+        };
+        for (text_style, font) in &mut style.text_styles {
+            if *text_style != egui::TextStyle::Monospace {
+                font.family = family.clone();
+            }
+        }
         let accent = match preferences.accent {
             AccentChoice::Blue => {
                 if dark {
@@ -138,6 +201,13 @@ fn apply_style(ctx: &egui::Context, preferences: NativePreferences) {
                     Color32::from_rgb(102, 214, 191)
                 } else {
                     Color32::from_rgb(0, 105, 92)
+                }
+            }
+            AccentChoice::Violet => {
+                if dark {
+                    Color32::from_rgb(190, 168, 255)
+                } else {
+                    Color32::from_rgb(102, 65, 170)
                 }
             }
             AccentChoice::Monochrome => {
@@ -171,6 +241,10 @@ struct ReviewApp {
     verdict_filter: String,
     decision_filter: u8,
     filtered: Vec<usize>,
+    groups: Vec<BookmarkGroup>,
+    group_rows: Vec<GroupRow>,
+    collapsed_groups: BTreeSet<String>,
+    grouping: GroupChoice,
     filter_dirty: bool,
     sender: mpsc::Sender<Event>,
     receiver: mpsc::Receiver<Event>,
@@ -215,6 +289,10 @@ impl Default for ReviewApp {
             verdict_filter: String::new(),
             decision_filter: 0,
             filtered: Vec::new(),
+            groups: Vec::new(),
+            group_rows: Vec::new(),
+            collapsed_groups: BTreeSet::new(),
+            grouping: GroupChoice::default(),
             filter_dirty: true,
             sender,
             receiver,
@@ -252,6 +330,26 @@ impl ReviewApp {
             self.settings_error = None;
             self.proxy_test_result = None;
         }
+    }
+
+    fn load_demo(&mut self) -> anyhow::Result<()> {
+        let directory = tempfile::Builder::new()
+            .prefix("bookmark-cleaner-demo-")
+            .tempdir()?;
+        let input = directory.path().join("synthetic-bookmarks.html");
+        std::fs::write(
+            &input,
+            include_bytes!("../tests/fixtures/native-grouped-review.html"),
+        )?;
+        let doc = ReviewDocument::load(&input, None, None)?;
+        self.accept_document(doc, false);
+        self.import_directory = Some(directory);
+        self.message = tr(self.zh(),"这是合成示例，不是你的浏览器数据。可练习分组、选择、撤销和导出；检测尚未运行。","This is synthetic sample data, not your browser data. Try grouping, selection, Undo and export. No checks have run.").into();
+        Ok(())
+    }
+
+    fn developer_flags(&self) -> Option<String> {
+        self.preferences.developer_mode.then(|| format!("DEV · grouping={:?} · filtered={} · selected={} · flags: --slow --scope content --concurrency 2 --timeout {} --secondary curl --limit 0 {}", self.grouping, self.filtered.len(), self.selected.len(), self.preferences.network.timeout_secs, if self.preferences.network.route == NetworkRoute::Direct { "(direct)" } else { "--proxy (local)" }))
     }
 
     fn load(&mut self, path: PathBuf) {
@@ -336,6 +434,8 @@ impl ReviewApp {
         self.search.clear();
         self.verdict_filter.clear();
         self.decision_filter = 0;
+        self.grouping = self.preferences.grouping;
+        self.collapsed_groups.clear();
         self.filter_dirty = true;
         self.decide(
             self.duplicates.iter().copied().collect(),
@@ -509,6 +609,12 @@ impl ReviewApp {
                 self.filtered.push(item.id);
             }
         }
+        self.groups = self
+            .doc
+            .as_ref()
+            .map(|doc| native_groups::groups(&doc.items, &self.filtered, self.grouping))
+            .unwrap_or_default();
+        self.group_rows = native_groups::rows(&self.groups, &self.collapsed_groups, self.grouping);
         self.filter_dirty = false;
     }
 
@@ -741,6 +847,9 @@ impl eframe::App for ReviewApp {
                     ui.add(egui::Label::new(RichText::new(&self.message).small()).truncate())
                         .on_hover_text(&self.message);
                 });
+                if let Some(flags) = self.developer_flags() {
+                    ui.small(flags);
+                }
             });
         self.rebuild_filter();
         let narrow = ui.available_width() < 880.0;
@@ -750,10 +859,13 @@ impl eframe::App for ReviewApp {
                 .show(ui, |ui| self.summary(ui));
             if self.preferences.show_details && self.focused.is_some() && !narrow {
                 egui::Panel::right("inspector")
-                    .default_size(310.0)
+                    .exact_size(
+                        (ui.available_width() * self.preferences.layout.inspector_fraction())
+                            .clamp(260.0, 460.0),
+                    )
                     .min_size(260.0)
                     .max_size(460.0)
-                    .resizable(true)
+                    .resizable(false)
                     .frame(egui::Frame::default().inner_margin(18))
                     .show(ui, |ui| {
                         ui.add_enabled_ui(!self.busy, |ui| self.details(ui));
@@ -791,6 +903,7 @@ impl ReviewApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let zh = self.zh();
         ui.horizontal(|ui| {
+            app_mark(ui, 32.0);
             ui.heading(tr(zh, "书签清理", "Bookmark Cleaner"));
             if let Some(doc) = &self.doc {
                 ui.add(
@@ -860,6 +973,7 @@ impl ReviewApp {
 
     fn welcome(&mut self, ui: &mut egui::Ui) {
         let zh = self.zh();
+        egui::ScrollArea::vertical().id_salt("welcome-guide").show(ui,|ui| {
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.19).max(25.0));
             ui.label(RichText::new(tr(zh, "给收藏夹留一点空间。", "Make room for the links that matter.")).size(30.0).strong());
@@ -883,6 +997,11 @@ impl ReviewApp {
             ui.add_space(12.0);
             ui.small(tr(zh, "自动导入会展示每个浏览器、Profile 和阅读列表的实际读取结果。", "Browser import reports the actual result for each browser, profile and reading list."));
             ui.small(tr(zh, "清理只作用于导出的新文件。", "Cleaning is applied to your new exported file."));
+            ui.small(tr(zh,"第一次使用？可以先用合成示例练习，不需要读取浏览器。","First time here? Practice with synthetic samples without reading any browser."));
+            if ui.add_enabled(!self.busy,egui::Button::new(tr(zh,"用示例书签试一试","Try sample bookmarks"))).clicked() {
+                if let Err(error) = self.load_demo() { self.message = error.to_string(); self.message_is_error = true; }
+            }
+        });
         });
     }
 
@@ -1032,6 +1151,14 @@ impl ReviewApp {
                 ),
             );
         }
+        if self.sources.is_empty() {
+            ui.small(tr(
+                zh,
+                "从 HTML 导入，未附带浏览器来源报告。",
+                "Imported from HTML; no browser source report was attached.",
+            ));
+            return;
+        }
         egui::CollapsingHeader::new(format!("{}  ·  {}", tr(zh, "已导入来源与覆盖范围", "Imported sources & coverage"), self.sources.len())).open(self.source_details_open.take()).show(ui, |ui| {
             ui.colored_label(ui.visuals().warn_fg_color, tr(zh, "以下是已记录的来源；未知存储、Safari 自定义收藏夹映射等不能据此宣称全部覆盖。", "These are recorded sources. Unknown stores and custom Safari Favorites mappings are not proof of universal coverage."));
             if self.sources.is_empty() { ui.label(tr(zh, "此 HTML 没有附带浏览器来源报告。", "This HTML has no browser source report attached.")); }
@@ -1067,6 +1194,7 @@ impl ReviewApp {
         };
         let mut changed = false;
         ui.horizontal_wrapped(|ui| {
+            ui.label(tr(zh, "查找", "Search"));
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut self.search)
@@ -1110,6 +1238,20 @@ impl ReviewApp {
                             .changed();
                     }
                 });
+            egui::ComboBox::from_id_salt("grouping")
+                .selected_text(group_label(zh, self.grouping))
+                .show_ui(ui, |ui| {
+                    for value in [
+                        GroupChoice::Folder,
+                        GroupChoice::Website,
+                        GroupChoice::Status,
+                        GroupChoice::None,
+                    ] {
+                        changed |= ui
+                            .selectable_value(&mut self.grouping, value, group_label(zh, value))
+                            .changed();
+                    }
+                });
             if ui
                 .add_enabled(
                     !self.history.is_empty(),
@@ -1125,6 +1267,73 @@ impl ReviewApp {
             self.rebuild_filter();
         }
         ui.horizontal_wrapped(|ui| {
+            ui.menu_button(tr(zh, "选择…", "Select…"), |ui| {
+                if ui
+                    .button(tr(zh, "全选筛选结果", "Select all filtered"))
+                    .clicked()
+                {
+                    self.selected = self.filtered.iter().copied().collect();
+                    ui.close();
+                }
+                if ui
+                    .button(tr(zh, "反选筛选结果", "Invert filtered selection"))
+                    .clicked()
+                {
+                    for &id in &self.filtered {
+                        if !self.selected.remove(&id) {
+                            self.selected.insert(id);
+                        }
+                    }
+                    ui.close();
+                }
+                if ui
+                    .button(tr(
+                        zh,
+                        "只选尚未检查与待复核项",
+                        "Select untested and uncertain",
+                    ))
+                    .clicked()
+                {
+                    self.selected = self
+                        .filtered
+                        .iter()
+                        .copied()
+                        .filter(|&id| {
+                            matches!(
+                                doc.items[id].verdict.as_str(),
+                                "untested"
+                                    | "needs_review"
+                                    | "temporary_failure"
+                                    | "protected"
+                                    | "probable_dead"
+                            )
+                        })
+                        .collect();
+                    ui.close();
+                }
+                if ui.button(tr(zh, "清空选择", "Clear selection")).clicked() {
+                    self.selected.clear();
+                    ui.close();
+                }
+            });
+            if self.grouping != GroupChoice::None {
+                if ui
+                    .small_button(tr(zh, "展开全部", "Expand groups"))
+                    .clicked()
+                {
+                    self.collapsed_groups.clear();
+                    self.group_rows =
+                        native_groups::rows(&self.groups, &self.collapsed_groups, self.grouping);
+                }
+                if ui
+                    .small_button(tr(zh, "折叠全部", "Collapse groups"))
+                    .clicked()
+                {
+                    self.collapsed_groups = self.groups.iter().map(|g| g.key.clone()).collect();
+                    self.group_rows =
+                        native_groups::rows(&self.groups, &self.collapsed_groups, self.grouping);
+                }
+            }
             if ui
                 .small_button(tr(zh, "选择筛选结果", "Select filtered"))
                 .clicked()
@@ -1171,27 +1380,119 @@ impl ReviewApp {
             }
         });
         ui.separator();
-        let row_height = if self.preferences.density == DisplayDensity::Compact {
+        if self.filtered.is_empty() {
+            ui.label(tr(
+                zh,
+                "没有匹配的书签。试着清空搜索或重置筛选。",
+                "No bookmarks match. Clear search or reset filters.",
+            ));
+            if ui
+                .button(tr(zh, "重置搜索与筛选", "Reset search and filters"))
+                .clicked()
+            {
+                self.search.clear();
+                self.verdict_filter.clear();
+                self.decision_filter = 0;
+                self.filter_dirty = true;
+            }
+            return;
+        }
+        ui.small(tr(zh,"勾选只代表选中；“移除”会标记为不导出，随时可撤销。原文件不会改变。","Checkboxes select items. Remove excludes them from export and can be undone. Your original file stays unchanged."));
+        let row_height = if self.preferences.developer_mode {
+            84.0
+        } else if self.preferences.density == DisplayDensity::Compact {
             48.0
         } else {
             62.0
         };
         let mut action = None;
+        let mut collapse_changed = false;
         egui::ScrollArea::vertical()
             .id_salt("bookmarks")
             .auto_shrink([false, false])
-            .show_rows(ui, row_height, self.filtered.len(), |ui, range| {
+            .show_rows(ui, row_height, self.group_rows.len(), |ui, range| {
                 for row in range {
-                    let id = self.filtered[row];
+                    let id = match self.group_rows[row] {
+                        GroupRow::Bookmark(id) => id,
+                        GroupRow::Header(index) => {
+                            let group = &self.groups[index];
+                            let label = match self.grouping {
+                                GroupChoice::Folder if group.label.is_empty() => {
+                                    tr(zh, "未分组", "Ungrouped")
+                                }
+                                GroupChoice::Website if group.label == "non_web" => {
+                                    tr(zh, "非网页链接", "Non-web links")
+                                }
+                                GroupChoice::Status => verdict_label(zh, &group.label),
+                                _ => &group.label,
+                            };
+                            let count = group
+                                .ids
+                                .iter()
+                                .filter(|id| self.selected.contains(id))
+                                .count();
+                            let mut all = count == group.ids.len();
+                            let partial = count > 0 && !all;
+                            ui.push_id(&group.key, |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add(
+                                            egui::Checkbox::new(
+                                                &mut all,
+                                                tr(zh, "选择本组", "Select group"),
+                                            )
+                                            .indeterminate(partial),
+                                        )
+                                        .changed()
+                                    {
+                                        native_groups::select_group(
+                                            &mut self.selected,
+                                            &group.ids,
+                                            all,
+                                        );
+                                    }
+                                    let collapsed = self.collapsed_groups.contains(&group.key);
+                                    if ui
+                                        .add(
+                                            egui::Button::new(format!(
+                                                "{}  {label}",
+                                                if collapsed {
+                                                    tr(zh, "展开", "Expand")
+                                                } else {
+                                                    tr(zh, "收起", "Collapse")
+                                                }
+                                            ))
+                                            .truncate(),
+                                        )
+                                        .clicked()
+                                    {
+                                        collapse_changed = true;
+                                        if collapsed {
+                                            self.collapsed_groups.remove(&group.key);
+                                        } else {
+                                            self.collapsed_groups.insert(group.key.clone());
+                                        }
+                                    }
+                                });
+                                ui.weak(format!(
+                                    "{} {} · {} {}",
+                                    group.ids.len(),
+                                    tr(zh, "项", "items"),
+                                    count,
+                                    tr(zh, "项已选", "selected")
+                                ));
+                            });
+                            continue;
+                        }
+                    };
                     let item = &doc.items[id];
                     ui.push_id(id, |ui| {
                         ui.horizontal(|ui| {
                             let mut selected = self.selected.contains(&id);
-                            if ui
+                            let selection_response = ui
                                 .checkbox(&mut selected, "")
-                                .on_hover_text(tr(zh, "选择此书签", "Select this bookmark"))
-                                .changed()
-                            {
+                                .on_hover_text(tr(zh, "选择此书签", "Select this bookmark"));
+                            if selection_response.changed() {
                                 if selected {
                                     self.selected.insert(id);
                                 } else {
@@ -1214,6 +1515,7 @@ impl ReviewApp {
                             if response.clicked() {
                                 self.focused = Some(id);
                             }
+                            selection_response.labelled_by(response.id);
                             response.context_menu(|ui| {
                                 for (label, decision) in [
                                     (tr(zh, "保留", "Keep"), Some(Decision::Keep)),
@@ -1245,9 +1547,20 @@ impl ReviewApp {
                             egui::Label::new(RichText::new(&item.url).small().weak()).truncate(),
                         )
                         .on_hover_text(&item.url);
+                        if self.preferences.developer_mode {
+                            ui.monospace(format!(
+                                "[id={id}; verdict={}; decision={:?}]",
+                                item.verdict,
+                                self.decisions.get(&id)
+                            ));
+                        }
                     });
                 }
             });
+        if collapse_changed {
+            self.group_rows =
+                native_groups::rows(&self.groups, &self.collapsed_groups, self.grouping);
+        }
         if let Some((id, decision)) = action {
             self.decide(vec![id], decision);
         }
@@ -1311,9 +1624,10 @@ impl ReviewApp {
         egui::Window::new(tr(zh, "设置", "Settings")).id(egui::Id::new("settings-window")).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).open(&mut open).collapsible(false).resizable(false).default_width(510.0).show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut self.settings_tab, 0, tr(zh, "外观", "Appearance"));
-                ui.selectable_value(&mut self.settings_tab, 1, tr(zh, "导入与证据", "Import & evidence"));
-                ui.selectable_value(&mut self.settings_tab, 2, tr(zh, "网络与检测", "Network & checks"));
-                ui.selectable_value(&mut self.settings_tab, 3, tr(zh, "关于", "About"));
+                ui.selectable_value(&mut self.settings_tab, 1, tr(zh, "导入与证据", "Import"));
+                ui.selectable_value(&mut self.settings_tab, 2, tr(zh, "网络与检测", "Network"));
+                ui.selectable_value(&mut self.settings_tab, 3, tr(zh, "高级", "Advanced"));
+                ui.selectable_value(&mut self.settings_tab, 4, tr(zh, "关于", "About"));
             });
             ui.separator();
             egui::ScrollArea::vertical().id_salt("settings-content").max_height(ctx.content_rect().height() * 0.55).show(ui, |ui| {
@@ -1325,7 +1639,7 @@ impl ReviewApp {
                     });
                     ui.strong(tr(zh, "强调色", "Accent color"));
                     ui.horizontal(|ui| {
-                        for (value, label) in [(AccentChoice::Blue, tr(zh, "蓝色", "Blue")), (AccentChoice::Teal, tr(zh, "青绿", "Teal")), (AccentChoice::Monochrome, tr(zh, "黑白", "Monochrome"))] { ui.selectable_value(&mut draft.accent, value, label); }
+                        for (value, label) in [(AccentChoice::Blue, tr(zh, "蓝色", "Blue")), (AccentChoice::Teal, tr(zh, "青绿", "Teal")), (AccentChoice::Violet, tr(zh,"紫色","Violet")), (AccentChoice::Monochrome, tr(zh, "黑白", "Monochrome"))] { ui.selectable_value(&mut draft.accent, value, label); }
                     });
                     ui.strong(tr(zh, "语言", "Language"));
                     ui.horizontal(|ui| {
@@ -1340,6 +1654,18 @@ impl ReviewApp {
                     });
                     ui.add(egui::Slider::new(&mut draft.text_scale, 0.9..=1.3).text(tr(zh, "界面缩放", "Interface scale")));
                     ui.checkbox(&mut draft.show_details, tr(zh, "选中书签时显示详情", "Show details for the focused bookmark"));
+                    ui.strong(tr(zh,"画面比例","List and details proportions"));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.selectable_value(&mut draft.layout,LayoutChoice::Balanced,tr(zh,"均衡","Balanced"));
+                        ui.selectable_value(&mut draft.layout,LayoutChoice::WideList,tr(zh,"列表优先","More list space"));
+                        ui.selectable_value(&mut draft.layout,LayoutChoice::WideDetails,tr(zh,"详情优先","More details space"));
+                    });
+                    ui.small(tr(zh,"查看详情时分配窗口宽度；窄窗口使用浮动详情，不挤压列表。","Allocates width when viewing details. Narrow windows show floating details instead of squeezing the list."));
+                    ui.strong(tr(zh,"字体","Text style"));
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut draft.font,FontChoice::System,tr(zh,"系统字体","System face"));
+                        ui.selectable_value(&mut draft.font,FontChoice::Readable,tr(zh,"清晰阅读","Reading face"));
+                    });
                 }
                 1 => {
                     ui.label(tr(zh, "导入 HTML 或自动读取已发现的浏览器与 Profile。阅读列表的支持情况会单独列出。", "Import HTML or read discovered browsers and profiles. Reading-list support is reported separately."));
@@ -1355,11 +1681,17 @@ impl ReviewApp {
                     ui.small(tr(zh, "在下次打开 HTML 时读取。选择文件不会更改当前决定。", "Attached on the next HTML import. Choosing a file does not change current decisions."));
                     ui.separator();
                     ui.label(tr(zh, "未决定的书签会保留；精确重复按完整 URL 匹配。导出时保留第一个重复项及原有文件夹。", "Undecided bookmarks are retained. Exact duplicates match the full URL; the first occurrence and original folders are kept."));
+                    ui.strong(tr(zh,"默认分组方式","Default grouping"));
+                    egui::ComboBox::from_id_salt("default-grouping").selected_text(group_label(zh,draft.grouping)).show_ui(ui,|ui| {
+                        for value in [GroupChoice::Folder,GroupChoice::Website,GroupChoice::Status,GroupChoice::None] { ui.selectable_value(&mut draft.grouping,value,group_label(zh,value)); }
+                    });
+                    ui.small(tr(zh,"也可以在列表中临时切换分组；不会移动书签或改变导出文件夹。","You can change grouping in the list too. It never moves bookmarks or changes exported folders."));
                 }
                 2 => {
                     ui.label(tr(zh, "仅用于下一批新检测。应用设置不会更改已启动的检测，也不会修改系统网络设置。", "Used for the next new check batch. Applying settings does not change running checks or system networking."));
                     ui.separator();
                     ui.strong(tr(zh, "连接方式", "Connection route"));
+                    ui.small(tr(zh,"只控制书签检测的连接方式，不改变浏览器打开网址时的代理。","Controls bookmark checks only, not the proxy used when opening links in your browser."));
                     ui.horizontal_wrapped(|ui| {
                         ui.radio_value(&mut draft.network.route, NetworkRoute::LocalHttpProxy, tr(zh, "本地 HTTP 代理", "Local HTTP proxy"));
                         ui.radio_value(&mut draft.network.route, NetworkRoute::Direct, tr(zh, "明确直连", "Explicit direct"));
@@ -1408,25 +1740,35 @@ impl ReviewApp {
                     });
                     ui.small(tr(zh, "超时只是暂时失败，不会因此判为死亡。", "A timeout is a temporary failure, not proof that a bookmark is dead."));
                     ui.separator();
-                    ui.strong(tr(zh, "DNS 辅助证据（加密 DoH）", "DNS evidence (encrypted DoH)"));
+                    ui.strong(tr(zh, "检测域名时使用的 DNS", "DNS service for domain checks"));
+                    ui.small(tr(zh,"DNS 用来查询网址对应的服务器。这里的额外查询用于核对失败的网址，不修改电脑的 DNS。","DNS finds the server for a website. These extra queries help review failed links and do not change your computer's DNS."));
                     ui.add_enabled_ui(!proxy_enabled, |ui| {
                         ui.radio_value(&mut draft.network.dns_strategy, DnsStrategy::Automatic, tr(zh, "自动：国内域名优先 AliDNS，其余优先 Cloudflare", "Automatic: AliDNS for Chinese domains, Cloudflare otherwise"));
                         ui.radio_value(&mut draft.network.dns_strategy, DnsStrategy::CloudflareFirst, tr(zh, "优先 Cloudflare", "Cloudflare first"));
                         ui.radio_value(&mut draft.network.dns_strategy, DnsStrategy::AliDnsFirst, tr(zh, "优先 AliDNS", "AliDNS first"));
+                        ui.checkbox(&mut draft.network.dns_fallback_on_error,tr(zh,"主 DNS 暂时失败时尝试备用 DNS","Try backup DNS when the primary service fails"));
+                        ui.small(tr(zh,"备用路径：Cloudflare → AliDNS；AliDNS → Cloudflare。两家均为加密查询，不改系统 DNS。","Backup path: Cloudflare → AliDNS, or AliDNS → Cloudflare. Both use encrypted queries; system DNS is unchanged."));
                     });
                     ui.small(if proxy_enabled {
                         tr(zh, "代理模式不执行独立直连 DNS 检查，域名由代理处理。上述策略保留至以后切换直连时使用。", "Proxy mode does not run independent direct DNS checks. The proxy handles hostnames; this choice is saved for future direct checks.")
                     } else {
-                        tr(zh, "仅作为站点失败时的辅助证据，不替换 HTTP 的系统解析器。NXDOMAIN 仍须由 Cloudflare 与 AliDNS 分别复核，才可用于确认死亡。", "Extra evidence for failed sites, not a replacement for HTTP system resolution. NXDOMAIN still needs independent Cloudflare and AliDNS confirmation.")
+                        tr(zh, "两家服务都需独立确认“域名不存在”（NXDOMAIN）。一次查询失败或一次否定都不会触发删除。", "Both providers must independently confirm that the domain does not exist (NXDOMAIN). One failed query or one negative answer never triggers removal.")
                     });
                     ui.separator();
                     ui.small(tr(zh, "保守检测：并发 2 · 慢速限流 · curl 复核 · 全量检查。401/403/429、TLS、DNS 和代理临时错误均保留待复核。", "Conservative checks: concurrency 2, slow rate limits, curl confirmation, no target limit. Protected responses and temporary TLS, DNS or proxy errors remain for review."));
                 }
+                3 => {
+                    ui.checkbox(&mut draft.developer_mode,tr(zh,"开启开发者模式","Enable developer mode"));
+                    ui.label(tr(zh,"显示每条书签的内部编号、原始状态和决定标识，以及窗口底部的检测参数 flags。关闭后这些标识不显示。","Shows bookmark IDs, raw status and decision tags, plus check flags in the footer. These identifiers stay hidden when this mode is off."));
+                    ui.small(tr(zh,"仅影响显示，不允许写入浏览器，也不放宽清理规则。保存设置后生效。","Display only. It does not enable browser writes or weaken cleanup rules. Save settings to apply."));
+                }
                 _ => {
-                    ui.heading("Bookmark Cleaner");
+                    ui.horizontal(|ui| { app_mark(ui,72.0); ui.vertical(|ui| { ui.heading("Bookmark Cleaner"); ui.label(tr(zh,"为值得保留的链接留出空间","Make room for the links worth keeping")); }); });
                     ui.label(format!("{} {}", tr(zh, "版本", "Version"), env!("CARGO_PKG_VERSION")));
                     ui.label(tr(zh, "整理重复与失效链接，导出一个新的整合书签文件。", "Clean duplicate and dead links, then export one consolidated bookmark file."));
                     ui.label(tr(zh, "Rust 原生桌面界面 · 本地处理", "Native Rust desktop interface · Local processing"));
+                    ui.hyperlink_to(tr(zh,"查看项目源码与贡献说明","View source and contribute"),"https://github.com/nowaytouse/browser-bookmark-sync");
+                    ui.small(tr(zh,"源码公开。当前仓库未附带许可证文件，不能据此假定任意再分发权限。","Source is public. No license file is declared in this repository; do not assume unrestricted redistribution rights."));
                     ui.small(tr(zh, "清理仅写入新的 HTML 和审计文件。浏览器内的收藏夹保持原样。", "Cleaning writes a new HTML file and audit record. Browser bookmarks remain unchanged."));
                     ui.separator();
                     ui.label(tr(zh, "快捷键：⌘O 导入 · ⌘S 导出 · ⌘Z 撤销 · ⌘, 设置", "Shortcuts: ⌘O Import · ⌘S Export · ⌘Z Undo · ⌘, Settings"));
@@ -1457,6 +1799,8 @@ impl ReviewApp {
             match result {
                 Ok(()) => {
                     self.preferences = draft.normalized();
+                    self.grouping = draft.grouping;
+                    self.filter_dirty = true;
                     self.settings = None;
                     self.settings_error = None;
                     apply_style(ctx, self.preferences);
@@ -1703,6 +2047,52 @@ mod tests {
             "partial"
         );
         assert!(!app.scan_verified);
+    }
+
+    #[test]
+    fn synthetic_demo_group_selection_undo_export_and_developer_gating() {
+        let mut app = ReviewApp::default();
+        app.load_demo().unwrap();
+        app.rebuild_filter();
+        assert_eq!(app.doc.as_ref().unwrap().items.len(), 20);
+        assert_eq!(app.duplicates.len(), 2);
+        assert!(app.developer_flags().is_none());
+        app.preferences.developer_mode = true;
+        assert!(app.developer_flags().unwrap().contains("flags:"));
+        app.preferences.developer_mode = false;
+        assert!(app.developer_flags().is_none());
+        app.search = "Read later".into();
+        app.filter_dirty = true;
+        app.rebuild_filter();
+        assert_eq!(app.filtered.len(), 3);
+        let ids = app
+            .groups
+            .iter()
+            .flat_map(|g| g.ids.iter().copied())
+            .collect::<Vec<_>>();
+        native_groups::select_group(&mut app.selected, &ids, true);
+        let before = app.decisions.clone();
+        app.decide(ids.clone(), Some(Decision::Remove));
+        app.undo();
+        assert_eq!(app.decisions, before);
+        app.collapsed_groups = app.groups.iter().map(|g| g.key.clone()).collect();
+        let rows = native_groups::rows(&app.groups, &app.collapsed_groups, app.grouping);
+        assert!(rows.iter().all(|row| matches!(row, GroupRow::Header(_))));
+        assert_eq!(app.selected.len(), 3);
+        let output = app
+            .import_directory
+            .as_ref()
+            .unwrap()
+            .path()
+            .join("cleaned-synthetic.html");
+        let audit = app
+            .doc
+            .as_ref()
+            .unwrap()
+            .export_copy(&app.decisions, &output, true)
+            .unwrap();
+        assert_eq!((audit.retained_count, audit.removed_count), (18, 2));
+        assert!(app.doc.as_ref().unwrap().input_path.exists());
     }
 
     #[test]
