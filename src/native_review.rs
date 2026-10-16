@@ -10,7 +10,7 @@ use crate::native_preferences::{
 use crate::native_scan::{self, ScanHandle, ScanStatus};
 use crate::native_sources::{self, BrowserImport, SourceRow, SourceState};
 use chrono::{DateTime, Utc};
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -166,9 +166,9 @@ fn apply_style(ctx: &egui::Context, preferences: NativePreferences) {
     ctx.set_zoom_factor(preferences.text_scale);
     ctx.all_styles_mut(|style| {
         let compact = preferences.density == DisplayDensity::Compact;
-        style.spacing.item_spacing = egui::vec2(10.0, if compact { 6.0 } else { 10.0 });
-        style.spacing.button_padding = egui::vec2(12.0, 7.0);
-        style.spacing.interact_size.y = if compact { 28.0 } else { 32.0 };
+        style.spacing.item_spacing = egui::vec2(8.0, if compact { 6.0 } else { 8.0 });
+        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.interact_size.y = if compact { 32.0 } else { 34.0 };
         style
             .text_styles
             .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
@@ -177,8 +177,35 @@ fn apply_style(ctx: &egui::Context, preferences: NativePreferences) {
             .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
         style
             .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(23.0));
+            .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(22.0));
+
         let dark = style.visuals.dark_mode;
+        let (canvas, surface, subtle, input, text, muted, border, hover) = if dark {
+            (
+                egui::Color32::from_rgb(24, 29, 35),
+                egui::Color32::from_rgb(36, 43, 51),
+                egui::Color32::from_rgb(43, 51, 60),
+                egui::Color32::from_rgb(29, 35, 42),
+                egui::Color32::from_rgb(237, 241, 246),
+                egui::Color32::from_rgb(182, 192, 204),
+                egui::Color32::from_rgb(48, 56, 66),
+                egui::Color32::from_rgb(49, 59, 69),
+            )
+        } else {
+            (
+                egui::Color32::from_rgb(242, 244, 247),
+                egui::Color32::WHITE,
+                egui::Color32::from_rgb(234, 238, 243),
+                egui::Color32::WHITE,
+                egui::Color32::from_rgb(32, 40, 50),
+                egui::Color32::from_rgb(93, 105, 120),
+                egui::Color32::from_rgb(215, 221, 229),
+                egui::Color32::from_rgb(232, 239, 247),
+            )
+        };
         let family = match preferences.font {
             FontChoice::System => egui::FontFamily::Name("interface".into()),
             FontChoice::Readable => egui::FontFamily::Proportional,
@@ -191,36 +218,80 @@ fn apply_style(ctx: &egui::Context, preferences: NativePreferences) {
         let accent = match preferences.accent {
             AccentChoice::Blue => {
                 if dark {
-                    Color32::from_rgb(117, 175, 255)
+                    egui::Color32::from_rgb(117, 175, 255)
                 } else {
-                    Color32::from_rgb(30, 91, 182)
+                    egui::Color32::from_rgb(30, 91, 182)
                 }
             }
             AccentChoice::Teal => {
                 if dark {
-                    Color32::from_rgb(102, 214, 191)
+                    egui::Color32::from_rgb(102, 214, 191)
                 } else {
-                    Color32::from_rgb(0, 105, 92)
+                    egui::Color32::from_rgb(0, 105, 92)
                 }
             }
             AccentChoice::Violet => {
                 if dark {
-                    Color32::from_rgb(190, 168, 255)
+                    egui::Color32::from_rgb(190, 168, 255)
                 } else {
-                    Color32::from_rgb(102, 65, 170)
+                    egui::Color32::from_rgb(102, 65, 170)
                 }
             }
             AccentChoice::Monochrome => {
                 if dark {
-                    Color32::from_gray(220)
+                    egui::Color32::from_gray(220)
                 } else {
-                    Color32::from_gray(45)
+                    egui::Color32::from_gray(45)
                 }
             }
         };
-        style.visuals.selection.bg_fill = accent.gamma_multiply(if dark { 0.28 } else { 0.15 });
-        style.visuals.selection.stroke = egui::Stroke::new(1.0, accent);
-        style.visuals.hyperlink_color = accent;
+
+        let visuals = &mut style.visuals;
+        visuals.panel_fill = canvas;
+        visuals.window_fill = surface;
+        visuals.window_stroke = egui::Stroke::new(1.0, border);
+        visuals.window_corner_radius = egui::CornerRadius::same(10);
+        visuals.menu_corner_radius = egui::CornerRadius::same(6);
+        visuals.override_text_color = Some(text);
+        visuals.weak_text_color = Some(muted);
+        visuals.faint_bg_color = subtle;
+        visuals.extreme_bg_color = input;
+        visuals.text_edit_bg_color = Some(input);
+        visuals.code_bg_color = subtle;
+        visuals.hyperlink_color = accent;
+        visuals.selection.bg_fill = accent.gamma_multiply(if dark { 0.28 } else { 0.12 });
+        visuals.selection.stroke = egui::Stroke::new(1.0, accent);
+
+        let radius = egui::CornerRadius::same(5);
+        for widget in [
+            &mut visuals.widgets.noninteractive,
+            &mut visuals.widgets.inactive,
+            &mut visuals.widgets.hovered,
+            &mut visuals.widgets.active,
+            &mut visuals.widgets.open,
+        ] {
+            widget.corner_radius = radius;
+        }
+        visuals.widgets.noninteractive.bg_fill = canvas;
+        visuals.widgets.noninteractive.weak_bg_fill = subtle;
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border);
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text);
+        visuals.widgets.inactive.bg_fill = surface;
+        visuals.widgets.inactive.weak_bg_fill = subtle;
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border);
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text);
+        visuals.widgets.hovered.bg_fill = hover;
+        visuals.widgets.hovered.weak_bg_fill = hover;
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, accent);
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, text);
+        visuals.widgets.active.bg_fill = accent.gamma_multiply(if dark { 0.28 } else { 0.12 });
+        visuals.widgets.active.weak_bg_fill = visuals.widgets.active.bg_fill;
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, text);
+        visuals.widgets.open.bg_fill = subtle;
+        visuals.widgets.open.weak_bg_fill = subtle;
+        visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, border);
+        visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, text);
     });
 }
 
@@ -856,7 +927,11 @@ impl eframe::App for ReviewApp {
         if self.doc.is_some() {
             egui::Panel::top("workflow")
                 .frame(egui::Frame::default().inner_margin(18))
-                .show(ui, |ui| self.summary(ui));
+                .show(ui, |ui| {
+                    centered_content(ui, 1040.0 / self.preferences.text_scale, false, |ui| {
+                        self.summary(ui)
+                    })
+                });
             if self.preferences.show_details && self.focused.is_some() && !narrow {
                 egui::Panel::right("inspector")
                     .exact_size(
@@ -874,7 +949,9 @@ impl eframe::App for ReviewApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::default().inner_margin(18))
                 .show(ui, |ui| {
-                    ui.add_enabled_ui(!self.busy, |ui| self.list(ui));
+                    centered_content(ui, 1040.0 / self.preferences.text_scale, true, |ui| {
+                        ui.add_enabled_ui(!self.busy, |ui| self.list(ui));
+                    });
                 });
         } else {
             egui::CentralPanel::default().show(ui, |ui| self.welcome(ui));
@@ -903,9 +980,10 @@ impl ReviewApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let zh = self.zh();
         ui.horizontal(|ui| {
-            app_mark(ui, 32.0);
+            app_mark(ui, 28.0);
             ui.heading(tr(zh, "书签清理", "Bookmark Cleaner"));
             if let Some(doc) = &self.doc {
+                ui.separator();
                 ui.add(
                     egui::Label::new(
                         RichText::new(
@@ -914,7 +992,8 @@ impl ReviewApp {
                                 .unwrap_or_default()
                                 .to_string_lossy(),
                         )
-                        .weak(),
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
                     )
                     .truncate(),
                 )
@@ -924,14 +1003,20 @@ impl ReviewApp {
                 if ui
                     .add_enabled(
                         self.doc.is_some() && !self.busy,
-                        egui::Button::new(tr(zh, "导出 HTML…", "Export HTML…")),
+                        egui::Button::new(
+                            RichText::new(tr(zh, "导出 HTML…", "Export HTML…"))
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(action_fill(self.preferences.accent))
+                        .stroke(egui::Stroke::NONE),
                     )
                     .clicked()
                 {
                     self.choose_export();
                 }
                 if ui
-                    .button(tr(zh, "设置", "Settings"))
+                    .small_button(tr(zh, "设置", "Settings"))
                     .on_hover_text("⌘ ,")
                     .clicked()
                 {
@@ -973,36 +1058,147 @@ impl ReviewApp {
 
     fn welcome(&mut self, ui: &mut egui::Ui) {
         let zh = self.zh();
-        egui::ScrollArea::vertical().id_salt("welcome-guide").show(ui,|ui| {
-        ui.vertical_centered(|ui| {
-            ui.add_space((ui.available_height() * 0.19).max(25.0));
-            ui.label(RichText::new(tr(zh, "给收藏夹留一点空间。", "Make room for the links that matter.")).size(30.0).strong());
-            ui.add_space(12.0);
-            ui.label(tr(zh, "精确去重，复核失效链接，导出一份整合后的书签。", "Remove exact duplicates, review dead links, and export one consolidated bookmark file."));
-            ui.add_space(28.0);
-            ui.add_enabled_ui(!self.busy, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space((ui.available_width() - 370.0).max(0.0) / 2.0);
-                    if ui.add_sized([175.0, 46.0], egui::Button::new(tr(zh, "导入 HTML…", "Import HTML…"))).clicked() {
-                        if let Some(path) = pick_html() { self.request_load(path); }
-                    }
-                    if ui.add_sized([185.0, 46.0], egui::Button::new(tr(zh, "自动导入浏览器", "Import from browsers"))).clicked() { self.import_browsers(); }
+        egui::ScrollArea::vertical()
+            .id_salt("welcome-guide")
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.set_max_width(760.0);
+                    ui.add_space((ui.available_height() * 0.12).clamp(20.0, 64.0));
+                    app_mark(ui, 44.0);
+                    ui.add_space(14.0);
+                    ui.label(
+                        RichText::new(tr(zh, "给收藏夹留一点空间。", "Make room for the links that matter."))
+                            .size(28.0)
+                            .strong(),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(tr(
+                            zh,
+                            "去重、复核失效链接，然后导出一份新的整合书签。",
+                            "Deduplicate, review dead links, and export a clean copy.",
+                        ))
+                        .size(15.0)
+                        .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(24.0);
+                    egui::Frame::group(ui.style())
+                        .inner_margin(egui::Margin::symmetric(20, 16))
+                        .show(ui, |ui| {
+                            ui.with_layout(
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(tr(
+                                            zh,
+                                            "选择书签来源",
+                                            "Choose a bookmark source",
+                                        ))
+                                        .strong(),
+                                    );
+                                    ui.add_space(12.0);
+                                    let action_width =
+                                        180.0 + 205.0 + ui.spacing().item_spacing.x;
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.add_space(
+                                            (ui.available_width() - action_width).max(0.0) * 0.5,
+                                        );
+                                        if ui
+                                            .add_enabled(
+                                                !self.busy,
+                                                egui::Button::new(
+                                                    RichText::new(tr(
+                                                        zh,
+                                                        "导入 HTML…",
+                                                        "Import HTML…",
+                                                    ))
+                                                    .strong()
+                                                    .color(egui::Color32::WHITE),
+                                                )
+                                                .fill(action_fill(self.preferences.accent))
+                                                .stroke(egui::Stroke::NONE)
+                                                .min_size(egui::vec2(180.0, 42.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            if let Some(path) = pick_html() {
+                                                self.request_load(path);
+                                            }
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                !self.busy,
+                                                egui::Button::new(tr(
+                                                    zh,
+                                                    "自动导入浏览器",
+                                                    "Import from browsers",
+                                                ))
+                                                .stroke(egui::Stroke::new(
+                                                    1.0,
+                                                    ui.visuals().hyperlink_color,
+                                                ))
+                                                .min_size(egui::vec2(205.0, 42.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.import_browsers();
+                                        }
+                                    });
+                                    ui.add_space(10.0);
+                                    ui.small(tr(
+                                        zh,
+                                        "也可以把 HTML 文件拖到此窗口。",
+                                        "You can also drop an HTML file into this window.",
+                                    ));
+                                },
+                            );
+                        });
+                    ui.add_space(14.0);
+                    ui.small(tr(
+                        zh,
+                        "自动导入会逐项显示浏览器、Profile 和阅读列表的读取结果。",
+                        "Browser import reports the result for each browser, profile and reading list.",
+                    ));
+                    ui.small(tr(
+                        zh,
+                        "清理只影响导出的新文件；未确认失效的链接会保留。",
+                        "Cleaning affects only the exported copy; uncertain links are kept.",
+                    ));
+                    ui.add_space(14.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .small_button(tr(zh, "用示例书签试一试", "Try sample bookmarks"))
+                            .on_hover_text(tr(
+                                zh,
+                                "只使用合成数据，不读取浏览器或真实书签。",
+                                "Uses synthetic data only; no browser or real bookmarks are read.",
+                            ))
+                            .clicked()
+                        {
+                            if let Err(error) = self.load_demo() {
+                                self.message = error.to_string();
+                                self.message_is_error = true;
+                            }
+                        }
+                        if ui
+                            .small_button(tr(zh, "打开检测批次…", "Open check batch…"))
+                            .clicked()
+                        {
+                            self.open_batch();
+                        }
+                    });
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(tr(
+                            zh,
+                            "导入  →  去重与复核  →  导出",
+                            "Import  →  Deduplicate & review  →  Export",
+                        ))
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                    );
                 });
             });
-            ui.add_space(18.0);
-            ui.weak(tr(zh, "也可以将 HTML 文件拖到窗口中", "Or drop a bookmark HTML file into this window"));
-            if ui.add_enabled(!self.busy, egui::Button::new(tr(zh, "打开检测批次…", "Open check batch…"))).clicked() { self.open_batch(); }
-            ui.add_space(42.0);
-            ui.label(tr(zh, "01  导入     /     02  去重与复核     /     03  导出", "01  Import     /     02  Deduplicate & review     /     03  Export"));
-            ui.add_space(12.0);
-            ui.small(tr(zh, "自动导入会展示每个浏览器、Profile 和阅读列表的实际读取结果。", "Browser import reports the actual result for each browser, profile and reading list."));
-            ui.small(tr(zh, "清理只作用于导出的新文件。", "Cleaning is applied to your new exported file."));
-            ui.small(tr(zh,"第一次使用？可以先用合成示例练习，不需要读取浏览器。","First time here? Practice with synthetic samples without reading any browser."));
-            if ui.add_enabled(!self.busy,egui::Button::new(tr(zh,"用示例书签试一试","Try sample bookmarks"))).clicked() {
-                if let Err(error) = self.load_demo() { self.message = error.to_string(); self.message_is_error = true; }
-            }
-        });
-        });
     }
 
     fn summary(&mut self, ui: &mut egui::Ui) {
@@ -1017,82 +1213,94 @@ impl ReviewApp {
             .filter(|i| i.verdict == "confirmed_dead")
             .count();
         let removed = self.removed();
-        ui.columns(4, |columns| {
-            for (column, (label, value, help)) in columns.iter_mut().zip([
-                (tr(zh, "导入书签", "Imported"), doc.items.len(), None),
-                (
-                    tr(zh, "精确重复", "Exact duplicates"),
-                    self.duplicates.len(),
-                    None,
-                ),
-                (
-                    tr(zh, "已确认失效", "Confirmed dead"),
-                    dead,
-                    Some(tr(
-                        zh,
-                        "这是检测确认失效的链接数；“待移除”数量单独统计。",
-                        "Links confirmed dead by check evidence; export removals are counted separately.",
-                    )),
-                ),
-                (
-                    tr(zh, "导出将保留", "To retain"),
-                    doc.items.len() - removed,
-                    None,
-                ),
-            ]) {
-                column.label(RichText::new(value.to_string()).size(25.0).strong());
-                let label_response = column.weak(label);
-                if let Some(help) = help {
-                    label_response.on_hover_text(help);
-                }
-            }
-        });
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            if self.scan.is_none() {
-                if ui
-                    .add_enabled(
-                        !self.busy,
-                        egui::Button::new(tr(zh, "开始检测", "Start check")),
-                    )
-                    .clicked()
-                {
-                    self.start_scan();
-                }
-                ui.weak(tr(
-                    zh,
-                    "检测独立运行；关闭窗口不会中断。",
-                    "Checks run independently; closing this window does not stop them.",
-                ));
-            } else {
-                if ui
-                    .add_enabled(
-                        !self.busy,
-                        egui::Button::new(tr(zh, "刷新进度", "Refresh progress")),
-                    )
-                    .clicked()
-                {
-                    self.refresh_scan();
-                }
-                if ui
-                    .add_enabled(
-                        !self.busy,
-                        egui::Button::new(tr(zh, "载入检测结果", "Load check results")),
-                    )
-                    .clicked()
-                {
-                    self.load_scan_evidence();
-                }
-                if ui
-                    .button(tr(zh, "显示批次文件夹", "Reveal check folder"))
-                    .clicked()
-                {
-                    if let Some(handle) = &self.scan {
-                        let _ = open::that(&handle.directory);
+        let retained = doc.items.len().saturating_sub(removed);
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(16, 12))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.columns(4, |columns| {
+                    for (column, (label, value, detail, primary)) in columns.iter_mut().zip([
+                        (tr(zh, "导出将保留", "To retain"), retained, tr(zh, "条书签", "bookmarks"), true),
+                        (tr(zh, "已导入", "Imported"), doc.items.len(), tr(zh, "条书签", "bookmarks"), false),
+                        (tr(zh, "精确重复", "Exact duplicates"), self.duplicates.len(), tr(zh, "项", "items"), false),
+                        (tr(zh, "确认失效", "Confirmed dead"), dead, tr(zh, "项", "items"), false),
+                    ]) {
+                        column.vertical(|ui| {
+                            ui.small(label);
+                            let response = ui.label(
+                                RichText::new(value.to_string())
+                                    .size(28.0)
+                                    .strong()
+                                    .color(if primary {
+                                        ui.visuals().hyperlink_color
+                                    } else {
+                                        ui.visuals().text_color()
+                                    }),
+                            );
+                            if label == tr(zh, "确认失效", "Confirmed dead") {
+                                response.on_hover_text(tr(
+                                    zh,
+                                    "这是检测确认失效的链接数；它与导出移除数分开统计。",
+                                    "Links confirmed dead by check evidence; separate from export removals.",
+                                ));
+                            }
+                            ui.small(detail);
+                        });
                     }
-                }
-            }
-        });
+                });
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    if self.scan.is_none() {
+                        if ui
+                            .add_enabled(
+                                !self.busy,
+                                egui::Button::new(
+                                    RichText::new(tr(zh, "开始检测", "Start check"))
+                                        .strong()
+                                        .color(egui::Color32::WHITE),
+                                )
+                                .fill(action_fill(self.preferences.accent))
+                                .stroke(egui::Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            self.start_scan();
+                        }
+                        ui.weak(tr(
+                            zh,
+                            "检测在后台运行；未检查的链接仍会保留。",
+                            "Checks run in the background; untested links stay in the export.",
+                        ));
+                    } else {
+                        if ui
+                            .add_enabled(
+                                !self.busy,
+                                egui::Button::new(tr(zh, "刷新进度", "Refresh progress")),
+                            )
+                            .clicked()
+                        {
+                            self.refresh_scan();
+                        }
+                        if ui
+                            .add_enabled(
+                                !self.busy,
+                                egui::Button::new(tr(zh, "载入检测结果", "Load check results")),
+                            )
+                            .clicked()
+                        {
+                            self.load_scan_evidence();
+                        }
+                        if ui
+                            .small_button(tr(zh, "显示批次文件夹", "Reveal check folder"))
+                            .clicked()
+                        {
+                            if let Some(handle) = &self.scan {
+                                let _ = open::that(&handle.directory);
+                            }
+                        }
+                    }
+                });
+            });
         if self.scan.is_some() {
             let status = &self.scan_status;
             let phase = match status.phase.as_str() {
@@ -1209,129 +1417,133 @@ impl ReviewApp {
             return;
         };
         let mut changed = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.label(tr(zh, "查找", "Search"));
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text(tr(
-                            zh,
-                            "搜索标题、网址、文件夹",
-                            "Search title, URL or folder",
-                        ))
-                        .desired_width(255.0),
-                )
-                .changed();
-            egui::ComboBox::from_id_salt("verdict")
-                .selected_text(verdict_label(zh, &self.verdict_filter))
-                .show_ui(ui, |ui| {
-                    let mut verdicts: BTreeSet<_> =
-                        doc.items.iter().map(|i| i.verdict.as_str()).collect();
-                    verdicts.insert("");
-                    verdicts.insert("duplicates");
-                    for value in verdicts {
-                        changed |= ui
-                            .selectable_value(
-                                &mut self.verdict_filter,
-                                value.into(),
-                                verdict_label(zh, value),
-                            )
-                            .changed();
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let search_response = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .hint_text(tr(
+                                    zh,
+                                    "搜索标题、网址、文件夹",
+                                    "Search title, URL or folder",
+                                ))
+                                .desired_width((ui.available_width() * 0.32).clamp(240.0, 360.0)),
+                        )
+                        .accessible_name(tr(zh, "搜索书签", "Search bookmarks"));
+                    changed |= search_response.changed();
+                    egui::ComboBox::from_id_salt("verdict")
+                        .selected_text(verdict_label(zh, &self.verdict_filter))
+                        .show_ui(ui, |ui| {
+                            let mut verdicts: BTreeSet<_> =
+                                doc.items.iter().map(|i| i.verdict.as_str()).collect();
+                            verdicts.insert("");
+                            verdicts.insert("duplicates");
+                            for value in verdicts {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.verdict_filter,
+                                        value.into(),
+                                        verdict_label(zh, value),
+                                    )
+                                    .changed();
+                            }
+                        });
+                    let labels = [
+                        tr(zh, "全部决定", "All decisions"),
+                        tr(zh, "未决定", "Undecided"),
+                        tr(zh, "保留", "Keep"),
+                        tr(zh, "移除", "Remove"),
+                    ];
+                    egui::ComboBox::from_id_salt("decision")
+                        .selected_text(labels[usize::from(self.decision_filter)])
+                        .show_ui(ui, |ui| {
+                            for (value, label) in (0_u8..).zip(labels) {
+                                changed |= ui
+                                    .selectable_value(&mut self.decision_filter, value, label)
+                                    .changed();
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("grouping")
+                        .selected_text(group_label(zh, self.grouping))
+                        .show_ui(ui, |ui| {
+                            for value in [
+                                GroupChoice::Folder,
+                                GroupChoice::Website,
+                                GroupChoice::Status,
+                                GroupChoice::None,
+                            ] {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.grouping,
+                                        value,
+                                        group_label(zh, value),
+                                    )
+                                    .changed();
+                            }
+                        });
+                    if ui
+                        .add_enabled(
+                            !self.history.is_empty(),
+                            egui::Button::new(tr(zh, "撤销", "Undo")),
+                        )
+                        .clicked()
+                    {
+                        self.undo();
                     }
                 });
-            let labels = [
-                tr(zh, "全部决定", "All decisions"),
-                tr(zh, "未决定", "Undecided"),
-                tr(zh, "保留", "Keep"),
-                tr(zh, "移除", "Remove"),
-            ];
-            egui::ComboBox::from_id_salt("decision")
-                .selected_text(labels[usize::from(self.decision_filter)])
-                .show_ui(ui, |ui| {
-                    for (value, label) in (0_u8..).zip(labels) {
-                        changed |= ui
-                            .selectable_value(&mut self.decision_filter, value, label)
-                            .changed();
-                    }
-                });
-            egui::ComboBox::from_id_salt("grouping")
-                .selected_text(group_label(zh, self.grouping))
-                .show_ui(ui, |ui| {
-                    for value in [
-                        GroupChoice::Folder,
-                        GroupChoice::Website,
-                        GroupChoice::Status,
-                        GroupChoice::None,
-                    ] {
-                        changed |= ui
-                            .selectable_value(&mut self.grouping, value, group_label(zh, value))
-                            .changed();
-                    }
-                });
-            if ui
-                .add_enabled(
-                    !self.history.is_empty(),
-                    egui::Button::new(tr(zh, "撤销", "Undo")),
-                )
-                .clicked()
-            {
-                self.undo();
-            }
-        });
+            });
         if changed {
             self.filter_dirty = true;
             self.rebuild_filter();
         }
         ui.horizontal_wrapped(|ui| {
-            ui.menu_button(tr(zh, "选择…", "Select…"), |ui| {
-                if ui
-                    .button(tr(zh, "全选筛选结果", "Select all filtered"))
-                    .clicked()
-                {
-                    self.selected = self.filtered.iter().copied().collect();
-                    ui.close();
-                }
-                if ui
-                    .button(tr(zh, "反选筛选结果", "Invert filtered selection"))
-                    .clicked()
-                {
-                    for &id in &self.filtered {
-                        if !self.selected.remove(&id) {
-                            self.selected.insert(id);
+            ui.menu_button(
+                tr(zh, "更多选择…", "More selection options…"),
+                |ui| {
+                    if ui
+                        .button(tr(zh, "反选筛选结果", "Invert filtered selection"))
+                        .clicked()
+                    {
+                        for &id in &self.filtered {
+                            if !self.selected.remove(&id) {
+                                self.selected.insert(id);
+                            }
                         }
+                        ui.close();
                     }
-                    ui.close();
-                }
-                if ui
-                    .button(tr(
-                        zh,
-                        "只选尚未检查与待复核项",
-                        "Select untested and uncertain",
-                    ))
-                    .clicked()
-                {
-                    self.selected = self
-                        .filtered
-                        .iter()
-                        .copied()
-                        .filter(|&id| {
-                            matches!(
-                                doc.items[id].verdict.as_str(),
-                                "untested"
-                                    | "needs_review"
-                                    | "temporary_failure"
-                                    | "protected"
-                                    | "probable_dead"
-                            )
-                        })
-                        .collect();
-                    ui.close();
-                }
-                if ui.button(tr(zh, "清空选择", "Clear selection")).clicked() {
-                    self.selected.clear();
-                    ui.close();
-                }
-            });
+                    if ui
+                        .button(tr(
+                            zh,
+                            "只选尚未检查与待复核项",
+                            "Select untested and uncertain",
+                        ))
+                        .clicked()
+                    {
+                        self.selected = self
+                            .filtered
+                            .iter()
+                            .copied()
+                            .filter(|&id| {
+                                matches!(
+                                    doc.items[id].verdict.as_str(),
+                                    "untested"
+                                        | "needs_review"
+                                        | "temporary_failure"
+                                        | "protected"
+                                        | "probable_dead"
+                                )
+                            })
+                            .collect();
+                        ui.close();
+                    }
+                    if ui.button(tr(zh, "清空选择", "Clear selection")).clicked() {
+                        self.selected.clear();
+                        ui.close();
+                    }
+                },
+            );
             if self.grouping != GroupChoice::None {
                 if ui
                     .small_button(tr(zh, "展开全部", "Expand groups"))
@@ -1351,7 +1563,7 @@ impl ReviewApp {
                 }
             }
             if ui
-                .small_button(tr(zh, "选择筛选结果", "Select filtered"))
+                .small_button(tr(zh, "全选筛选结果", "Select all filtered"))
                 .clicked()
             {
                 self.selected = self.filtered.iter().copied().collect();
@@ -1415,11 +1627,11 @@ impl ReviewApp {
         }
         ui.small(tr(zh,"勾选只代表选中；“移除”会标记为不导出，随时可撤销。原文件不会改变。","Checkboxes select items. Remove excludes them from export and can be undone. Your original file stays unchanged."));
         let row_height = if self.preferences.developer_mode {
-            84.0
+            88.0
         } else if self.preferences.density == DisplayDensity::Compact {
-            48.0
+            60.0
         } else {
-            62.0
+            66.0
         };
         let mut action = None;
         let mut collapse_changed = false;
@@ -1449,133 +1661,159 @@ impl ReviewApp {
                                 .count();
                             let mut all = count == group.ids.len();
                             let partial = count > 0 && !all;
-                            ui.push_id(&group.key, |ui| {
-                                ui.horizontal(|ui| {
-                                    let group_selection = ui
-                                        .add(
-                                            egui::Checkbox::new(
-                                                &mut all,
-                                                tr(zh, "选择本组", "Select group"),
-                                            )
-                                            .indeterminate(partial),
-                                        )
-                                        .accessible_name(format!(
-                                            "{}: {label}",
-                                            tr(zh, "选择分组", "Select group")
-                                        ));
-                                    if group_selection.changed() {
-                                        native_groups::select_group(
-                                            &mut self.selected,
-                                            &group.ids,
-                                            all,
-                                        );
-                                    }
-                                    let collapsed = self.collapsed_groups.contains(&group.key);
-                                    if ui
-                                        .add(
-                                            egui::Button::new(format!(
-                                                "{}  {label}",
+                            egui::Frame::default()
+                                .fill(ui.visuals().faint_bg_color)
+                                .corner_radius(egui::CornerRadius::same(5))
+                                .inner_margin(egui::Margin::symmetric(10, 4))
+                                .show(ui, |ui| {
+                                    ui.push_id(&group.key, |ui| {
+                                        ui.horizontal(|ui| {
+                                            let group_selection = ui
+                                                .add(
+                                                    egui::Checkbox::new(
+                                                        &mut all,
+                                                        tr(zh, "选择本组", "Select group"),
+                                                    )
+                                                    .indeterminate(partial),
+                                                )
+                                                .accessible_name(format!(
+                                                    "{}: {label}",
+                                                    tr(zh, "选择分组", "Select group")
+                                                ));
+                                            if group_selection.changed() {
+                                                native_groups::select_group(
+                                                    &mut self.selected,
+                                                    &group.ids,
+                                                    all,
+                                                );
+                                            }
+                                            let collapsed =
+                                                self.collapsed_groups.contains(&group.key);
+                                            let toggle = tr(
+                                                zh,
+                                                if collapsed { "展开" } else { "收起" },
+                                                if collapsed { "Expand" } else { "Collapse" },
+                                            );
+                                            if ui
+                                                .small_button(toggle)
+                                                .accessible_name(format!("{toggle}: {label}"))
+                                                .clicked()
+                                            {
+                                                collapse_changed = true;
                                                 if collapsed {
-                                                    tr(zh, "展开", "Expand")
+                                                    self.collapsed_groups.remove(&group.key);
                                                 } else {
-                                                    tr(zh, "收起", "Collapse")
+                                                    self.collapsed_groups.insert(group.key.clone());
                                                 }
-                                            ))
-                                            .truncate(),
-                                        )
-                                        .clicked()
-                                    {
-                                        collapse_changed = true;
-                                        if collapsed {
-                                            self.collapsed_groups.remove(&group.key);
-                                        } else {
-                                            self.collapsed_groups.insert(group.key.clone());
-                                        }
-                                    }
+                                            }
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(label).strong().size(15.0),
+                                                )
+                                                .truncate(),
+                                            );
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    ui.weak(format!(
+                                                        "{} {} · {} {}",
+                                                        group.ids.len(),
+                                                        tr(zh, "项", "items"),
+                                                        count,
+                                                        tr(zh, "项已选", "selected")
+                                                    ));
+                                                },
+                                            );
+                                        });
+                                    });
                                 });
-                                ui.weak(format!(
-                                    "{} {} · {} {}",
-                                    group.ids.len(),
-                                    tr(zh, "项", "items"),
-                                    count,
-                                    tr(zh, "项已选", "selected")
-                                ));
-                            });
                             continue;
                         }
                     };
                     let item = &doc.items[id];
                     ui.push_id(id, |ui| {
-                        ui.horizontal(|ui| {
-                            let title = if item.title.is_empty() {
-                                tr(zh, "无标题", "Untitled")
+                        let highlighted = self.focused == Some(id) || self.selected.contains(&id);
+                        egui::Frame::default()
+                            .fill(if highlighted {
+                                ui.visuals().selection.bg_fill
                             } else {
-                                &item.title
-                            };
-                            let mut selected = self.selected.contains(&id);
-                            let selection_response = ui
-                                .checkbox(&mut selected, "")
-                                .on_hover_text(tr(zh, "选择此书签", "Select this bookmark"))
-                                .accessible_name(format!(
-                                    "{}: {title}",
-                                    tr(zh, "选择书签", "Select bookmark")
-                                ));
-                            if selection_response.changed() {
-                                if selected {
-                                    self.selected.insert(id);
-                                } else {
-                                    self.selected.remove(&id);
-                                }
-                            }
-                            let response = ui.add_sized(
-                                [(ui.available_width() - 110.0).max(80.0), 26.0],
-                                egui::Button::new("")
-                                    .left_text(title)
-                                    .selected(self.focused == Some(id))
-                                    .frame(false)
-                                    .truncate(),
-                            );
-                            if response.clicked() {
-                                self.focused = Some(id);
-                            }
-                            response.context_menu(|ui| {
-                                for (label, decision) in [
-                                    (tr(zh, "保留", "Keep"), Some(Decision::Keep)),
-                                    (tr(zh, "移除", "Remove"), Some(Decision::Remove)),
-                                    (tr(zh, "重置", "Reset"), None),
-                                ] {
-                                    if ui.button(label).clicked() {
-                                        action = Some((id, decision));
-                                        ui.close();
+                                egui::Color32::TRANSPARENT
+                            })
+                            .corner_radius(egui::CornerRadius::same(5))
+                            .inner_margin(egui::Margin::symmetric(8, 4))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let title = if item.title.is_empty() {
+                                        tr(zh, "无标题", "Untitled")
+                                    } else {
+                                        &item.title
+                                    };
+                                    let mut selected = self.selected.contains(&id);
+                                    let selection_response = ui
+                                        .checkbox(&mut selected, "")
+                                        .on_hover_text(tr(zh, "选择此书签", "Select this bookmark"))
+                                        .accessible_name(format!(
+                                            "{}: {title}",
+                                            tr(zh, "选择书签", "Select bookmark")
+                                        ));
+                                    if selection_response.changed() {
+                                        if selected {
+                                            self.selected.insert(id);
+                                        } else {
+                                            self.selected.remove(&id);
+                                        }
                                     }
+                                    let response = ui.add_sized(
+                                        [(ui.available_width() - 110.0).max(80.0), 26.0],
+                                        egui::Button::new("")
+                                            .left_text(title)
+                                            .selected(self.focused == Some(id))
+                                            .frame(false)
+                                            .truncate(),
+                                    );
+                                    if response.clicked() {
+                                        self.focused = Some(id);
+                                    }
+                                    response.context_menu(|ui| {
+                                        for (label, decision) in [
+                                            (tr(zh, "保留", "Keep"), Some(Decision::Keep)),
+                                            (tr(zh, "移除", "Remove"), Some(Decision::Remove)),
+                                            (tr(zh, "重置", "Reset"), None),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                action = Some((id, decision));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                    match self.decisions.get(&id) {
+                                        Some(Decision::Remove) => {
+                                            ui.colored_label(
+                                                ui.visuals().error_fg_color,
+                                                tr(zh, "待移除", "Remove"),
+                                            );
+                                        }
+                                        Some(Decision::Keep) => {
+                                            ui.label(tr(zh, "保留", "Keep"));
+                                        }
+                                        None => {
+                                            ui.weak(verdict_label(zh, &item.verdict));
+                                        }
+                                    }
+                                });
+                                ui.add(
+                                    egui::Label::new(RichText::new(&item.url).small().weak())
+                                        .truncate(),
+                                )
+                                .on_hover_text(&item.url);
+                                if self.preferences.developer_mode {
+                                    ui.monospace(format!(
+                                        "[id={id}; verdict={}; decision={:?}]",
+                                        item.verdict,
+                                        self.decisions.get(&id)
+                                    ));
                                 }
                             });
-                            match self.decisions.get(&id) {
-                                Some(Decision::Remove) => {
-                                    ui.colored_label(
-                                        ui.visuals().error_fg_color,
-                                        tr(zh, "待移除", "Remove"),
-                                    );
-                                }
-                                Some(Decision::Keep) => {
-                                    ui.label(tr(zh, "保留", "Keep"));
-                                }
-                                None => {
-                                    ui.weak(verdict_label(zh, &item.verdict));
-                                }
-                            }
-                        });
-                        ui.add(
-                            egui::Label::new(RichText::new(&item.url).small().weak()).truncate(),
-                        )
-                        .on_hover_text(&item.url);
-                        if self.preferences.developer_mode {
-                            ui.monospace(format!(
-                                "[id={id}; verdict={}; decision={:?}]",
-                                item.verdict,
-                                self.decisions.get(&id)
-                            ));
-                        }
                     });
                 }
             });
@@ -1643,51 +1881,163 @@ impl ReviewApp {
         let mut open = true;
         let mut save = false;
         let mut cancel = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        egui::Window::new(tr(zh, "设置", "Settings")).id(egui::Id::unique("settings-window")).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).open(&mut open).collapsible(false).resizable(false).default_width(510.0).show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(&mut self.settings_tab, 0, tr(zh, "外观", "Appearance"));
-                ui.selectable_value(&mut self.settings_tab, 1, tr(zh, "导入与证据", "Import"));
-                ui.selectable_value(&mut self.settings_tab, 2, tr(zh, "网络与检测", "Network"));
-                ui.selectable_value(&mut self.settings_tab, 3, tr(zh, "高级", "Advanced"));
-                ui.selectable_value(&mut self.settings_tab, 4, tr(zh, "关于", "About"));
-            });
-            ui.separator();
-            egui::ScrollArea::vertical().id_salt("settings-content").max_height(ctx.content_rect().height() * 0.55).show(ui, |ui| {
-            match self.settings_tab {
+        egui::Window::new(tr(zh, "设置", "Settings")).id(egui::Id::unique("settings-window")).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for (tab, label) in [
+                        (0, tr(zh, "外观", "Appearance")),
+                        (1, tr(zh, "导入与证据", "Import & evidence")),
+                        (2, tr(zh, "网络与检测", "Network & checks")),
+                        (3, tr(zh, "高级", "Advanced")),
+                        (4, tr(zh, "关于", "About")),
+                    ] {
+                        if ui
+                            .add(egui::Button::selectable(self.settings_tab == tab, label))
+                            .clicked()
+                        {
+                            self.settings_tab = tab;
+                        }
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().id_salt("settings-content").max_height(ctx.content_rect().height() * 0.42).show(ui, |ui| {
+                    ui.heading(match self.settings_tab {
+                        0 => tr(zh, "外观", "Appearance"),
+                        1 => tr(zh, "导入与证据", "Import & evidence"),
+                        2 => tr(zh, "网络与检测", "Network & checks"),
+                        3 => tr(zh, "高级", "Advanced"),
+                        _ => tr(zh, "关于", "About"),
+                    });
+                    ui.separator();
+                    match self.settings_tab {
                 0 => {
-                    ui.strong(tr(zh, "主题", "Theme"));
-                    ui.horizontal(|ui| {
-                        for (value, label) in [(ThemeChoice::System, tr(zh, "跟随系统", "System")), (ThemeChoice::Light, tr(zh, "浅色", "Light")), (ThemeChoice::Dark, tr(zh, "深色", "Dark"))] { ui.selectable_value(&mut draft.theme, value, label); }
-                    });
-                    ui.strong(tr(zh, "强调色", "Accent color"));
-                    ui.horizontal(|ui| {
-                        for (value, label) in [(AccentChoice::Blue, tr(zh, "蓝色", "Blue")), (AccentChoice::Teal, tr(zh, "青绿", "Teal")), (AccentChoice::Violet, tr(zh,"紫色","Violet")), (AccentChoice::Monochrome, tr(zh, "黑白", "Monochrome"))] { ui.selectable_value(&mut draft.accent, value, label); }
-                    });
-                    ui.strong(tr(zh, "语言", "Language"));
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut draft.language, LanguageChoice::System, tr(zh, "跟随系统", "System"));
-                        ui.selectable_value(&mut draft.language, LanguageChoice::SimplifiedChinese, "简体中文");
-                        ui.selectable_value(&mut draft.language, LanguageChoice::English, "English");
-                    });
-                    ui.strong(tr(zh, "列表密度", "List density"));
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut draft.density, DisplayDensity::Comfortable, tr(zh, "舒适", "Comfortable"));
-                        ui.selectable_value(&mut draft.density, DisplayDensity::Compact, tr(zh, "紧凑", "Compact"));
-                    });
-                    ui.add(egui::Slider::new(&mut draft.text_scale, 0.9..=1.3).text(tr(zh, "界面缩放", "Interface scale")));
-                    ui.checkbox(&mut draft.show_details, tr(zh, "选中书签时显示详情", "Show details for the focused bookmark"));
-                    ui.strong(tr(zh,"画面比例","List and details proportions"));
-                    ui.horizontal_wrapped(|ui| {
-                        ui.selectable_value(&mut draft.layout,LayoutChoice::Balanced,tr(zh,"均衡","Balanced"));
-                        ui.selectable_value(&mut draft.layout,LayoutChoice::WideList,tr(zh,"列表优先","More list space"));
-                        ui.selectable_value(&mut draft.layout,LayoutChoice::WideDetails,tr(zh,"详情优先","More details space"));
-                    });
-                    ui.small(tr(zh,"查看详情时分配窗口宽度；窄窗口使用浮动详情，不挤压列表。","Allocates width when viewing details. Narrow windows show floating details instead of squeezing the list."));
-                    ui.strong(tr(zh,"字体","Text style"));
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut draft.font,FontChoice::System,tr(zh,"系统字体","System face"));
-                        ui.selectable_value(&mut draft.font,FontChoice::Readable,tr(zh,"清晰阅读","Reading face"));
-                    });
+                    preference_row(
+                        ui,
+                        tr(zh, "主题", "Theme"),
+                        tr(zh, "跟随系统外观", "Follow system appearance"),
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for (value, label) in [
+                                    (ThemeChoice::System, tr(zh, "系统", "System")),
+                                    (ThemeChoice::Light, tr(zh, "浅色", "Light")),
+                                    (ThemeChoice::Dark, tr(zh, "深色", "Dark")),
+                                ] {
+                                    ui.radio_value(&mut draft.theme, value, label);
+                                }
+                            });
+                        },
+                    );
+                    preference_row(
+                        ui,
+                        tr(zh, "强调色", "Accent color"),
+                        tr(zh, "用于按钮与选中状态", "Used for actions and selection"),
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for (value, label) in [
+                                    (AccentChoice::Blue, tr(zh, "蓝色", "Blue")),
+                                    (AccentChoice::Teal, tr(zh, "青绿", "Teal")),
+                                    (AccentChoice::Violet, tr(zh, "紫色", "Violet")),
+                                    (AccentChoice::Monochrome, tr(zh, "黑白", "Monochrome")),
+                                ] {
+                                    ui.radio_value(&mut draft.accent, value, label);
+                                }
+                            });
+                        },
+                    );
+                    preference_row(
+                        ui,
+                        tr(zh, "语言", "Language"),
+                        tr(zh, "更改后立即预览", "Preview changes immediately"),
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.radio_value(
+                                    &mut draft.language,
+                                    LanguageChoice::System,
+                                    tr(zh, "系统", "System"),
+                                );
+                                ui.radio_value(
+                                    &mut draft.language,
+                                    LanguageChoice::SimplifiedChinese,
+                                    "简体中文",
+                                );
+                                ui.radio_value(
+                                    &mut draft.language,
+                                    LanguageChoice::English,
+                                    "English",
+                                );
+                            });
+                        },
+                    );
+                    preference_row(
+                        ui,
+                        tr(zh, "列表密度", "List density"),
+                        tr(zh, "控制每行书签的留白", "Space between bookmark rows"),
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.radio_value(
+                                    &mut draft.density,
+                                    DisplayDensity::Comfortable,
+                                    tr(zh, "舒适", "Comfortable"),
+                                );
+                                ui.radio_value(
+                                    &mut draft.density,
+                                    DisplayDensity::Compact,
+                                    tr(zh, "紧凑", "Compact"),
+                                );
+                            });
+                        },
+                    );
+                    preference_row(
+                        ui,
+                        tr(zh, "界面缩放", "Interface scale"),
+                        tr(zh, "调整文字与控件大小", "Adjust text and control size"),
+                        |ui| {
+                            ui.add(egui::Slider::new(&mut draft.text_scale, 0.9..=1.3));
+                        },
+                    );
+                    preference_row(
+                        ui,
+                        tr(zh, "书签详情", "Bookmark details"),
+                        tr(zh, "选择书签时显示详情", "Show details for a selected bookmark"),
+                        |ui| {
+                            ui.checkbox(&mut draft.show_details, tr(zh, "显示详情", "Show details"));
+                        },
+                    );
+                    preference_row(
+                        ui,
+                        tr(zh, "画面比例", "Layout proportions"),
+                        tr(zh, "详情不会挤压窄窗口中的列表", "Details float on narrow windows"),
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for (value, label) in [
+                                    (LayoutChoice::Balanced, tr(zh, "均衡", "Balanced")),
+                                    (LayoutChoice::WideList, tr(zh, "列表优先", "More list")),
+                                    (LayoutChoice::WideDetails, tr(zh, "详情优先", "More details")),
+                                ] {
+                                    ui.radio_value(&mut draft.layout, value, label);
+                                }
+                            });
+                        },
+                    );
+                    preference_row(
+                        ui,
+                        tr(zh, "字体", "Typeface"),
+                        tr(zh, "系统字体或清晰阅读", "System or reading face"),
+                        |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.radio_value(
+                                    &mut draft.font,
+                                    FontChoice::System,
+                                    tr(zh, "系统", "System"),
+                                );
+                                ui.radio_value(
+                                    &mut draft.font,
+                                    FontChoice::Readable,
+                                    tr(zh, "清晰阅读", "Reading"),
+                                );
+                            });
+                        },
+                    );
                 }
                 1 => {
                     ui.label(tr(zh, "导入 HTML 或自动读取已发现的浏览器与 Profile。阅读列表的支持情况会单独列出。", "Import HTML or read discovered browsers and profiles. Reading-list support is reported separately."));
@@ -1796,6 +2146,7 @@ impl ReviewApp {
                     ui.label(tr(zh, "快捷键：⌘O 导入 · ⌘S 导出 · ⌘Z 撤销 · ⌘, 设置", "Shortcuts: ⌘O Import · ⌘S Export · ⌘Z Undo · ⌘, Settings"));
                 }
             }
+                });
             });
             if draft.network.validate().is_err() {
                 ui.colored_label(ui.visuals().error_fg_color, tr(zh, "代理端口须为 1–65535；请求超时须为 5–60 秒。", "Use a proxy port from 1 to 65535 and a request timeout from 5 to 60 seconds."));
@@ -1937,6 +2288,58 @@ impl ReviewApp {
     }
 }
 
+fn action_fill(accent: AccentChoice) -> egui::Color32 {
+    match accent {
+        AccentChoice::Blue => egui::Color32::from_rgb(33, 105, 190),
+        AccentChoice::Teal => egui::Color32::from_rgb(0, 113, 96),
+        AccentChoice::Violet => egui::Color32::from_rgb(101, 76, 163),
+        AccentChoice::Monochrome => egui::Color32::from_rgb(58, 66, 76),
+    }
+}
+
+fn centered_content(
+    ui: &mut egui::Ui,
+    max_width: f32,
+    fill_height: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let available = ui.available_size();
+    let width = available.x.min(max_width);
+    let height = if fill_height { available.y } else { 0.0 };
+    ui.horizontal(|ui| {
+        ui.add_space(((available.x - width) * 0.5).max(0.0));
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, height),
+            egui::Layout::top_down(egui::Align::Min),
+            add_contents,
+        );
+    });
+}
+
+fn preference_row(
+    ui: &mut egui::Ui,
+    title: &str,
+    description: &str,
+    controls: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        let label_width = (ui.available_width() * 0.32).clamp(132.0, 180.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(label_width, 44.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.label(RichText::new(title).strong());
+                ui.small(description);
+            },
+        );
+        ui.add_space(8.0);
+        controls(ui);
+    });
+    ui.add_space(5.0);
+    ui.separator();
+    ui.add_space(5.0);
+}
+
 fn duplicate_ids(doc: &ReviewDocument) -> BTreeSet<usize> {
     let mut seen = BTreeSet::new();
     doc.items
@@ -2069,6 +2472,33 @@ mod tests {
             "partial"
         );
         assert!(!app.scan_verified);
+    }
+
+    #[test]
+    fn primary_action_fills_keep_white_text_readable() {
+        let channel = |value: u8| {
+            let value = f32::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        for accent in [
+            AccentChoice::Blue,
+            AccentChoice::Teal,
+            AccentChoice::Violet,
+            AccentChoice::Monochrome,
+        ] {
+            let color = action_fill(accent);
+            let luminance = 0.2126 * channel(color.r())
+                + 0.7152 * channel(color.g())
+                + 0.0722 * channel(color.b());
+            assert!(
+                1.05 / (luminance + 0.05) >= 4.5,
+                "primary fill must preserve readable white button text"
+            );
+        }
     }
 
     #[test]
