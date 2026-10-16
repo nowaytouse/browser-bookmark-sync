@@ -64,14 +64,10 @@ rusqlite = { version = "0.40.2", features = ["backup", "bundled"] }
 
 # HTML parsing for Safari export (latest)
 scraper = "0.27.0"
-html5ever = "0.40.1"
 plist = "1.10.1"
 
 # Progress bars & UX (latest)
 indicatif = "0.18.6"
-
-# Parallel processing for performance (latest)
-rayon = "1.12.0"
 
 # Regex for enhanced rule matching (latest)
 regex = "1.13.1"

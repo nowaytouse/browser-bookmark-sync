@@ -64,6 +64,8 @@ Status schema 2 also records the current `phase` (`preparing`, `site`, or `conte
 
 Useful supporting commands are `collect`, `dedupe`, `list`, `validate`, and `merge-results`. `--all-profiles` is the default for collection/export; `--include` accepts additional bookmark HTML/JSON sources.
 
+Rejected `export` options return a nonzero exit status. Incremental `export --update <existing.html>` reads the existing HTML before inspecting sources and stops if that file cannot be read; it never substitutes an empty collection for an unreadable update input. These failures leave any existing output file untouched.
+
 ## Template organization
 
 Automatic AI organization is not part of the current product. If a future release exposes template organization, it must be an explicit file-only operation with a required rules/template file; it must never be part of export or health checking by default.

@@ -926,7 +926,7 @@ impl eframe::App for ReviewApp {
         let narrow = ui.available_width() < 880.0;
         if self.doc.is_some() {
             egui::Panel::top("workflow")
-                .frame(egui::Frame::default().inner_margin(6))
+                .frame(egui::Frame::default().inner_margin(egui::Margin::symmetric(16, 4)))
                 .show(ui, |ui| {
                     centered_content(ui, 1040.0 / self.preferences.text_scale, false, |ui| {
                         self.summary(ui)
@@ -947,7 +947,7 @@ impl eframe::App for ReviewApp {
                     });
             }
             egui::CentralPanel::default()
-                .frame(egui::Frame::default().inner_margin(10))
+                .frame(egui::Frame::default().inner_margin(16))
                 .show(ui, |ui| {
                     centered_content(ui, 1040.0 / self.preferences.text_scale, true, |ui| {
                         ui.add_enabled_ui(!self.busy, |ui| self.list(ui));
@@ -980,15 +980,18 @@ impl ReviewApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let zh = self.zh();
         ui.horizontal(|ui| {
-            app_mark(ui, 22.0);
+            app_mark(ui, 20.0);
             ui.label(
                 RichText::new(tr(zh, "书签清理", "Bookmark Cleaner"))
-                    .size(22.0)
+                    .size(18.0)
                     .strong(),
             );
             if let Some(doc) = &self.doc {
                 ui.separator();
-                ui.add(
+                let filename_width =
+                    (ui.available_width() - if zh { 260.0 } else { 320.0 }).clamp(30.0, 280.0);
+                ui.add_sized(
+                    [filename_width, ui.spacing().interact_size.y],
                     egui::Label::new(
                         RichText::new(
                             doc.input_path
@@ -1020,7 +1023,7 @@ impl ReviewApp {
                     self.choose_export();
                 }
                 if ui
-                    .small_button(tr(zh, "设置", "Settings"))
+                    .button(tr(zh, "设置", "Settings"))
                     .on_hover_text("⌘ ,")
                     .clicked()
                 {
@@ -1218,117 +1221,23 @@ impl ReviewApp {
             .count();
         let removed = self.removed();
         let retained = doc.items.len().saturating_sub(removed);
-        if self.scan.is_none() && self.sources.is_empty() {
-            egui::Frame::default()
-                .fill(ui.visuals().faint_bg_color)
-                .corner_radius(egui::CornerRadius::same(6))
-                .inner_margin(egui::Margin::symmetric(8, 4))
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        for (label, value, detail) in [
-                            (
-                                tr(zh, "将保留", "To retain"),
-                                retained,
-                                tr(zh, "条书签", "bookmarks"),
-                            ),
-                            (
-                                tr(zh, "已导入", "Imported"),
-                                doc.items.len(),
-                                tr(zh, "条书签", "bookmarks"),
-                            ),
-                            (
-                                tr(zh, "精确重复", "Exact duplicates"),
-                                self.duplicates.len(),
-                                tr(zh, "项", "items"),
-                            ),
-                            (tr(zh, "确认失效", "Confirmed dead"), dead, tr(zh, "项", "items")),
-                        ] {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(value.to_string())
-                                        .size(18.0)
-                                        .strong()
-                                        .color(ui.visuals().hyperlink_color),
-                                )
-                                .on_hover_text(format!("{label}: {value} {detail}"));
-                                ui.small(label);
-                            });
-                            ui.separator();
-                        }
-                        if ui
-                            .add_enabled(
-                                !self.busy,
-                                egui::Button::new(
-                                    RichText::new(tr(zh, "开始检测", "Start check"))
-                                        .strong()
-                                        .color(egui::Color32::WHITE),
-                                )
-                                .fill(action_fill(self.preferences.accent))
-                                .stroke(egui::Stroke::NONE),
-                            )
-                            .on_hover_text(tr(
-                                zh,
-                                "检测在后台运行；未检查的链接仍会保留。",
-                                "Checks run in the background; untested links stay in the export.",
-                            ))
-                            .clicked()
-                        {
-                            self.start_scan();
-                        }
-                        if untested > 0 {
-                            ui.small(format!(
-                                "{} {untested} · {}",
-                                tr(zh, "尚未检查", "Untested"),
-                                tr(zh, "未检查项会保留", "unchecked links stay in the export"),
-                            ));
-                        } else if self.active_db {
-                            ui.small(tr(
-                                zh,
-                                "已匹配检测证据，可在详情中查看时间及复核后端。",
-                                "Check evidence is attached; inspect its age and backends in Details.",
-                            ));
-                        }
-                        ui.weak(tr(zh, "未附带浏览器来源报告", "No browser source report"));
-                    });
-                });
-            return;
-        }
         egui::Frame::default()
-            .inner_margin(egui::Margin::symmetric(8, 4))
+            .inner_margin(egui::Margin::symmetric(0, 4))
             .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                let scanning = self.scan.is_some();
-                let column_count = if scanning { 4 } else { 5 };
-                ui.columns(column_count, |columns| {
-                    for (column, (label, value, detail, primary)) in
-                        columns.iter_mut().take(4).zip([
-                        (
-                            tr(zh, "导出将保留", "To retain"),
-                            retained,
-                            tr(zh, "条书签", "bookmarks"),
-                            true,
-                        ),
-                        (
-                            tr(zh, "已导入", "Imported"),
-                            doc.items.len(),
-                            tr(zh, "条书签", "bookmarks"),
-                            false,
-                        ),
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    for (label, value, primary) in [
+                        (tr(zh, "导出将保留", "To retain"), retained, true),
+                        (tr(zh, "已导入", "Imported"), doc.items.len(), false),
                         (
                             tr(zh, "精确重复", "Exact duplicates"),
                             self.duplicates.len(),
-                            tr(zh, "项", "items"),
                             false,
                         ),
-                        (
-                            tr(zh, "确认失效", "Confirmed dead"),
-                            dead,
-                            tr(zh, "项", "items"),
-                            false,
-                        ),
-                    ]) {
-                        column.horizontal(|ui| {
+                        (tr(zh, "确认失效", "Confirmed dead"), dead, false),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
                             ui.label(RichText::new(value.to_string()).size(18.0).strong().color(
                                 if primary {
                                     ui.visuals().hyperlink_color
@@ -1336,37 +1245,38 @@ impl ReviewApp {
                                     ui.visuals().text_color()
                                 },
                             ))
-                            .on_hover_text(format!("{label}: {value} {detail}"));
+                            .on_hover_text(format!("{label}: {value}"));
                             ui.small(label);
                         });
                     }
-                    if !scanning {
-                        columns[4]
-                            .vertical(|ui| {
-                                if ui
-                                    .add_enabled(
-                                        !self.busy,
-                                        egui::Button::new(
-                                            RichText::new(tr(zh, "开始检测", "Start check"))
-                                                .strong()
-                                                .color(egui::Color32::WHITE),
-                                        )
-                                        .fill(action_fill(self.preferences.accent))
-                                        .stroke(egui::Stroke::NONE),
-                                    )
-                                    .on_hover_text(tr(
-                                        zh,
-                                        "检测在后台运行；未检查的链接仍会保留。",
-                                        "Checks run in the background; untested links stay in the export.",
-                                    ))
-                                    .clicked()
-                                {
-                                    self.start_scan();
-                                }
-                            });
+                    if self.scan.is_none()
+                        && ui
+                            .add_enabled(
+                                !self.busy,
+                                egui::Button::new(tr(zh, "开始检测", "Start check")),
+                            )
+                            .on_hover_text(tr(
+                                zh,
+                                "检测在后台运行；未检查的链接仍会保留。",
+                                "Checks run in the background; untested links stay in the export.",
+                            ))
+                            .clicked()
+                    {
+                        self.start_scan();
+                    }
+                    if self.scan.is_none() && self.sources.is_empty() {
+                        if untested > 0 {
+                            ui.small(format!("{untested} {}", tr(zh, "尚未检查", "untested")))
+                                .on_hover_text(tr(
+                                    zh,
+                                    "未检查的链接会保留在导出文件中。",
+                                    "Untested links stay in the export.",
+                                ));
+                        }
+                        ui.weak(tr(zh, "未附带来源报告", "No source report"));
                     }
                 });
-                if scanning {
+                if self.scan.is_some() {
                     ui.add_space(4.0);
                     ui.horizontal_wrapped(|ui| {
                         if ui
@@ -1398,6 +1308,9 @@ impl ReviewApp {
                     });
                 }
             });
+        if self.scan.is_none() && self.sources.is_empty() {
+            return;
+        }
         if self.scan.is_some() {
             let status = &self.scan_status;
             let phase = match status.phase.as_str() {
@@ -1750,6 +1663,9 @@ impl ReviewApp {
         };
         let mut action = None;
         let mut collapse_changed = false;
+        // Virtual rows must fit their children, including the second URL line.
+        ui.spacing_mut().interact_size.y = 20.0;
+        ui.spacing_mut().button_padding.y = 0.0;
         egui::ScrollArea::vertical()
             .id_salt("bookmarks")
             .auto_shrink([false, false])
@@ -1782,8 +1698,12 @@ impl ReviewApp {
                                 .corner_radius(egui::CornerRadius::same(4))
                                 .inner_margin(egui::Margin::symmetric(8, 0))
                                 .show(ui, |ui| {
+                                    ui.set_min_height(row_height);
                                     ui.push_id(&group.key, |ui| {
-                                        ui.horizontal(|ui| {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(ui.available_width(), row_height),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
                                             let group_selection = ui
                                                 .add(
                                                     egui::Checkbox::new(&mut all, "")
@@ -1808,11 +1728,11 @@ impl ReviewApp {
                                                 if collapsed { "Expand" } else { "Collapse" },
                                             );
                                             let collapse_clicked = {
-                                                let (rect, response) = ui.allocate_exact_size(
-                                                    egui::vec2(24.0, 24.0),
-                                                    egui::Sense::click(),
+                                                let response = ui.add_sized(
+                                                    [24.0, 24.0],
+                                                    egui::Button::new("").frame(false),
                                                 );
-                                                let center = rect.center();
+                                                let center = response.rect.center();
                                                 let points = if collapsed {
                                                     [
                                                         center + egui::vec2(-2.0, -5.0),
@@ -1828,7 +1748,7 @@ impl ReviewApp {
                                                 };
                                                 let stroke = egui::Stroke::new(
                                                     1.5,
-                                                    ui.visuals().weak_text_color(),
+                                                    ui.style().interact(&response).fg_stroke.color,
                                                 );
                                                 ui.painter().line_segment([points[0], points[1]], stroke);
                                                 ui.painter().line_segment([points[1], points[2]], stroke);
@@ -1879,6 +1799,7 @@ impl ReviewApp {
                             .corner_radius(egui::CornerRadius::same(5))
                             .inner_margin(egui::Margin::symmetric(8, 0))
                             .show(ui, |ui| {
+                                    ui.set_min_height(row_height);
                                 ui.horizontal(|ui| {
                                     let title = if item.title.is_empty() {
                                         tr(zh, "无标题", "Untitled")
@@ -1900,22 +1821,28 @@ impl ReviewApp {
                                             self.selected.remove(&id);
                                         }
                                     }
-                                    let text_width = (ui.available_width() - 100.0).max(100.0);
-                                    let title_height = if self.preferences.density == DisplayDensity::Compact {
-                                        16.0
-                                    } else {
-                                        18.0
-                                    };
-                                    let response = ui.vertical(|ui| {
-                                        ui.spacing_mut().item_spacing.y = 0.0;
+                                    if self.grouping != GroupChoice::None {
+                                        ui.add_space(32.0);
+                                    }
+                                    let status_width = 120.0;
+                                    let text_width = (ui.available_width()
+                                        - status_width
+                                        - ui.spacing().item_spacing.x)
+                                        .max(40.0);
+                                    let response = ui.allocate_ui_with_layout(
+                                        egui::vec2(text_width, if self.preferences.developer_mode { 44.0 } else { row_height }),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.spacing_mut().item_spacing.y = 2.0;
                                         let response = ui.add_sized(
-                                            [text_width, title_height],
+                                            [text_width, 20.0],
                                             egui::Button::new("")
                                                 .left_text(title)
                                                 .selected(self.focused == Some(id))
                                                 .frame(false)
                                                 .truncate(),
-                                        );
+                                        )
+                                        .on_hover_text(title);
                                         ui.add(
                                             egui::Label::new(
                                                 RichText::new(&item.url).small().weak(),
@@ -1973,7 +1900,13 @@ impl ReviewApp {
                                             (verdict_label(zh, &item.verdict), color)
                                         }
                                     };
-                                    ui.colored_label(color, RichText::new(status).small().strong());
+                                    ui.add_sized(
+                                        [status_width, 20.0],
+                                        egui::Label::new(RichText::new(status).small().strong().color(color))
+                                            .halign(egui::Align::Max)
+                                            .truncate(),
+                                    )
+                                    .on_hover_text(status);
                                 });
                                 if self.preferences.developer_mode {
                                     ui.monospace(format!(
@@ -2667,6 +2600,63 @@ mod tests {
                 1.05 / (luminance + 0.05) >= 4.5,
                 "primary fill must preserve readable white button text"
             );
+        }
+    }
+
+    #[test]
+    fn virtual_bookmark_rows_match_the_scroll_stride() {
+        for (density, developer_mode, row_height) in [
+            (DisplayDensity::Compact, false, 36.0),
+            (DisplayDensity::Comfortable, false, 40.0),
+            (DisplayDensity::Compact, true, 68.0),
+            (DisplayDensity::Comfortable, true, 68.0),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            install_chinese_font(&ctx);
+            let mut app = ReviewApp::default();
+            app.preferences.density = density;
+            app.preferences.developer_mode = developer_mode;
+            app.preferences.language = LanguageChoice::English;
+            app.preferences.grouping = GroupChoice::None;
+            app.load_demo().unwrap();
+            app.rebuild_filter();
+            apply_style(&ctx, app.preferences);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 1800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.list(ui),
+            );
+            output.textures_delta.clear();
+            let mut tops: Vec<_> = output
+                .platform_output
+                .accesskit_update
+                .unwrap()
+                .nodes
+                .iter()
+                .filter(|(_, node)| {
+                    node.role() == egui::accesskit::Role::CheckBox
+                        && node
+                            .label()
+                            .is_some_and(|label| label.starts_with("Select bookmark:"))
+                })
+                .map(|(_, node)| node.bounds().unwrap().y0)
+                .collect();
+            tops.sort_by(f64::total_cmp);
+            assert_eq!(tops.len(), 20, "all synthetic rows must be laid out");
+            let expected =
+                f64::from(row_height + ctx.style_of(egui::Theme::Dark).spacing.item_spacing.y);
+            for pair in tops.windows(2) {
+                assert!(
+                    (pair[1] - pair[0] - expected).abs() < 1.0,
+                    "row stride must match virtual scrolling: {pair:?}, expected {expected}"
+                );
+            }
         }
     }
 

@@ -296,6 +296,18 @@ const fn bounded_health_concurrency(requested: usize) -> usize {
     }
 }
 
+fn validate_export_options(sync_flags: &SyncFlags, disabled_options: bool) -> Result<()> {
+    if disabled_options {
+        anyhow::bail!("Non-bookmark export options are disabled: history, cookies, passwords, extensions, and browser write-back are unavailable.");
+    }
+    sync_flags.validate()
+}
+
+fn read_update_input(path: &str) -> Result<Vec<browsers::Bookmark>> {
+    sync::import_bookmarks_from_html(path)
+        .with_context(|| format!("unable to read update input {path}; refusing to proceed"))
+}
+
 #[derive(Parser)]
 #[command(name = "bsync")]
 #[command(
@@ -952,13 +964,6 @@ async fn run_cli(cli: Cli) -> Result<()> {
             validate_concurrency,
             validate_limit,
         } => {
-            if history || cookies || passwords || extensions || clear_after || unsafe_write {
-                println!(
-                    "Non-bookmark export options are disabled: history, cookies, passwords, extensions, and browser write-back are unavailable."
-                );
-                return Ok(());
-            }
-
             // Create sync flags from arguments
             let sync_flags = SyncFlags {
                 bookmarks,
@@ -977,11 +982,17 @@ async fn run_cli(cli: Cli) -> Result<()> {
                 verbose,
             };
 
-            // Validate flags
-            if let Err(e) = sync_flags.validate() {
-                error!("{}", e);
-                return Ok(());
-            }
+            // Rejected options must fail the command so automation cannot mistake a skipped export for success.
+            validate_export_options(
+                &sync_flags,
+                history || cookies || passwords || extensions || clear_after || unsafe_write,
+            )?;
+
+            // Validate the update source before creating an engine or inspecting any live sources.
+            let update_input = update
+                .as_deref()
+                .map(|path| read_update_input(&expand_path(path)))
+                .transpose()?;
 
             info!("📤 Exporting browser data");
             info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -1171,20 +1182,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
             }
 
             // Handle incremental update mode
-            let count = if let Some(ref update_file) = update {
-                // Read existing bookmarks from target file
-                let expanded_update = expand_path(update_file);
-                let mut existing_bookmarks =
-                    match sync::import_bookmarks_from_html(&expanded_update) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            warn!(
-                                "⚠️  Could not read existing file ({}), creating new file",
-                                e
-                            );
-                            Vec::new()
-                        }
-                    };
+            let count = if let Some(mut existing_bookmarks) = update_input {
                 if exclude_onion {
                     let removed = sync::remove_onion_bookmarks(&mut existing_bookmarks);
                     if removed > 0 {
@@ -2756,10 +2754,12 @@ fn write_probe_plan_artifact(
 
 #[cfg(test)]
 mod cli_tests {
+    use super::SyncFlags;
     use super::{
         apply_content_site_gate, bounded_health_concurrency, build_probe_plan, content_site_key,
         is_disabled_non_core_command, parse_probe_scope, probe_targets_from_plan,
-        BookmarkTargetInput, CheckStatusGuard, Cli, Commands, ProbeScope,
+        read_update_input, validate_export_options, BookmarkTargetInput, CheckStatusGuard, Cli,
+        Commands, ProbeScope,
     };
     use clap::Parser;
     use std::collections::HashSet;
@@ -2804,6 +2804,29 @@ mod cli_tests {
         assert_eq!(bounded_health_concurrency(64), 64);
         assert_eq!(bounded_health_concurrency(128), 128);
         assert_eq!(bounded_health_concurrency(256), 128);
+    }
+
+    #[test]
+    fn rejected_export_options_return_an_error() {
+        let flags = SyncFlags::default();
+        let disabled = validate_export_options(&flags, true).unwrap_err();
+        assert!(disabled.to_string().contains("are disabled"));
+
+        let no_data = SyncFlags {
+            bookmarks: false,
+            ..SyncFlags::default()
+        };
+        let invalid = validate_export_options(&no_data, false).unwrap_err();
+        assert!(invalid.to_string().contains("No data types selected"));
+    }
+
+    #[test]
+    fn unreadable_incremental_update_input_is_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing.html");
+        let error = read_update_input(missing.to_str().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("refusing to proceed"));
+        assert!(error.to_string().contains("missing.html"));
     }
 
     #[test]
