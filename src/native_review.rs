@@ -1515,7 +1515,8 @@ impl ReviewApp {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+                    ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+                    ui.spacing_mut().interact_size.y = 28.0;
                     let search_response = ui
                         .add(
                             egui::TextEdit::singleline(&mut self.search)
@@ -1743,9 +1744,9 @@ impl ReviewApp {
         let row_height = if self.preferences.developer_mode {
             68.0
         } else if self.preferences.density == DisplayDensity::Compact {
-            44.0
+            36.0
         } else {
-            48.0
+            40.0
         };
         let mut action = None;
         let mut collapse_changed = false;
@@ -1776,19 +1777,16 @@ impl ReviewApp {
                             let mut all = count == group.ids.len();
                             let partial = count > 0 && !all;
                             egui::Frame::default()
-                                .fill(ui.visuals().window_fill)
-                                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                                .corner_radius(egui::CornerRadius::same(5))
-                                .inner_margin(egui::Margin::symmetric(8, 2))
+                                .fill(ui.visuals().faint_bg_color)
+                                .stroke(egui::Stroke::NONE)
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .inner_margin(egui::Margin::symmetric(8, 0))
                                 .show(ui, |ui| {
                                     ui.push_id(&group.key, |ui| {
                                         ui.horizontal(|ui| {
                                             let group_selection = ui
                                                 .add(
-                                                    egui::Checkbox::new(
-                                                        &mut all,
-                                                        tr(zh, "选择本组", "Select group"),
-                                                    )
+                                                    egui::Checkbox::new(&mut all, "")
                                                     .indeterminate(partial),
                                                 )
                                                 .accessible_name(format!(
@@ -1809,11 +1807,37 @@ impl ReviewApp {
                                                 if collapsed { "展开" } else { "收起" },
                                                 if collapsed { "Expand" } else { "Collapse" },
                                             );
-                                            if ui
-                                                .small_button(toggle)
-                                                .accessible_name(format!("{toggle}: {label}"))
-                                                .clicked()
-                                            {
+                                            let collapse_clicked = {
+                                                let (rect, response) = ui.allocate_exact_size(
+                                                    egui::vec2(24.0, 24.0),
+                                                    egui::Sense::click(),
+                                                );
+                                                let center = rect.center();
+                                                let points = if collapsed {
+                                                    [
+                                                        center + egui::vec2(-2.0, -5.0),
+                                                        center + egui::vec2(3.0, 0.0),
+                                                        center + egui::vec2(-2.0, 5.0),
+                                                    ]
+                                                } else {
+                                                    [
+                                                        center + egui::vec2(-5.0, -2.0),
+                                                        center + egui::vec2(0.0, 3.0),
+                                                        center + egui::vec2(5.0, -2.0),
+                                                    ]
+                                                };
+                                                let stroke = egui::Stroke::new(
+                                                    1.5,
+                                                    ui.visuals().weak_text_color(),
+                                                );
+                                                ui.painter().line_segment([points[0], points[1]], stroke);
+                                                ui.painter().line_segment([points[1], points[2]], stroke);
+                                                response
+                                                    .accessible_name(format!("{toggle}: {label}"))
+                                                    .on_hover_text(toggle)
+                                                    .clicked()
+                                            };
+                                            if collapse_clicked {
                                                 collapse_changed = true;
                                                 if collapsed {
                                                     self.collapsed_groups.remove(&group.key);
@@ -1830,13 +1854,11 @@ impl ReviewApp {
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
-                                                    ui.weak(format!(
-                                                        "{} {} · {} {}",
-                                                        group.ids.len(),
-                                                        tr(zh, "项", "items"),
-                                                        count,
-                                                        tr(zh, "项已选", "selected")
-                                                    ));
+                                                    ui.weak(if count == 0 {
+                                                        format!("{} {}", group.ids.len(), tr(zh, "项", "items"))
+                                                    } else {
+                                                        format!("{} {} · {} {}", group.ids.len(), tr(zh, "项", "items"), tr(zh, "已选", "selected"), count)
+                                                    });
                                                 },
                                             );
                                         });
@@ -1855,7 +1877,7 @@ impl ReviewApp {
                                 egui::Color32::TRANSPARENT
                             })
                             .corner_radius(egui::CornerRadius::same(5))
-                            .inner_margin(egui::Margin::symmetric(8, 2))
+                            .inner_margin(egui::Margin::symmetric(8, 0))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     let title = if item.title.is_empty() {
@@ -1880,12 +1902,12 @@ impl ReviewApp {
                                     }
                                     let text_width = (ui.available_width() - 100.0).max(100.0);
                                     let title_height = if self.preferences.density == DisplayDensity::Compact {
-                                        18.0
+                                        16.0
                                     } else {
-                                        20.0
+                                        18.0
                                     };
                                     let response = ui.vertical(|ui| {
-                                        ui.spacing_mut().item_spacing.y = 1.0;
+                                        ui.spacing_mut().item_spacing.y = 0.0;
                                         let response = ui.add_sized(
                                             [text_width, title_height],
                                             egui::Button::new("")
@@ -1930,20 +1952,28 @@ impl ReviewApp {
                                             }
                                         }
                                     });
-                                    match self.decisions.get(&id) {
-                                        Some(Decision::Remove) => {
-                                            ui.colored_label(
-                                                ui.visuals().error_fg_color,
-                                                RichText::new(tr(zh, "待移除", "Remove")).small(),
-                                            );
-                                        }
-                                        Some(Decision::Keep) => {
-                                            ui.label(RichText::new(tr(zh, "保留", "Keep")).small());
-                                        }
+                                    let (status, color) = match self.decisions.get(&id) {
+                                        Some(Decision::Remove) => (
+                                            tr(zh, "待移除", "Remove"),
+                                            ui.visuals().error_fg_color,
+                                        ),
+                                        Some(Decision::Keep) => (
+                                            tr(zh, "保留", "Keep"),
+                                            ui.visuals().hyperlink_color,
+                                        ),
                                         None => {
-                                            ui.weak(RichText::new(verdict_label(zh, &item.verdict)).small());
+                                            let color = match item.verdict.as_str() {
+                                                "confirmed_dead" => ui.visuals().error_fg_color,
+                                                "needs_review" | "temporary_failure" => {
+                                                    ui.visuals().warn_fg_color
+                                                }
+                                                "live" | "recovered" => ui.visuals().hyperlink_color,
+                                                _ => ui.visuals().weak_text_color(),
+                                            };
+                                            (verdict_label(zh, &item.verdict), color)
                                         }
-                                    }
+                                    };
+                                    ui.colored_label(color, RichText::new(status).small().strong());
                                 });
                                 if self.preferences.developer_mode {
                                     ui.monospace(format!(
