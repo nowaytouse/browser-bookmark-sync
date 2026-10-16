@@ -882,7 +882,7 @@ impl eframe::App for ReviewApp {
         if narrow && self.preferences.show_details && self.focused.is_some() {
             let mut open = true;
             egui::Window::new(tr(self.zh(), "详情与证据", "Details & evidence"))
-                .id(egui::Id::new("compact-inspector"))
+                .id(egui::Id::unique("compact-inspector"))
                 .open(&mut open)
                 .default_width(390.0)
                 .default_height(380.0)
@@ -1018,17 +1018,33 @@ impl ReviewApp {
             .count();
         let removed = self.removed();
         ui.columns(4, |columns| {
-            for (column, (label, value)) in columns.iter_mut().zip([
-                (tr(zh, "导入书签", "Imported"), doc.items.len()),
+            for (column, (label, value, help)) in columns.iter_mut().zip([
+                (tr(zh, "导入书签", "Imported"), doc.items.len(), None),
                 (
                     tr(zh, "精确重复", "Exact duplicates"),
                     self.duplicates.len(),
+                    None,
                 ),
-                (tr(zh, "死亡候选", "Dead candidates"), dead),
-                (tr(zh, "导出将保留", "To retain"), doc.items.len() - removed),
+                (
+                    tr(zh, "已确认失效", "Confirmed dead"),
+                    dead,
+                    Some(tr(
+                        zh,
+                        "这是检测确认失效的链接数；“待移除”数量单独统计。",
+                        "Links confirmed dead by check evidence; export removals are counted separately.",
+                    )),
+                ),
+                (
+                    tr(zh, "导出将保留", "To retain"),
+                    doc.items.len() - removed,
+                    None,
+                ),
             ]) {
                 column.label(RichText::new(value.to_string()).size(25.0).strong());
-                column.weak(label);
+                let label_response = column.weak(label);
+                if let Some(help) = help {
+                    label_response.on_hover_text(help);
+                }
             }
         });
         ui.add_space(8.0);
@@ -1435,7 +1451,7 @@ impl ReviewApp {
                             let partial = count > 0 && !all;
                             ui.push_id(&group.key, |ui| {
                                 ui.horizontal(|ui| {
-                                    if ui
+                                    let group_selection = ui
                                         .add(
                                             egui::Checkbox::new(
                                                 &mut all,
@@ -1443,8 +1459,11 @@ impl ReviewApp {
                                             )
                                             .indeterminate(partial),
                                         )
-                                        .changed()
-                                    {
+                                        .accessible_name(format!(
+                                            "{}: {label}",
+                                            tr(zh, "选择分组", "Select group")
+                                        ));
+                                    if group_selection.changed() {
                                         native_groups::select_group(
                                             &mut self.selected,
                                             &group.ids,
@@ -1488,10 +1507,19 @@ impl ReviewApp {
                     let item = &doc.items[id];
                     ui.push_id(id, |ui| {
                         ui.horizontal(|ui| {
+                            let title = if item.title.is_empty() {
+                                tr(zh, "无标题", "Untitled")
+                            } else {
+                                &item.title
+                            };
                             let mut selected = self.selected.contains(&id);
                             let selection_response = ui
                                 .checkbox(&mut selected, "")
-                                .on_hover_text(tr(zh, "选择此书签", "Select this bookmark"));
+                                .on_hover_text(tr(zh, "选择此书签", "Select this bookmark"))
+                                .accessible_name(format!(
+                                    "{}: {title}",
+                                    tr(zh, "选择书签", "Select bookmark")
+                                ));
                             if selection_response.changed() {
                                 if selected {
                                     self.selected.insert(id);
@@ -1499,11 +1527,6 @@ impl ReviewApp {
                                     self.selected.remove(&id);
                                 }
                             }
-                            let title = if item.title.is_empty() {
-                                tr(zh, "无标题", "Untitled")
-                            } else {
-                                &item.title
-                            };
                             let response = ui.add_sized(
                                 [(ui.available_width() - 110.0).max(80.0), 26.0],
                                 egui::Button::new("")
@@ -1515,7 +1538,6 @@ impl ReviewApp {
                             if response.clicked() {
                                 self.focused = Some(id);
                             }
-                            selection_response.labelled_by(response.id);
                             response.context_menu(|ui| {
                                 for (label, decision) in [
                                     (tr(zh, "保留", "Keep"), Some(Decision::Keep)),
@@ -1621,7 +1643,7 @@ impl ReviewApp {
         let mut open = true;
         let mut save = false;
         let mut cancel = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        egui::Window::new(tr(zh, "设置", "Settings")).id(egui::Id::new("settings-window")).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).open(&mut open).collapsible(false).resizable(false).default_width(510.0).show(ctx, |ui| {
+        egui::Window::new(tr(zh, "设置", "Settings")).id(egui::Id::unique("settings-window")).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).open(&mut open).collapsible(false).resizable(false).default_width(510.0).show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut self.settings_tab, 0, tr(zh, "外观", "Appearance"));
                 ui.selectable_value(&mut self.settings_tab, 1, tr(zh, "导入与证据", "Import"));
@@ -1826,7 +1848,7 @@ impl ReviewApp {
     fn modal(&mut self, ctx: &egui::Context) {
         let zh = self.zh();
         if self.pending_input.is_some() || self.pending_browser_import {
-            egui::Modal::new(egui::Id::new("replace-confirm")).show(ctx, |ui| {
+            egui::Modal::new(egui::Id::unique("replace-confirm")).show(ctx, |ui| {
                 ui.heading(tr(
                     zh,
                     "当前清理尚未导出",
@@ -1856,7 +1878,7 @@ impl ReviewApp {
                 });
             });
         } else if self.close_after_confirm {
-            egui::Modal::new(egui::Id::new("close-confirm")).show(ctx, |ui| {
+            egui::Modal::new(egui::Id::unique("close-confirm")).show(ctx, |ui| {
                 ui.heading(tr(zh, "退出前导出更改？", "Changes have not been exported"));
                 ui.label(tr(
                     zh,
@@ -1879,7 +1901,7 @@ impl ReviewApp {
         } else if let Some(path) = self.confirm_export.clone() {
             let removed = self.removed();
             let total = self.doc.as_ref().map_or(0, |doc| doc.items.len());
-            egui::Modal::new(egui::Id::new("export-confirm")).show(ctx, |ui| {
+            egui::Modal::new(egui::Id::unique("export-confirm")).show(ctx, |ui| {
                 ui.heading(tr(zh, "导出清理后的 HTML", "Export cleaned HTML"));
                 ui.label(format!(
                     "{} {}  ·  {} {removed}",
