@@ -885,14 +885,14 @@ impl eframe::App for ReviewApp {
             .frame(
                 egui::Frame::default()
                     .fill(ui.visuals().panel_fill)
-                    .inner_margin(18),
+                    .inner_margin(12),
             )
             .show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status")
             .frame(
                 egui::Frame::default()
                     .fill(ui.visuals().panel_fill)
-                    .inner_margin(12),
+                    .inner_margin(8),
             )
             .show(ui, |ui| {
                 if self.message_is_error {
@@ -926,7 +926,7 @@ impl eframe::App for ReviewApp {
         let narrow = ui.available_width() < 880.0;
         if self.doc.is_some() {
             egui::Panel::top("workflow")
-                .frame(egui::Frame::default().inner_margin(18))
+                .frame(egui::Frame::default().inner_margin(12))
                 .show(ui, |ui| {
                     centered_content(ui, 1040.0 / self.preferences.text_scale, false, |ui| {
                         self.summary(ui)
@@ -1215,63 +1215,80 @@ impl ReviewApp {
         let removed = self.removed();
         let retained = doc.items.len().saturating_sub(removed);
         egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::symmetric(16, 12))
+            .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.columns(4, |columns| {
-                    for (column, (label, value, detail, primary)) in columns.iter_mut().zip([
-                        (tr(zh, "导出将保留", "To retain"), retained, tr(zh, "条书签", "bookmarks"), true),
-                        (tr(zh, "已导入", "Imported"), doc.items.len(), tr(zh, "条书签", "bookmarks"), false),
-                        (tr(zh, "精确重复", "Exact duplicates"), self.duplicates.len(), tr(zh, "项", "items"), false),
-                        (tr(zh, "确认失效", "Confirmed dead"), dead, tr(zh, "项", "items"), false),
+                let scanning = self.scan.is_some();
+                let column_count = if scanning { 4 } else { 5 };
+                ui.columns(column_count, |columns| {
+                    for (column, (label, value, detail, primary)) in
+                        columns.iter_mut().take(4).zip([
+                        (
+                            tr(zh, "导出将保留", "To retain"),
+                            retained,
+                            tr(zh, "条书签", "bookmarks"),
+                            true,
+                        ),
+                        (
+                            tr(zh, "已导入", "Imported"),
+                            doc.items.len(),
+                            tr(zh, "条书签", "bookmarks"),
+                            false,
+                        ),
+                        (
+                            tr(zh, "精确重复", "Exact duplicates"),
+                            self.duplicates.len(),
+                            tr(zh, "项", "items"),
+                            false,
+                        ),
+                        (
+                            tr(zh, "确认失效", "Confirmed dead"),
+                            dead,
+                            tr(zh, "项", "items"),
+                            false,
+                        ),
                     ]) {
-                        column.vertical(|ui| {
+                        column.horizontal(|ui| {
+                            ui.label(RichText::new(value.to_string()).size(22.0).strong().color(
+                                if primary {
+                                    ui.visuals().hyperlink_color
+                                } else {
+                                    ui.visuals().text_color()
+                                },
+                            ))
+                            .on_hover_text(format!("{label}: {value} {detail}"));
                             ui.small(label);
-                            let response = ui.label(
-                                RichText::new(value.to_string())
-                                    .size(28.0)
-                                    .strong()
-                                    .color(if primary {
-                                        ui.visuals().hyperlink_color
-                                    } else {
-                                        ui.visuals().text_color()
-                                    }),
-                            );
-                            if label == tr(zh, "确认失效", "Confirmed dead") {
-                                response.on_hover_text(tr(
-                                    zh,
-                                    "这是检测确认失效的链接数；它与导出移除数分开统计。",
-                                    "Links confirmed dead by check evidence; separate from export removals.",
-                                ));
-                            }
-                            ui.small(detail);
                         });
                     }
+                    if !scanning {
+                        columns[4]
+                            .vertical(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        !self.busy,
+                                        egui::Button::new(
+                                            RichText::new(tr(zh, "开始检测", "Start check"))
+                                                .strong()
+                                                .color(egui::Color32::WHITE),
+                                        )
+                                        .fill(action_fill(self.preferences.accent))
+                                        .stroke(egui::Stroke::NONE),
+                                    )
+                                    .on_hover_text(tr(
+                                        zh,
+                                        "检测在后台运行；未检查的链接仍会保留。",
+                                        "Checks run in the background; untested links stay in the export.",
+                                    ))
+                                    .clicked()
+                                {
+                                    self.start_scan();
+                                }
+                            });
+                    }
                 });
-                ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    if self.scan.is_none() {
-                        if ui
-                            .add_enabled(
-                                !self.busy,
-                                egui::Button::new(
-                                    RichText::new(tr(zh, "开始检测", "Start check"))
-                                        .strong()
-                                        .color(egui::Color32::WHITE),
-                                )
-                                .fill(action_fill(self.preferences.accent))
-                                .stroke(egui::Stroke::NONE),
-                            )
-                            .clicked()
-                        {
-                            self.start_scan();
-                        }
-                        ui.weak(tr(
-                            zh,
-                            "检测在后台运行；未检查的链接仍会保留。",
-                            "Checks run in the background; untested links stay in the export.",
-                        ));
-                    } else {
+                if scanning {
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
                         if ui
                             .add_enabled(
                                 !self.busy,
@@ -1298,8 +1315,8 @@ impl ReviewApp {
                                 let _ = open::that(&handle.directory);
                             }
                         }
-                    }
-                });
+                    });
+                }
             });
         if self.scan.is_some() {
             let status = &self.scan_status;
@@ -1308,12 +1325,16 @@ impl ReviewApp {
                 "content" => tr(zh, "完整网址", "Full URLs"),
                 _ => tr(zh, "准备中", "Preparing"),
             };
-            let state = match status.state.as_str() {
-                "running" => tr(zh, "运行中", "Running"),
-                "completed" => tr(zh, "已结束，待验收", "Finished; coverage pending"),
-                "aborted" => tr(zh, "已中断", "Interrupted"),
-                "failed" => tr(zh, "失败", "Failed"),
-                _ => tr(zh, "准备中", "Preparing"),
+            let state = if self.scan_verified {
+                tr(zh, "网络检测已验收", "Network check verified")
+            } else {
+                match status.state.as_str() {
+                    "running" => tr(zh, "运行中", "Running"),
+                    "completed" => tr(zh, "已结束，待验收", "Finished; coverage pending"),
+                    "aborted" => tr(zh, "已中断", "Interrupted"),
+                    "failed" => tr(zh, "失败", "Failed"),
+                    _ => tr(zh, "准备中", "Preparing"),
+                }
             };
             ui.label(format!(
                 "{} · {phase} · {state}",
@@ -1334,53 +1355,45 @@ impl ReviewApp {
                     .text(format!("{done} / {total}")),
                 );
             }
-            if self.scan_verified {
-                ui.weak(tr(zh, "网络检测覆盖已验收。浏览器来源覆盖仍以来源报告为准。", "Network coverage verified. Browser collection coverage is separate; see the source report."));
-            } else {
-                ui.small(tr(zh, "点击刷新或载入结果更新；进程退出不等于全量验收完成。", "Refresh or load results to update. Process exit alone does not prove full coverage."));
-            }
-            if let Some(handle) = &self.scan {
-                ui.small(handle.directory.display().to_string());
-            }
-        }
-        if untested > 0 {
-            ui.label(format!(
-                "{} {untested}  ·  {}",
-                tr(zh, "尚未检查", "Untested"),
-                tr(
-                    zh,
-                    "可载入已有检测结果；未检查项会保留。",
-                    "Load existing check results; untested links are retained."
-                )
-            ));
-        } else if self.active_db {
-            ui.weak(tr(
-                zh,
-                "已匹配检测证据，详情中可查看时间及复核后端。",
-                "Check evidence is attached. Inspect its age and verification backends in Details.",
-            ));
         }
         let limitations = source_limitation_count(&self.sources);
-        if limitations > 0 {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!(
-                    "{} {limitations} {}",
-                    tr(zh, "来源覆盖不完整 ·", "Source coverage is incomplete ·"),
-                    tr(
-                        zh,
-                        "个来源存在限制或问题",
-                        "sources have limitations or issues"
-                    )
-                ),
-            );
-        }
+        ui.horizontal_wrapped(|ui| {
+            if untested > 0 {
+                ui.small(format!(
+                    "{} {untested} · {}",
+                    tr(zh, "尚未检查", "Untested"),
+                    tr(zh, "未检查项会保留", "unchecked links stay in the export"),
+                ));
+            } else if self.active_db {
+                ui.weak(tr(
+                    zh,
+                    "已匹配检测证据，可在详情中查看时间及复核后端。",
+                    "Check evidence is attached; inspect its age and backends in Details.",
+                ));
+            }
+            if limitations > 0 {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!(
+                        "{} {limitations} {}",
+                        tr(zh, "来源覆盖不完整 ·", "Incomplete source coverage ·"),
+                        tr(
+                            zh,
+                            "个来源存在限制或问题",
+                            "sources have limitations or issues"
+                        ),
+                    ),
+                );
+            }
+            if self.sources.is_empty() {
+                ui.small(tr(
+                    zh,
+                    "未附带浏览器来源报告",
+                    "No browser source report attached",
+                ));
+            }
+        });
         if self.sources.is_empty() {
-            ui.small(tr(
-                zh,
-                "从 HTML 导入，未附带浏览器来源报告。",
-                "Imported from HTML; no browser source report was attached.",
-            ));
             return;
         }
         egui::CollapsingHeader::new(format!("{}  ·  {}", tr(zh, "已导入来源与覆盖范围", "Imported sources & coverage"), self.sources.len())).open(self.source_details_open.take()).show(ui, |ui| {
@@ -1429,7 +1442,7 @@ impl ReviewApp {
                                     "搜索标题、网址、文件夹",
                                     "Search title, URL or folder",
                                 ))
-                                .desired_width((ui.available_width() * 0.32).clamp(240.0, 360.0)),
+                                .desired_width((ui.available_width() * 0.26).clamp(180.0, 300.0)),
                         )
                         .accessible_name(tr(zh, "搜索书签", "Search bookmarks"));
                     changed |= search_response.changed();
@@ -1483,94 +1496,106 @@ impl ReviewApp {
                                     .changed();
                             }
                         });
-                    if ui
-                        .add_enabled(
-                            !self.history.is_empty(),
-                            egui::Button::new(tr(zh, "撤销", "Undo")),
-                        )
-                        .clicked()
-                    {
+                    if !self.history.is_empty() && ui.button(tr(zh, "撤销", "Undo")).clicked() {
                         self.undo();
                     }
+                    ui.menu_button(
+                        tr(zh, "更多选择…", "More selection options…"),
+                        |ui| {
+                            if ui
+                                .button(tr(zh, "全选筛选结果", "Select all filtered"))
+                                .clicked()
+                            {
+                                self.selected = self.filtered.iter().copied().collect();
+                                ui.close();
+                            }
+                            if ui
+                                .button(tr(
+                                    zh,
+                                    "只选尚未检查与待复核项",
+                                    "Select untested and uncertain",
+                                ))
+                                .clicked()
+                            {
+                                self.selected = self
+                                    .filtered
+                                    .iter()
+                                    .copied()
+                                    .filter(|&id| {
+                                        matches!(
+                                            doc.items[id].verdict.as_str(),
+                                            "untested"
+                                                | "needs_review"
+                                                | "temporary_failure"
+                                                | "protected"
+                                                | "probable_dead"
+                                        )
+                                    })
+                                    .collect();
+                                ui.close();
+                            }
+                            if ui
+                                .button(tr(zh, "反选筛选结果", "Invert filtered selection"))
+                                .clicked()
+                            {
+                                for &id in &self.filtered {
+                                    if !self.selected.remove(&id) {
+                                        self.selected.insert(id);
+                                    }
+                                }
+                                ui.close();
+                            }
+                            if !self.selected.is_empty()
+                                && ui.button(tr(zh, "清空选择", "Clear selection")).clicked()
+                            {
+                                self.selected.clear();
+                                ui.close();
+                            }
+                            if self.grouping != GroupChoice::None {
+                                ui.separator();
+                                if ui
+                                    .button(tr(zh, "展开全部分组", "Expand all groups"))
+                                    .clicked()
+                                {
+                                    self.collapsed_groups.clear();
+                                    self.group_rows = native_groups::rows(
+                                        &self.groups,
+                                        &self.collapsed_groups,
+                                        self.grouping,
+                                    );
+                                    ui.close();
+                                }
+                                if ui
+                                    .button(tr(zh, "折叠全部分组", "Collapse all groups"))
+                                    .clicked()
+                                {
+                                    self.collapsed_groups =
+                                        self.groups.iter().map(|g| g.key.clone()).collect();
+                                    self.group_rows = native_groups::rows(
+                                        &self.groups,
+                                        &self.collapsed_groups,
+                                        self.grouping,
+                                    );
+                                    ui.close();
+                                }
+                            }
+                        },
+                    )
+                    .response
+                    .on_hover_text(tr(
+                        zh,
+                        "批量选择和分组展开操作",
+                        "Bulk selection and group expansion actions",
+                    ));
+                    ui.weak(format!("{}/{}", self.filtered.len(), doc.items.len()));
                 });
             });
         if changed {
             self.filter_dirty = true;
             self.rebuild_filter();
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.menu_button(
-                tr(zh, "更多选择…", "More selection options…"),
-                |ui| {
-                    if ui
-                        .button(tr(zh, "反选筛选结果", "Invert filtered selection"))
-                        .clicked()
-                    {
-                        for &id in &self.filtered {
-                            if !self.selected.remove(&id) {
-                                self.selected.insert(id);
-                            }
-                        }
-                        ui.close();
-                    }
-                    if ui
-                        .button(tr(
-                            zh,
-                            "只选尚未检查与待复核项",
-                            "Select untested and uncertain",
-                        ))
-                        .clicked()
-                    {
-                        self.selected = self
-                            .filtered
-                            .iter()
-                            .copied()
-                            .filter(|&id| {
-                                matches!(
-                                    doc.items[id].verdict.as_str(),
-                                    "untested"
-                                        | "needs_review"
-                                        | "temporary_failure"
-                                        | "protected"
-                                        | "probable_dead"
-                                )
-                            })
-                            .collect();
-                        ui.close();
-                    }
-                    if ui.button(tr(zh, "清空选择", "Clear selection")).clicked() {
-                        self.selected.clear();
-                        ui.close();
-                    }
-                },
-            );
-            if self.grouping != GroupChoice::None {
-                if ui
-                    .small_button(tr(zh, "展开全部", "Expand groups"))
-                    .clicked()
-                {
-                    self.collapsed_groups.clear();
-                    self.group_rows =
-                        native_groups::rows(&self.groups, &self.collapsed_groups, self.grouping);
-                }
-                if ui
-                    .small_button(tr(zh, "折叠全部", "Collapse groups"))
-                    .clicked()
-                {
-                    self.collapsed_groups = self.groups.iter().map(|g| g.key.clone()).collect();
-                    self.group_rows =
-                        native_groups::rows(&self.groups, &self.collapsed_groups, self.grouping);
-                }
-            }
-            if ui
-                .small_button(tr(zh, "全选筛选结果", "Select all filtered"))
-                .clicked()
-            {
-                self.selected = self.filtered.iter().copied().collect();
-            }
-            ui.weak(format!("{} / {}", self.filtered.len(), doc.items.len()));
-            if !self.selected.is_empty() {
-                ui.separator();
+        if !self.selected.is_empty() {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(format!(
                     "{} {}",
                     self.selected.len(),
@@ -1593,7 +1618,15 @@ impl ReviewApp {
                         Some(Decision::Keep),
                     );
                 }
-                if ui.button(tr(zh, "移除", "Remove")).clicked() {
+                if ui
+                    .button(tr(zh, "移除", "Remove"))
+                    .on_hover_text(tr(
+                        zh,
+                        "只标记为不导出，可撤销；原 HTML 不会改变。",
+                        "Marks items out of the export and can be undone; the original HTML is unchanged.",
+                    ))
+                    .clicked()
+                {
                     self.decide(
                         self.selected.iter().copied().collect(),
                         Some(Decision::Remove),
@@ -1605,8 +1638,8 @@ impl ReviewApp {
                 if ui.small_button(tr(zh, "取消选择", "Deselect")).clicked() {
                     self.selected.clear();
                 }
-            }
-        });
+            });
+        }
         ui.separator();
         if self.filtered.is_empty() {
             ui.label(tr(
@@ -1625,13 +1658,12 @@ impl ReviewApp {
             }
             return;
         }
-        ui.small(tr(zh,"勾选只代表选中；“移除”会标记为不导出，随时可撤销。原文件不会改变。","Checkboxes select items. Remove excludes them from export and can be undone. Your original file stays unchanged."));
         let row_height = if self.preferences.developer_mode {
-            88.0
+            64.0
         } else if self.preferences.density == DisplayDensity::Compact {
-            60.0
+            42.0
         } else {
-            66.0
+            48.0
         };
         let mut action = None;
         let mut collapse_changed = false;
@@ -1740,7 +1772,7 @@ impl ReviewApp {
                                 egui::Color32::TRANSPARENT
                             })
                             .corner_radius(egui::CornerRadius::same(5))
-                            .inner_margin(egui::Margin::symmetric(8, 4))
+                            .inner_margin(egui::Margin::symmetric(8, 2))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     let title = if item.title.is_empty() {
@@ -1763,8 +1795,11 @@ impl ReviewApp {
                                             self.selected.remove(&id);
                                         }
                                     }
+                                    let text_width = (ui.available_width() - 110.0).max(80.0);
+                                    let title_width = text_width * 0.42;
+                                    let url_width = text_width - title_width;
                                     let response = ui.add_sized(
-                                        [(ui.available_width() - 110.0).max(80.0), 26.0],
+                                        [title_width, 26.0],
                                         egui::Button::new("")
                                             .left_text(title)
                                             .selected(self.focused == Some(id))
@@ -1780,12 +1815,29 @@ impl ReviewApp {
                                             (tr(zh, "移除", "Remove"), Some(Decision::Remove)),
                                             (tr(zh, "重置", "Reset"), None),
                                         ] {
-                                            if ui.button(label).clicked() {
+                                            let button = ui.button(label);
+                                            let button =
+                                                if matches!(decision, Some(Decision::Remove)) {
+                                                    button.on_hover_text(tr(
+                                                        zh,
+                                                        "只标记为不导出，可撤销；原 HTML 不会改变。",
+                                                        "Marks the item out of the export and can be undone; the original HTML is unchanged.",
+                                                    ))
+                                                } else {
+                                                    button
+                                                };
+                                            if button.clicked() {
                                                 action = Some((id, decision));
                                                 ui.close();
                                             }
                                         }
                                     });
+                                    ui.add_sized(
+                                        [url_width, 26.0],
+                                        egui::Label::new(RichText::new(&item.url).small().weak())
+                                            .truncate(),
+                                    )
+                                    .on_hover_text(&item.url);
                                     match self.decisions.get(&id) {
                                         Some(Decision::Remove) => {
                                             ui.colored_label(
@@ -1801,11 +1853,6 @@ impl ReviewApp {
                                         }
                                     }
                                 });
-                                ui.add(
-                                    egui::Label::new(RichText::new(&item.url).small().weak())
-                                        .truncate(),
-                                )
-                                .on_hover_text(&item.url);
                                 if self.preferences.developer_mode {
                                     ui.monospace(format!(
                                         "[id={id}; verdict={}; decision={:?}]",
