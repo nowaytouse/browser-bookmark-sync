@@ -151,8 +151,8 @@ impl HealthCommands {
             Self::Summary { db, watch, total } => {
                 if watch {
                     loop {
-                        let _ = render_live_dashboard(&db, total, true);
-                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        render_live_dashboard(&db, total, true)?;
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
                 }
                 render_live_dashboard(&db, total, false)?;
@@ -162,8 +162,8 @@ impl HealthCommands {
                 total,
                 interval,
             } => loop {
-                let _ = render_live_dashboard(&db, total, true);
-                std::thread::sleep(std::time::Duration::from_secs(interval));
+                render_live_dashboard(&db, total, true)?;
+                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             },
             Self::Retry {
                 state,
@@ -173,8 +173,7 @@ impl HealthCommands {
                 interval_secs,
             } => {
                 if !db.exists() {
-                    println!("Database file {} does not exist.", db.display());
-                    return Ok(());
+                    return Err(format!("Database file {} does not exist.", db.display()));
                 }
                 let conn =
                     HealthDatabase::open(&db).map_err(|e| format!("Failed to open DB: {e}"))?;
@@ -185,17 +184,19 @@ impl HealthCommands {
                     println!("No bookmarks found matching verdict state: {state}");
                     return Ok(());
                 }
-                println!(
-                    "🔄 Retrying {} bookmarks matching state '{}'...",
-                    target_rows.len(),
-                    state
-                );
                 let targets: Vec<crate::health::ProbeTarget> = target_rows
                     .into_iter()
-                    .filter_map(|(b_id, url)| {
-                        crate::health::ProbeTarget::from_url(&b_id, &url).ok()
+                    .map(|(b_id, url)| {
+                        crate::health::ProbeTarget::from_url(&b_id, &url).map_err(|error| {
+                            format!("Invalid retry target bookmark_id={b_id} url={url}: {error}")
+                        })
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
+                println!(
+                    "🔄 Retrying {} bookmarks matching state '{}'...",
+                    targets.len(),
+                    state
+                );
 
                 let sec_list: Vec<String> = secondary
                     .split(',')
@@ -234,8 +235,7 @@ impl HealthCommands {
                 println!("🛡️  Quarantine Review Candidates (Multi-Run Confirmed Dead Only)");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 if !db.exists() {
-                    println!("Database file {} does not exist.", db.display());
-                    return Ok(());
+                    return Err(format!("Database file {} does not exist.", db.display()));
                 }
                 let conn =
                     HealthDatabase::open(&db).map_err(|e| format!("Failed to open DB: {e}"))?;
@@ -284,8 +284,7 @@ impl HealthCommands {
             }
             Self::RebuildSummary { db } => {
                 if !db.exists() {
-                    println!("Database file {} does not exist.", db.display());
-                    return Ok(());
+                    return Err(format!("Database file {} does not exist.", db.display()));
                 }
                 let conn =
                     HealthDatabase::open(&db).map_err(|e| format!("Failed to open DB: {e}"))?;

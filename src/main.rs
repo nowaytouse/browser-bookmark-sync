@@ -1570,10 +1570,9 @@ async fn run_cli(cli: Cli) -> Result<()> {
             let from_file = file.is_some();
 
             if delete {
-                println!(
+                anyhow::bail!(
                     "--delete is disabled. Use `bsync health quarantine` for review, then the approved `bsync health apply-quarantine` workflow."
                 );
-                return Ok(());
             }
             let mut status_guard =
                 CheckStatusGuard::start(export_dir.as_deref(), scope, file.as_deref());

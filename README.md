@@ -60,11 +60,17 @@ Checks append process, status, scan lifecycle, and progress events to `browser-s
 
 Status schema 2 also records the current `phase` (`preparing`, `site`, or `content`) and phase-local `completed_targets` / `total_targets`. Unknown totals are `null`, not zero. Completed targets include reused results and are not a count of new network requests. Progress writes are throttled to once every two seconds, except the first target, phase boundaries, and terminal updates. Counts never regress when concurrent callbacks arrive out of order, and late callbacks cannot overwrite an aborted/completed status. A quiet timestamp alone does not prove a stalled process: requests, retries, and cooldowns may still be in flight. `network_consistency` remains `unverified`; `deletion_stage_status` is `not_run`. Neither 100% phase progress nor a completed process proves source coverage or grants permission to delete.
 
-`check --delete` is intentionally disabled. Use the quarantine review, then the separately approved `bsync health apply-quarantine` workflow. No command in the supported surface writes browser profiles.
+`check --delete` is intentionally disabled and returns a nonzero exit status. Use the quarantine review, then the separately approved `bsync health apply-quarantine` workflow. No command in the supported surface writes browser profiles.
 
 Useful supporting commands are `collect`, `dedupe`, `list`, `validate`, and `merge-results`. `--all-profiles` is the default for collection/export; `--include` accepts additional bookmark HTML/JSON sources.
 
 Rejected `export` options return a nonzero exit status. Incremental `export --update <existing.html>` reads the existing HTML before inspecting sources and stops if that file cannot be read; it never substitutes an empty collection for an unreadable update input. These failures leave any existing output file untouched.
+
+HTML imports reject ordinary text and input whose bookmark entries cannot be parsed completely without changing URLs/titles or losing entries. An explicitly empty bookmark list remains valid. Some nonstandard HTML layouts/entities are intentionally rejected with a re-export instruction rather than accepted as a partial import. Dates outside the representable millisecond range are left unknown, not replaced with the current time.
+
+`merge-results` requires at least one result partition (`valid.html`, `invalid.html`, `uncertain.html`, or `skipped.html`). Every present partition must be readable and parse successfully before an output is written; an output path that resolves to a partition input is rejected. Absent partitions remain optional.
+
+Health retry, quarantine selection, and summary rebuild fail when the requested database is missing. Retry validates all selected URLs before starting probes, instead of silently dropping invalid rows. Dashboard watch/monitor commands surface database errors and return failure; a monitor waiting for a not-yet-created database still waits, and its refresh delay can be interrupted with Ctrl+C/SIGTERM.
 
 ## Template organization
 

@@ -74,3 +74,23 @@ fn missing_update_input_fails_before_export_and_preserves_output(
     assert!(!log.contains("Exporting browser data"));
     Ok(())
 }
+
+#[test]
+fn malformed_update_input_fails_before_export_and_preserves_output(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let output_path = sentinel_output(temp.path())?;
+    let update = temp.path().join("not-bookmarks.html");
+    fs::write(&update, "not a bookmark export")?;
+    let (output, log_path) = run_export(
+        temp.path(),
+        &output_path,
+        &[OsString::from("--update"), update.into_os_string()],
+    )?;
+
+    assert!(!output.status.success());
+    assert!(diagnostic(&output).contains("not a bookmark HTML export"));
+    assert_eq!(fs::read(&output_path)?, b"preserve this output\n");
+    assert!(!fs::read_to_string(log_path)?.contains("Exporting browser data"));
+    Ok(())
+}

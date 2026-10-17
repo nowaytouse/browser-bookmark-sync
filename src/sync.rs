@@ -6669,10 +6669,37 @@ pub fn import_bookmarks_from_source(source_path: &str) -> Result<Vec<Bookmark>> 
 /// Import bookmarks from HTML file
 pub fn import_bookmarks_from_html(html_path: &str) -> Result<Vec<Bookmark>> {
     let content = std::fs::read_to_string(html_path)?;
-    parse_html_bookmarks(&content)
+    parse_html_bookmarks(&content).with_context(|| format!("parse bookmark HTML {html_path}"))
 }
 
 fn parse_html_bookmarks(html: &str) -> Result<Vec<Bookmark>> {
+    use scraper::{Html, Selector};
+
+    let document = Html::parse_document(html);
+    let links = Selector::parse("a[href]").map_err(|e| anyhow::anyhow!("HTML selector: {e:?}"))?;
+    let lists = Selector::parse("dl").map_err(|e| anyhow::anyhow!("HTML selector: {e:?}"))?;
+    let entries =
+        Selector::parse("h3, a[href]").map_err(|e| anyhow::anyhow!("HTML selector: {e:?}"))?;
+    let expected_urls: Vec<String> = document
+        .select(&links)
+        .filter_map(|link| link.value().attr("href").map(str::to_owned))
+        .collect();
+    let expected_titles: Vec<String> = document
+        .select(&entries)
+        .map(|entry| {
+            let text: String = entry.text().collect();
+            if entry.value().name() == "h3" {
+                text.trim().to_owned()
+            } else {
+                text
+            }
+        })
+        .collect();
+    anyhow::ensure!(
+        !expected_urls.is_empty() || document.select(&lists).next().is_some(),
+        "not a bookmark HTML export: no bookmark links or folder list found"
+    );
+
     // 使用栈来追踪文件夹层级，保留完整的文件夹结构
     let mut root_bookmarks: Vec<Bookmark> = Vec::new();
     let mut folder_stack: Vec<Bookmark> = Vec::new();
@@ -6755,6 +6782,18 @@ fn parse_html_bookmarks(html: &str) -> Result<Vec<Bookmark>> {
         }
     }
 
+    let mut pending: Vec<_> = root_bookmarks.iter().rev().collect();
+    let mut parsed_titles = Vec::new();
+    while let Some(bookmark) = pending.pop() {
+        parsed_titles.push(bookmark.title.as_str());
+        pending.extend(bookmark.children.iter().rev());
+    }
+    // The legacy line parser must not silently discard or alter entries accepted by HTML parsing.
+    anyhow::ensure!(
+        crate::url_checker::collect_urls_from_bookmarks(&root_bookmarks) == expected_urls
+            && parsed_titles == expected_titles,
+        "bookmark HTML could not be parsed completely without data loss; re-export it in Netscape bookmark format before continuing"
+    );
     info!(
         "📖 HTML解析完成: {} 书签, {} 文件夹 (保留结构)",
         bookmark_count, folder_count
@@ -6765,7 +6804,7 @@ fn parse_html_bookmarks(html: &str) -> Result<Vec<Bookmark>> {
 /// 从H3标签提取文件夹标题
 fn extract_folder_title(line: &str) -> Option<String> {
     // 查找 <H3...> 和 </H3> 之间的内容
-    let line_lower = line.to_lowercase();
+    let line_lower = line.to_ascii_lowercase();
     let h3_start = line_lower.find("<h3")?;
     let content_start = line[h3_start..].find('>')? + h3_start + 1;
     let h3_end = line_lower.find("</h3>")?;
@@ -6780,13 +6819,13 @@ fn extract_folder_title(line: &str) -> Option<String> {
 
 /// `从标签提取ADD_DATE属性`
 fn extract_add_date(line: &str) -> Option<i64> {
-    let line_lower = line.to_lowercase();
+    let line_lower = line.to_ascii_lowercase();
     if let Some(pos) = line_lower.find("add_date=\"") {
         let start = pos + 10;
         if let Some(end_offset) = line[start..].find('"') {
             if let Ok(timestamp) = line[start..start + end_offset].parse::<i64>() {
                 // HTML格式是秒，转换为毫秒
-                return Some(timestamp * 1000);
+                return timestamp.checked_mul(1000);
             }
         }
     }
@@ -6798,10 +6837,16 @@ pub fn extract_tag_content(line: &str, tag: &str) -> Option<String> {
     let start_tag = format!("<{tag}");
     let end_tag = format!("</{tag}>");
 
-    if let Some(start_idx) = line.to_lowercase().find(&start_tag.to_lowercase()) {
+    if let Some(start_idx) = line
+        .to_ascii_lowercase()
+        .find(&start_tag.to_ascii_lowercase())
+    {
         if let Some(content_start) = line[start_idx..].find('>') {
             let content_start = start_idx + content_start + 1;
-            if let Some(end_idx) = line.to_lowercase().find(&end_tag.to_lowercase()) {
+            if let Some(end_idx) = line
+                .to_ascii_lowercase()
+                .find(&end_tag.to_ascii_lowercase())
+            {
                 let content = &line[content_start..end_idx];
                 return Some(html_unescape(content));
             }
@@ -6812,14 +6857,14 @@ pub fn extract_tag_content(line: &str, tag: &str) -> Option<String> {
 
 fn extract_bookmark_info(line: &str) -> Option<(String, String)> {
     // Extract URL from HREF="..."
-    let href_start = line.to_lowercase().find("href=\"")?;
+    let href_start = line.to_ascii_lowercase().find("href=\"")?;
     let url_start = href_start + 6;
     let url_end = line[url_start..].find('"')? + url_start;
     let url = html_unescape(&line[url_start..url_end]);
 
     // Extract title (content between > and </A>)
     let title_start = line[url_end..].find('>')? + url_end + 1;
-    let title_end = line.to_lowercase().find("</a>")?;
+    let title_end = line.to_ascii_lowercase().find("</a>")?;
     let title = if title_start < title_end {
         html_unescape(&line[title_start..title_end])
     } else {
@@ -7254,9 +7299,10 @@ pub fn merge_check_result_files(result_dir: &str, output_path: &str) -> Result<u
     use std::path::Path;
 
     let dir_path = Path::new(result_dir);
-    if !dir_path.exists() {
-        anyhow::bail!("Result directory does not exist: {result_dir}");
-    }
+    anyhow::ensure!(
+        dir_path.is_dir(),
+        "Result directory does not exist or is not a directory: {result_dir}"
+    );
 
     info!("📦 Merging check results from: {}", result_dir);
 
@@ -7269,48 +7315,80 @@ pub fn merge_check_result_files(result_dir: &str, output_path: &str) -> Result<u
         ("skipped.html", "⏭️ 跳过"),
     ];
 
+    let resolved_dir = std::fs::canonicalize(dir_path)?;
+    let output = Path::new(output_path);
+    let resolved_output = if output.try_exists()? {
+        std::fs::canonicalize(output)?
+    } else {
+        let parent = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::canonicalize(parent)?.join(output.file_name().context("output has no filename")?)
+    };
+    for (file_name, _) in &sections {
+        let source = resolved_dir.join(file_name);
+        let resolved_source = if source.try_exists()? {
+            std::fs::canonicalize(&source)?
+        } else {
+            source
+        };
+        anyhow::ensure!(
+            resolved_output != resolved_source,
+            "merge output must not overwrite result partition {file_name}"
+        );
+    }
+
     for (file_name, section_title) in &sections {
         let file_path = dir_path.join(file_name);
-        if file_path.exists() {
-            match import_bookmarks_from_html(&file_path.to_string_lossy()) {
-                Ok(bookmarks) => {
-                    // Strip the top-level 📁镜像文件夹 wrapper if present,
-                    // extracting its children directly — equivalent to shell's extract_inner().
-                    let inner: Vec<Bookmark> = if bookmarks.len() == 1
-                        && bookmarks[0].folder
-                        && bookmarks[0].title.contains("镜像文件夹")
-                    {
-                        let mut bm = bookmarks;
-                        let wrapper = bm.remove(0);
-                        info!(
-                            "显式解包顶层镜像文件夹 '{}'，包含 {} 个子书签",
-                            wrapper.title,
-                            wrapper.children.len()
-                        );
-                        wrapper.children
-                    } else {
-                        bookmarks
-                    };
-
-                    let count = count_tree_bookmarks(&inner);
-                    info!("   {}: {} bookmarks", section_title, count);
-                    let folder = Bookmark {
-                        id: format!("section-{}", file_name.replace(".html", "")),
-                        title: section_title.to_string(),
-                        url: None,
-                        folder: true,
-                        children: inner,
-                        date_added: Some(chrono::Utc::now().timestamp_millis()),
-                        date_modified: None,
-                    };
-                    result_folders.push(folder);
-                }
-                Err(e) => {
-                    warn!("   Failed to read {}: {}", file_name, e);
-                }
+        let partition_present = match std::fs::symlink_metadata(&file_path) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspect {}", file_path.display()))
             }
+        };
+        if partition_present {
+            let bookmarks =
+                import_bookmarks_from_html(&file_path.to_string_lossy()).with_context(|| {
+                    format!("Failed to read result partition {}", file_path.display())
+                })?;
+            // Strip the top-level 📁镜像文件夹 wrapper if present,
+            // extracting its children directly — equivalent to shell's extract_inner().
+            let inner: Vec<Bookmark> = if bookmarks.len() == 1
+                && bookmarks[0].folder
+                && bookmarks[0].title.contains("镜像文件夹")
+            {
+                let mut bm = bookmarks;
+                let wrapper = bm.remove(0);
+                info!(
+                    "显式解包顶层镜像文件夹 '{}'，包含 {} 个子书签",
+                    wrapper.title,
+                    wrapper.children.len()
+                );
+                wrapper.children
+            } else {
+                bookmarks
+            };
+
+            let count = count_tree_bookmarks(&inner);
+            info!("   {}: {} bookmarks", section_title, count);
+            let folder = Bookmark {
+                id: format!("section-{}", file_name.replace(".html", "")),
+                title: section_title.to_string(),
+                url: None,
+                folder: true,
+                children: inner,
+                date_added: Some(chrono::Utc::now().timestamp_millis()),
+                date_modified: None,
+            };
+            result_folders.push(folder);
         }
     }
+    anyhow::ensure!(
+        !result_folders.is_empty(),
+        "No check-result partitions found in {result_dir}"
+    );
 
     // Add temp placeholder folder
     let temp_folder = Bookmark {
