@@ -531,6 +531,7 @@ impl ReviewApp {
                     self.refresh_scan();
                 }
                 Event::ScanStarted(Err(error)) => {
+                    self.message_is_error = true;
                     self.message = format!(
                         "{} {error:#}",
                         tr(self.zh(), "检测未启动：", "Check did not start:")
@@ -558,7 +559,11 @@ impl ReviewApp {
                         .into();
                     }
                 }
-                Event::EvidenceLoaded(Err(error)) => self.message = error.to_string(),
+                Event::EvidenceLoaded(Err(error)) => {
+                    self.message_is_error = true;
+                    self.scan_verified = false;
+                    self.message = format!("{error:#}");
+                }
                 Event::Loaded(Ok(doc), active_db, scan) => {
                     self.accept_document(doc, active_db);
                     self.import_directory = None;
@@ -632,6 +637,7 @@ impl ReviewApp {
                     );
                 }
                 Event::Exported(Err(error)) => {
+                    self.message_is_error = true;
                     self.message = format!(
                         "{} {error:#}",
                         tr(self.zh(), "导出失败：", "Export failed:")
@@ -772,8 +778,23 @@ impl ReviewApp {
     fn refresh_scan(&mut self) {
         if let Some(handle) = &self.scan {
             match handle.status() {
-                Ok(status) => self.scan_status = status,
-                Err(error) => self.message = error.to_string(),
+                Ok(status) => {
+                    self.scan_status = status;
+                    if self.message_is_error {
+                        self.message_is_error = false;
+                        self.message = tr(
+                            self.zh(),
+                            "进度已刷新；覆盖验收需载入检测结果后重新核验。",
+                            "Progress refreshed; reload results to verify target coverage.",
+                        )
+                        .into();
+                    }
+                }
+                Err(error) => {
+                    self.message_is_error = true;
+                    self.scan_verified = false;
+                    self.message = format!("{error:#}");
+                }
             }
         }
     }
@@ -2525,6 +2546,74 @@ mod tests {
         assert!(app.dirty());
         app.undo();
         assert!(!app.dirty());
+    }
+
+    #[test]
+    fn background_operation_failures_use_visible_errors_and_preserve_decisions() {
+        for event in [
+            Event::ScanStarted(Err(anyhow::anyhow!("launcher failed"))),
+            Event::EvidenceLoaded(Err(anyhow::anyhow!("database unreadable"))),
+            Event::Exported(Err(anyhow::anyhow!("output unavailable"))),
+        ] {
+            let mut app = ReviewApp::default();
+            app.accept_document(fixture(), false);
+            app.decide(vec![0], Some(Decision::Keep));
+            let doc = app.doc.clone().unwrap();
+            let decisions = app.decisions.clone();
+            let saved = app.saved_decisions.clone();
+            app.busy = true;
+            app.sender.send(event).unwrap();
+
+            app.poll();
+
+            assert!(app.message_is_error, "{}", app.message);
+            assert!(!app.busy);
+            assert!(Arc::ptr_eq(&doc, app.doc.as_ref().unwrap()));
+            assert_eq!(app.decisions, decisions);
+            assert_eq!(app.saved_decisions, saved);
+            assert!(app.dirty());
+        }
+    }
+
+    #[test]
+    fn unreadable_scan_status_revokes_verification_and_shows_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("process-exit.json"), b"{broken").unwrap();
+        let mut app = ReviewApp {
+            scan: Some(ScanHandle {
+                directory: directory.path().to_path_buf(),
+            }),
+            scan_verified: true,
+            ..Default::default()
+        };
+
+        app.refresh_scan();
+
+        assert!(app.message_is_error);
+        assert!(!app.scan_verified);
+        assert!(app.scan.is_some());
+    }
+
+    #[test]
+    fn successful_status_refresh_clears_the_error_without_reverifying_coverage() {
+        let directory = tempfile::tempdir().unwrap();
+        let receipt = directory.path().join("process-exit.json");
+        std::fs::write(&receipt, b"{broken").unwrap();
+        let mut app = ReviewApp {
+            scan: Some(ScanHandle {
+                directory: directory.path().to_path_buf(),
+            }),
+            scan_verified: true,
+            ..Default::default()
+        };
+        app.refresh_scan();
+        assert!(app.message_is_error);
+        std::fs::write(&receipt, b"{}").unwrap();
+
+        app.refresh_scan();
+
+        assert!(!app.message_is_error);
+        assert!(!app.scan_verified);
     }
 
     #[test]

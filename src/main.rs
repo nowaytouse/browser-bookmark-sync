@@ -849,6 +849,298 @@ async fn main() -> Result<()> {
     }
 }
 
+fn normalized_expanded_path(path: &str) -> Result<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(expand_path(path));
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    // Resolve the parent first: collapsing `..` before following a symlink changes its meaning.
+    let parent = std::fs::canonicalize(parent)
+        .with_context(|| format!("resolve output parent {}", parent.display()))?;
+    Ok(parent.join(path.file_name().context("output path has no filename")?))
+}
+
+fn export_report_path(output: &std::path::Path) -> std::path::PathBuf {
+    let stem = output
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("export");
+    output
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(format!("{stem}_report.json"))
+}
+
+fn preflight_validate_copy(output: &str, copy_path: &str, concurrency: usize) -> Result<()> {
+    anyhow::ensure!(
+        concurrency > 0,
+        "validation concurrency must be greater than zero"
+    );
+
+    let output_path = normalized_expanded_path(output)?;
+    let copy_path = normalized_expanded_path(copy_path)?;
+    let report_path = export_report_path(&output_path);
+    anyhow::ensure!(
+        copy_path != output_path && copy_path != report_path,
+        "validation copy path {} conflicts with export output or report",
+        copy_path.display()
+    );
+
+    match std::fs::symlink_metadata(&copy_path) {
+        Ok(_) => anyhow::bail!(
+            "refusing to overwrite existing validation copy {}",
+            copy_path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect validation copy {}", copy_path.display()));
+        }
+    }
+
+    let parent = copy_path.parent().unwrap_or(std::path::Path::new("."));
+    let parent_metadata = std::fs::metadata(parent)
+        .with_context(|| format!("inspect validation copy parent {}", parent.display()))?;
+    anyhow::ensure!(
+        parent_metadata.is_dir(),
+        "validation copy parent {} is not a directory",
+        parent.display()
+    );
+    Ok(())
+}
+
+fn write_incremental_validation_report(output: &str, retained_count: usize) -> Result<()> {
+    let output_path = normalized_expanded_path(output)?;
+    let report_path = export_report_path(&output_path);
+    let report = serde_json::json!({
+        "export_mode": "incremental_update",
+        "output": output_path,
+        "retained_count": retained_count,
+        "validity_check_conclusions": { "validation_performed": false }
+    });
+    let bytes =
+        serde_json::to_vec_pretty(&report).context("serialize incremental validation report")?;
+    browser_utils::atomic_write_file(&report_path, &bytes).with_context(|| {
+        format!(
+            "write incremental validation report {}",
+            report_path.display()
+        )
+    })
+}
+
+async fn validate_exported_copy(
+    output: &str,
+    copy_path: &str,
+    validate_content: bool,
+    validate_concurrency: usize,
+    validate_limit: usize,
+) -> Result<()> {
+    use std::collections::HashSet;
+    use std::io::Write;
+    use url_checker::{collect_urls_from_bookmarks, CheckerConfig, UrlChecker};
+
+    preflight_validate_copy(output, copy_path, validate_concurrency)?;
+    let expanded_output = expand_path(output);
+    let expanded_copy = expand_path(copy_path);
+    let report_path = export_report_path(std::path::Path::new(&expanded_output));
+    let mut report = match std::fs::read_to_string(&report_path) {
+        Ok(content) => {
+            let value: serde_json::Value = serde_json::from_str(&content)
+                .with_context(|| format!("parse export report {}", report_path.display()))?;
+            anyhow::ensure!(
+                value.is_object(),
+                "export report {} must contain a JSON object",
+                report_path.display()
+            );
+            value
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({
+            "export_mode": "validation_only",
+            "output": expanded_output,
+            "validity_check_conclusions": { "validation_performed": false }
+        }),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read export report {}", report_path.display()));
+        }
+    };
+
+    let copy_target = std::path::Path::new(&expanded_copy);
+    let copy_parent = copy_target.parent().unwrap_or(std::path::Path::new("."));
+    let mut staging = tempfile::NamedTempFile::new_in(copy_parent).with_context(|| {
+        format!(
+            "create private validation copy in {}",
+            copy_parent.display()
+        )
+    })?;
+    let mut source = std::fs::File::open(&expanded_output)
+        .with_context(|| format!("open exported HTML {expanded_output}"))?;
+    std::io::copy(&mut source, staging.as_file_mut())
+        .with_context(|| format!("stage exported HTML for validation from {expanded_output}"))?;
+    staging
+        .as_file_mut()
+        .flush()
+        .with_context(|| format!("flush staged validation copy for {expanded_copy}"))?;
+    staging
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("sync staged validation copy for {expanded_copy}"))?;
+
+    info!("📋 Validating staged copy for {}", expanded_copy);
+    let staged_path = staging.path().to_string_lossy().into_owned();
+    let bookmarks = sync::import_bookmarks_from_html(&staged_path)
+        .with_context(|| format!("import staged validation copy {expanded_copy}"))?;
+    let all_urls: HashSet<String> = collect_urls_from_bookmarks(&bookmarks)
+        .into_iter()
+        .collect();
+    let safe_conc = validate_concurrency.min(10);
+    let cfg = CheckerConfig {
+        proxy_url: None,
+        timeout_secs: 10,
+        concurrency: safe_conc,
+        retry_count: 1,
+    };
+    let checker = UrlChecker::new(cfg).context("create URL checker for validation copy")?;
+    let mut url_vec: Vec<String> = all_urls.into_iter().collect();
+    url_vec.sort();
+    if validate_limit > 0 && url_vec.len() > validate_limit {
+        info!(
+            "📊 限制有效性检查数量: {} / {} URLs",
+            validate_limit,
+            url_vec.len()
+        );
+        url_vec.truncate(validate_limit);
+    }
+
+    use indicatif::{ProgressBar, ProgressStyle};
+    let pb = ProgressBar::new(url_vec.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("#>-"),
+    );
+    let pb2 = pb.clone();
+    let results = if validate_content {
+        info!("🎯 启用【内容有效性检测 (Content Validity Mode)】: 针对主域名有效的前提下，深度排查具体页面内容是否返回 HTTP 404 Not Found / 410 Gone...");
+        checker
+            .check_batch_content(url_vec, move |current, total, _url| {
+                pb2.set_length(total as u64);
+                pb2.set_position(current as u64);
+            })
+            .await
+    } else {
+        info!("🌐 启用【网站主域名去重有效性检测 (Domain Validity Mode)】: 结合大站白名单豁免，探测主域可达性...");
+        let pb3 = pb.clone();
+        checker
+            .check_batch(url_vec, move |current, total, _url| {
+                pb3.set_length(total as u64);
+                pb3.set_position(current as u64);
+            })
+            .await
+    };
+    pb.finish_with_message("检查完成");
+    let total_checked = results.len();
+    let review_candidate_urls: HashSet<String> = results
+        .iter()
+        .filter(|r| r.status.should_auto_delete())
+        .map(|r| r.url.clone())
+        .collect();
+    let exempt_count = results.iter().filter(|r| r.url.contains(".onion")).count();
+    let valid_count = results
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.status,
+                url_checker::ValidationStatus::Valid | url_checker::ValidationStatus::Redirected
+            )
+        })
+        .count();
+    let doubtful_count = total_checked.saturating_sub(review_candidate_urls.len() + valid_count);
+
+    let review_candidate_items: Vec<serde_json::Value> = results
+        .iter()
+        .filter(|r| r.status.should_auto_delete())
+        .map(|r| {
+            serde_json::json!({
+                "url": r.url,
+                "status": format!("{:?}", r.status),
+                "reason": r.error_message.clone().unwrap_or_else(|| "单轮检查命中失效候选 (DNS无法解析 / 服务器主动拒绝连接 / 404 Not Found / 410 Gone)".to_string()),
+                "action": "候选待复核，校验副本保留 (Review candidate; validation copy retained)"
+            })
+        })
+        .collect();
+
+    let doubtful_retained_items: Vec<serde_json::Value> = results
+        .iter()
+        .filter(|r| {
+            !r.status.should_auto_delete()
+                && !matches!(
+                    r.status,
+                    url_checker::ValidationStatus::Valid
+                        | url_checker::ValidationStatus::Redirected
+                )
+        })
+        .map(|r| {
+            serde_json::json!({
+                "url": r.url,
+                "status": format!("{:?}", r.status),
+                "reason": r.error_message.clone().unwrap_or_else(|| "存疑保留 (本地网络与代理IO临时错误 / 网站暂时维护5xx / 403防护与429限流 / 暗网地址)".to_string()),
+                "action": "存疑但保留 (Retained: local network IO error or temporary server maintenance)"
+            })
+        })
+        .collect();
+
+    report["validity_check_conclusions"] = serde_json::json!({
+        "validation_performed": true,
+        "validation_mode": if validate_content {
+            "ContentValidity (内容有效性检测 - 针对主域名有效的前提下，排查具体完整页面路径返回 404/410 的失效候选)"
+        } else {
+            "DomainValidity (网站主域名有效性检测 - 主层级域名去重 + 大站白名单豁免)"
+        },
+        "validated_copy_file_path": expanded_copy,
+        "summary": {
+            "total_urls_checked": total_checked,
+            "valid_or_redirected_retained_count": valid_count,
+            "doubtful_retained_count": doubtful_count,
+            "review_candidate_count": review_candidate_urls.len(),
+            "onion_websites_exempt_count": exempt_count,
+            "retained_checked_count": total_checked
+        },
+        "conclusions_and_rules": {
+            "major_site_whitelist_rule": "根据‘常见且热门的互联网站点清单’规则（内置涵盖 YouTube, GitHub, Google, Baidu, Bing, Bilibili, Zhihu, Taobao, Twitter, Apple, Microsoft 等近 50 个核心平台，并支持通过外部 JSON 文件如 major_sites.json 进行热部署配置与扩展），系统自动豁免此类绝不可发生全站 404/倒闭的站点，直接赋予白名单跳过并保留，大幅缩减检测耗时且杜绝平台反爬防封锁。",
+            "domain_level_validation_rule": "系统采用‘主层级域名去重校验’机制。例如 youtube.com 下所有视频仅检测主域是否存活，消减 90%+ 的重复网络请求并彻底解决 WAF/429 限流问题，凡主域名可正常访问的，下属所有书签均视为有效保留。",
+            "content_validity_rule": "有关于内容有效性检测（--validate-content）：本功能为单独的深度内容有效性排查，检测前提是该网站主域名有效。系统对完整书签 URL 路径（例如具体的视频或贴文 URL）进行校验，当页面返回明确 HTTP 404 Not Found 或 410 Gone 时列为失效候选；反爬限流等情况继续存疑保留。",
+            "review_candidate_rule": "单轮检查只能报告失效候选，不能作为破坏性删除依据。DNS无法解析、服务器主动拒绝连接或明确返回 404/410 的书签会列入候选清单，但校验副本保持原样，等待多轮历史确认与人工复核。",
+            "retained_links_rule": "返回 HTTP 2xx (正常访问) 和 3xx (重定向) 的有效网址予以完全保留。",
+            "doubtful_retained_rule": "基于死链判定五维度规则，对以下情况绝不误删并予以保留：【维度4】网络/网络代理原因导致的临时IO报错（连接超时/TLS握手错误/网络连接重置等 - LocalNetworkError/Timeout），判定为本地网络侧原因；【维度5】网站暂时维护但未来有望开放，以及开启反爬/WAF防护（HTTP 401, 403, 429, 502/503/504 ServiceUnavailable/ServerError 等）。以上全部列入‘存疑但保留’清单；同时针对 .onion 暗网地址亦免除检查予以保留。"
+        },
+        "review_candidate_items": review_candidate_items,
+        "doubtful_retained_items": doubtful_retained_items,
+        "validation_copy_preserved": true,
+        "status": "Completed (report only)"
+    });
+
+    let published = staging
+        .persist_noclobber(copy_target)
+        .map_err(|error| error.error)
+        .with_context(|| format!("publish validation copy without overwriting {expanded_copy}"))?;
+    drop(published);
+
+    let report_bytes =
+        serde_json::to_vec_pretty(&report).context("serialize validity check report")?;
+    browser_utils::atomic_write_file(&report_path, &report_bytes)
+        .with_context(|| format!("update validity check report {}", report_path.display()))?;
+    info!(
+        "📋 已将详细的有效性检测结论与清单更新至报告: {}",
+        report_path.display()
+    );
+    Ok(())
+}
+
 async fn run_cli(cli: Cli) -> Result<()> {
     if is_disabled_non_core_command(&cli.command) {
         anyhow::bail!(
@@ -987,6 +1279,10 @@ async fn run_cli(cli: Cli) -> Result<()> {
                 &sync_flags,
                 history || cookies || passwords || extensions || clear_after || unsafe_write,
             )?;
+
+            if let Some(copy_path) = validate_copy.as_deref() {
+                preflight_validate_copy(&output, copy_path, validate_concurrency)?;
+            }
 
             // Validate the update source before creating an engine or inspecting any live sources.
             let update_input = update
@@ -1206,7 +1502,11 @@ async fn run_cli(cli: Cli) -> Result<()> {
 
                 // Export merged result
                 sync::export_bookmarks_to_html(&existing_bookmarks, &expand_path(&output))?;
-                existing_count + stats.new_added
+                let retained_count = existing_count + stats.new_added;
+                if validate_copy.is_some() {
+                    write_incremental_validation_report(&output, retained_count)?;
+                }
+                retained_count
             } else {
                 engine
                     .export_to_html_with_report(
@@ -1223,195 +1523,15 @@ async fn run_cli(cli: Cli) -> Result<()> {
             info!("");
             info!("✅ Exported {} bookmarks to {}", count, output);
 
-            if let Some(ref copy_path) = validate_copy {
-                let expanded_copy = expand_path(copy_path);
-                let expanded_output = expand_path(&output);
-                info!(
-                    "📋 Copying exported file to {} for validation...",
-                    expanded_copy
-                );
-                if let Err(e) = std::fs::copy(&expanded_output, &expanded_copy) {
-                    error!("❌ Failed to copy file for validation: {}", e);
-                } else {
-                    info!("✅ Copied to {}. Running validity check...", expanded_copy);
-                    use std::collections::HashSet;
-                    use url_checker::{collect_urls_from_bookmarks, CheckerConfig, UrlChecker};
-                    if let Ok(bookmarks) = sync::import_bookmarks_from_html(&expanded_copy) {
-                        let all_urls: HashSet<String> = collect_urls_from_bookmarks(&bookmarks)
-                            .into_iter()
-                            .collect();
-                        let safe_conc = validate_concurrency.min(10);
-                        let cfg = CheckerConfig {
-                            proxy_url: None,
-                            timeout_secs: 10,
-                            concurrency: safe_conc,
-                            retry_count: 1,
-                        };
-                        if let Ok(checker) = UrlChecker::new(cfg) {
-                            use indicatif::{ProgressBar, ProgressStyle};
-                            let mut url_vec: Vec<String> = all_urls.into_iter().collect();
-                            if validate_limit > 0 && url_vec.len() > validate_limit {
-                                info!(
-                                    "📊 限制有效性检查数量: {} / {} URLs",
-                                    validate_limit,
-                                    url_vec.len()
-                                );
-                                url_vec.truncate(validate_limit);
-                            }
-                            let pb = ProgressBar::new(url_vec.len() as u64);
-                            pb.set_style(
-                                ProgressStyle::default_bar()
-                                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
-                                    .unwrap_or_else(|_| ProgressStyle::default_bar())
-                                    .progress_chars("#>-"),
-                            );
-                            let pb2 = pb.clone();
-                            let results = if validate_content {
-                                info!("🎯 启用【内容有效性检测 (Content Validity Mode)】: 针对主域名有效的前提下，深度排查具体页面内容是否返回 HTTP 404 Not Found / 410 Gone...");
-                                checker
-                                    .check_batch_content(url_vec, move |current, total, _url| {
-                                        pb2.set_length(total as u64);
-                                        pb2.set_position(current as u64);
-                                    })
-                                    .await
-                            } else {
-                                info!("🌐 启用【网站主域名去重有效性检测 (Domain Validity Mode)】: 结合大站白名单豁免，探测主域可达性...");
-                                let pb3 = pb.clone();
-                                checker
-                                    .check_batch(url_vec, move |current, total, _url| {
-                                        pb3.set_length(total as u64);
-                                        pb3.set_position(current as u64);
-                                    })
-                                    .await
-                            };
-                            pb.finish_with_message("检查完成");
-                            let total_checked = results.len();
-                            let review_candidate_urls: HashSet<String> = results
-                                .iter()
-                                .filter(|r| r.status.should_auto_delete())
-                                .map(|r| r.url.clone())
-                                .collect();
-                            let exempt_count =
-                                results.iter().filter(|r| r.url.contains(".onion")).count();
-                            let valid_count = results
-                                .iter()
-                                .filter(|r| {
-                                    matches!(
-                                        r.status,
-                                        url_checker::ValidationStatus::Valid
-                                            | url_checker::ValidationStatus::Redirected
-                                    )
-                                })
-                                .count();
-                            let doubtful_count = total_checked
-                                .saturating_sub(review_candidate_urls.len() + valid_count);
-
-                            let review_candidate_items: Vec<serde_json::Value> = results
-                                .iter()
-                                .filter(|r| r.status.should_auto_delete())
-                                .map(|r| {
-                                    serde_json::json!({
-                                        "url": r.url,
-                                        "status": format!("{:?}", r.status),
-                                        "reason": r.error_message.clone().unwrap_or_else(|| "单轮检查命中失效候选 (DNS无法解析 / 服务器主动拒绝连接 / 404 Not Found / 410 Gone)".to_string()),
-                                        "action": "候选待复核，校验副本保留 (Review candidate; validation copy retained)"
-                                    })
-                                })
-                                .collect();
-
-                            let doubtful_retained_items: Vec<serde_json::Value> = results
-                                .iter()
-                                .filter(|r| {
-                                    !r.status.should_auto_delete()
-                                        && !matches!(
-                                            r.status,
-                                            url_checker::ValidationStatus::Valid
-                                                | url_checker::ValidationStatus::Redirected
-                                        )
-                                })
-                                .map(|r| {
-                                    serde_json::json!({
-                                        "url": r.url,
-                                        "status": format!("{:?}", r.status),
-                                        "reason": r.error_message.clone().unwrap_or_else(|| "存疑保留 (本地网络与代理IO临时错误 / 网站暂时维护5xx / 403防护与429限流 / 暗网地址)".to_string()),
-                                        "action": "存疑但保留 (Retained: local network IO error or temporary server maintenance)"
-                                    })
-                                })
-                                .collect();
-
-                            let validity_conclusions = serde_json::json!({
-                                "validation_performed": true,
-                                "validation_mode": if validate_content {
-                                    "ContentValidity (内容有效性检测 - 针对主域名有效的前提下，排查具体完整页面路径返回 404/410 的失效候选)"
-                                } else {
-                                    "DomainValidity (网站主域名有效性检测 - 主层级域名去重 + 大站白名单豁免)"
-                                },
-                                "validated_copy_file_path": expanded_copy,
-                                "summary": {
-                                    "total_urls_checked": total_checked,
-                                    "valid_or_redirected_retained_count": valid_count,
-                                    "doubtful_retained_count": doubtful_count,
-                                    "review_candidate_count": review_candidate_urls.len(),
-                                    "onion_websites_exempt_count": exempt_count,
-                                    "retained_checked_count": total_checked
-                                },
-                                "conclusions_and_rules": {
-                                    "major_site_whitelist_rule": "根据‘常见且热门的互联网站点清单’规则（内置涵盖 YouTube, GitHub, Google, Baidu, Bing, Bilibili, Zhihu, Taobao, Twitter, Apple, Microsoft 等近 50 个核心平台，并支持通过外部 JSON 文件如 major_sites.json 进行热部署配置与扩展），系统自动豁免此类绝不可发生全站 404/倒闭的站点，直接赋予白名单跳过并保留，大幅缩减检测耗时且杜绝平台反爬防封锁。",
-                                    "domain_level_validation_rule": "系统采用‘主层级域名去重校验’机制。例如 youtube.com 下所有视频仅检测主域是否存活，消减 90%+ 的重复网络请求并彻底解决 WAF/429 限流问题，凡主域名可正常访问的，下属所有书签均视为有效保留。",
-                                    "content_validity_rule": "有关于内容有效性检测（--validate-content）：本功能为单独的深度内容有效性排查，检测前提是该网站主域名有效。系统对完整书签 URL 路径（例如具体的视频或贴文 URL）进行校验，当页面返回明确 HTTP 404 Not Found 或 410 Gone 时列为失效候选；反爬限流等情况继续存疑保留。",
-                                    "review_candidate_rule": "单轮检查只能报告失效候选，不能作为破坏性删除依据。DNS无法解析、服务器主动拒绝连接或明确返回 404/410 的书签会列入候选清单，但校验副本保持原样，等待多轮历史确认与人工复核。",
-                                    "retained_links_rule": "返回 HTTP 2xx (正常访问) 和 3xx (重定向) 的有效网址予以完全保留。",
-                                    "doubtful_retained_rule": "基于死链判定五维度规则，对以下情况绝不误删并予以保留：【维度4】网络/网络代理原因导致的临时IO报错（连接超时/TLS握手错误/网络连接重置等 - LocalNetworkError/Timeout），判定为本地网络侧原因；【维度5】网站暂时维护但未来有望开放，以及开启反爬/WAF防护（HTTP 401, 403, 429, 502/503/504 ServiceUnavailable/ServerError 等）。以上全部列入‘存疑但保留’清单；同时针对 .onion 暗网地址亦免除检查予以保留。"
-                                },
-                                "review_candidate_items": review_candidate_items,
-                                "doubtful_retained_items": doubtful_retained_items,
-                                "validation_copy_preserved": true,
-                                "status": "Completed (report only)"
-                            });
-
-                            info!("📊 Validity Check Summary:");
-                            info!("   Total Checked: {}", total_checked);
-                            info!("   Retained after review-only scan: {}", total_checked);
-                            info!("   Onion Websites Exempted: {}", exempt_count);
-                            info!(
-                                "   Review candidates (copy unchanged): {}",
-                                review_candidate_urls.len()
-                            );
-
-                            let report_path = {
-                                let p = std::path::Path::new(&expanded_output);
-                                let stem =
-                                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("export");
-                                let dir = p.parent().unwrap_or(std::path::Path::new("."));
-                                dir.join(format!("{stem}_report.json"))
-                                    .to_string_lossy()
-                                    .to_string()
-                            };
-                            if let Ok(content) = std::fs::read_to_string(&report_path) {
-                                if let Ok(mut json_val) =
-                                    serde_json::from_str::<serde_json::Value>(&content)
-                                {
-                                    json_val["validity_check_conclusions"] = validity_conclusions;
-                                    if let Ok(updated_json) =
-                                        serde_json::to_string_pretty(&json_val)
-                                    {
-                                        if let Err(e) = browser_utils::atomic_write_file(
-                                            std::path::Path::new(&report_path),
-                                            updated_json.as_bytes(),
-                                        ) {
-                                            error!("❌ 更新报告 JSON 失败: {}", e);
-                                        } else {
-                                            info!(
-                                                "📋 已将详细的有效性检测结论与清单更新至报告: {}",
-                                                report_path
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(copy_path) = validate_copy.as_deref() {
+                validate_exported_copy(
+                    &output,
+                    copy_path,
+                    validate_content,
+                    validate_concurrency,
+                    validate_limit,
+                )
+                .await?;
             }
 
             if clear_after {
@@ -2959,5 +3079,266 @@ mod cli_tests {
         assert!(second_plan.skipped.iter().any(|item| item.original_url
             == "https://www.example.net/article"
             && item.reason.starts_with("SkippedConfirmedDeadSite:")));
+    }
+
+    fn empty_export_paths(temp: &tempfile::TempDir) -> (String, String) {
+        let output = temp.path().join("export.html");
+        let report = temp.path().join("export_report.json");
+        let output = output.to_string_lossy().into_owned();
+        super::sync::export_bookmarks_to_html(&[], &output).unwrap();
+        (output, report.to_string_lossy().into_owned())
+    }
+
+    #[tokio::test]
+    async fn validate_copy_refuses_to_overwrite_existing_sentinel() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, _) = empty_export_paths(&temp);
+        let copy = temp.path().join("copy.html");
+        std::fs::write(&copy, b"sentinel").unwrap();
+
+        let result =
+            super::validate_exported_copy(&output, copy.to_str().unwrap(), false, 1, 0).await;
+
+        assert!(result.is_err(), "existing copy target must be rejected");
+        assert_eq!(std::fs::read(copy).unwrap(), b"sentinel");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn validate_copy_refuses_to_overwrite_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let (output, _) = empty_export_paths(&temp);
+        let copy = temp.path().join("copy.html");
+        let link_target = temp.path().join("missing-target");
+        symlink(&link_target, &copy).unwrap();
+
+        let result =
+            super::validate_exported_copy(&output, copy.to_str().unwrap(), false, 1, 0).await;
+
+        assert!(
+            result.is_err(),
+            "dangling symlink must count as an existing target"
+        );
+        assert_eq!(std::fs::read_link(copy).unwrap(), link_target);
+    }
+
+    #[tokio::test]
+    async fn validate_copy_missing_source_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp
+            .path()
+            .join("missing.html")
+            .to_string_lossy()
+            .into_owned();
+        let copy = temp.path().join("copy.html");
+
+        let result =
+            super::validate_exported_copy(&missing, copy.to_str().unwrap(), false, 1, 0).await;
+
+        assert!(result.is_err(), "missing source must fail validation");
+        assert!(!copy.exists());
+    }
+
+    #[tokio::test]
+    async fn validate_copy_missing_parent_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, _) = empty_export_paths(&temp);
+        let copy = temp.path().join("missing-parent/copy.html");
+
+        let result =
+            super::validate_exported_copy(&output, copy.to_str().unwrap(), false, 1, 0).await;
+
+        assert!(result.is_err(), "copy into a missing parent must fail");
+        assert!(!copy.exists());
+    }
+
+    #[tokio::test]
+    async fn validate_copy_rejects_invalid_report_without_changing_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, report) = empty_export_paths(&temp);
+        let copy = temp.path().join("copy.html").to_string_lossy().into_owned();
+        std::fs::write(&report, b"{invalid json").unwrap();
+
+        let result = super::validate_exported_copy(&output, &copy, false, 1, 0).await;
+
+        assert!(result.is_err(), "invalid report must fail validation");
+        assert_eq!(std::fs::read(report).unwrap(), b"{invalid json");
+    }
+
+    #[tokio::test]
+    async fn validate_copy_rejects_output_and_report_path_collisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, report) = empty_export_paths(&temp);
+        let original_output = std::fs::read(&output).unwrap();
+
+        let same_output = super::validate_exported_copy(&output, &output, false, 1, 0).await;
+        assert!(same_output.is_err(), "copy must not target the source");
+        assert_eq!(std::fs::read(&output).unwrap(), original_output);
+
+        std::fs::write(&report, b"{\"sentinel\":true}").unwrap();
+        let same_report = super::validate_exported_copy(&output, &report, false, 1, 0).await;
+        assert!(same_report.is_err(), "copy must not target the report");
+        assert_eq!(std::fs::read(report).unwrap(), b"{\"sentinel\":true}");
+    }
+
+    #[tokio::test]
+    async fn validate_copy_updates_report_for_valid_empty_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, report) = empty_export_paths(&temp);
+        let copy = temp.path().join("copy.html").to_string_lossy().into_owned();
+        std::fs::write(
+            &report,
+            br#"{"validity_check_conclusions":{"validation_performed":false}}"#,
+        )
+        .unwrap();
+
+        super::validate_exported_copy(&output, &copy, false, 1, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(&copy).unwrap(),
+            std::fs::read(&output).unwrap()
+        );
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+        assert_eq!(
+            report["validity_check_conclusions"]["validation_performed"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_copy_rejects_invalid_html_without_publishing_or_changing_report() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, report) = empty_export_paths(&temp);
+        std::fs::write(&output, b"not bookmark html").unwrap();
+        let report_bytes = br#"{ "legacy": "keep" }"#;
+        std::fs::write(&report, report_bytes).unwrap();
+        let copy = temp.path().join("copy.html");
+
+        let result =
+            super::validate_exported_copy(&output, copy.to_str().unwrap(), false, 1, 0).await;
+
+        assert!(result.is_err(), "invalid HTML must fail validation");
+        assert!(!copy.exists(), "invalid staged copy must not be published");
+        assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+        assert_eq!(std::fs::read(&output).unwrap(), b"not bookmark html");
+    }
+
+    #[tokio::test]
+    async fn validate_copy_rejects_zero_concurrency_before_copying() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, _) = empty_export_paths(&temp);
+        let copy = temp.path().join("copy.html");
+
+        let result =
+            super::validate_exported_copy(&output, copy.to_str().unwrap(), false, 0, 0).await;
+
+        assert!(result.is_err(), "zero concurrency must be rejected");
+        assert!(!copy.exists());
+    }
+
+    #[tokio::test]
+    async fn incremental_validation_report_replaces_old_export_statistics() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, report) = empty_export_paths(&temp);
+        std::fs::write(
+            &report,
+            br#"{"old_export_statistics":{"source_count":999}}"#,
+        )
+        .unwrap();
+        let copy = temp.path().join("copy.html").to_string_lossy().into_owned();
+
+        super::write_incremental_validation_report(&output, 3).unwrap();
+        let before_validation: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        assert_eq!(before_validation["export_mode"], "incremental_update");
+        assert_eq!(
+            before_validation["output"],
+            serde_json::json!(std::fs::canonicalize(&output).unwrap())
+        );
+        assert_eq!(before_validation["retained_count"], 3);
+        assert!(before_validation.get("old_export_statistics").is_none());
+
+        super::validate_exported_copy(&output, &copy, false, 1, 0)
+            .await
+            .unwrap();
+
+        let after_validation: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+        assert_eq!(after_validation["export_mode"], "incremental_update");
+        assert_eq!(after_validation["retained_count"], 3);
+        assert!(after_validation.get("old_export_statistics").is_none());
+        assert_eq!(
+            after_validation["validity_check_conclusions"]["validation_performed"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_copy_creates_validation_only_report_when_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, report) = empty_export_paths(&temp);
+        let copy = temp.path().join("copy.html").to_string_lossy().into_owned();
+
+        super::validate_exported_copy(&output, &copy, false, 1, 0)
+            .await
+            .unwrap();
+
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+        assert_eq!(report["export_mode"], "validation_only");
+        assert_eq!(report["output"], output);
+        assert_eq!(
+            report["validity_check_conclusions"]["validation_performed"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_copy_accepts_a_filename_in_the_working_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let (output, _) = empty_export_paths(&temp);
+        let copy_guard = tempfile::Builder::new()
+            .prefix(".validation-copy-test-")
+            .suffix(".html")
+            .tempfile_in(".")
+            .unwrap()
+            .into_temp_path();
+        std::fs::remove_file(&copy_guard).unwrap();
+        let copy = copy_guard.file_name().unwrap().to_str().unwrap();
+
+        super::validate_exported_copy(&output, copy, false, 1, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(copy).unwrap(), std::fs::read(output).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validation_paths_resolve_symlink_parents_before_dot_dot() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let actual = temp.path().join("actual");
+        std::fs::create_dir_all(actual.join("inner")).unwrap();
+        symlink(actual.join("inner"), temp.path().join("alias")).unwrap();
+        let output = temp.path().join("alias/../export.html");
+        let copy = temp.path().join("alias/../copy.html");
+        std::fs::write(actual.join("copy.html"), b"keep copy").unwrap();
+
+        assert!(super::preflight_validate_copy(
+            output.to_str().unwrap(),
+            copy.to_str().unwrap(),
+            1
+        )
+        .is_err());
+        super::write_incremental_validation_report(output.to_str().unwrap(), 4).unwrap();
+        assert!(actual.join("export_report.json").is_file());
+        assert!(!temp.path().join("export_report.json").exists());
     }
 }

@@ -94,3 +94,53 @@ fn malformed_update_input_fails_before_export_and_preserves_output(
     assert!(!fs::read_to_string(log_path)?.contains("Exporting browser data"));
     Ok(())
 }
+
+#[test]
+fn existing_validation_copy_fails_before_collecting_and_preserves_both_files(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let output_path = sentinel_output(temp.path())?;
+    let copy = temp.path().join("validation.html");
+    fs::write(&copy, b"preserve validation file")?;
+
+    let (output, log_path) = run_export(
+        temp.path(),
+        &output_path,
+        &[
+            OsString::from("--validate-copy"),
+            copy.clone().into_os_string(),
+        ],
+    )?;
+
+    assert!(!output.status.success());
+    assert!(diagnostic(&output).contains("refusing to overwrite"));
+    assert_eq!(fs::read(&copy)?, b"preserve validation file");
+    assert_eq!(fs::read(&output_path)?, b"preserve this output\n");
+    assert!(!fs::read_to_string(log_path)?.contains("Exporting browser data"));
+    Ok(())
+}
+
+#[test]
+fn zero_validation_concurrency_fails_before_collecting() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let output_path = sentinel_output(temp.path())?;
+    let copy = temp.path().join("validation.html");
+
+    let (output, log_path) = run_export(
+        temp.path(),
+        &output_path,
+        &[
+            OsString::from("--validate-copy"),
+            copy.clone().into_os_string(),
+            OsString::from("--validate-concurrency"),
+            OsString::from("0"),
+        ],
+    )?;
+
+    assert!(!output.status.success());
+    assert!(diagnostic(&output).contains("value must be at least 1"));
+    assert!(!copy.exists());
+    assert_eq!(fs::read(&output_path)?, b"preserve this output\n");
+    assert!(!log_path.exists());
+    Ok(())
+}
