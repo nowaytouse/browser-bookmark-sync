@@ -68,6 +68,14 @@ enum Event {
     Exported(anyhow::Result<(PathBuf, usize, usize)>),
 }
 
+struct RepaintOnExit(egui::Context);
+
+impl Drop for RepaintOnExit {
+    fn drop(&mut self) {
+        self.0.request_repaint();
+    }
+}
+
 pub fn start(
     input: Option<PathBuf>,
     db: Option<PathBuf>,
@@ -86,6 +94,7 @@ pub fn start(
             let mut app = ReviewApp {
                 db,
                 source_review,
+                context: cc.egui_ctx.clone(),
                 ..Default::default()
             };
             match PreferencesStore::local() {
@@ -296,6 +305,7 @@ fn apply_style(ctx: &egui::Context, preferences: NativePreferences) {
 }
 
 struct ReviewApp {
+    context: egui::Context,
     doc: Option<Arc<ReviewDocument>>,
     db: Option<PathBuf>,
     source_review: Option<PathBuf>,
@@ -319,6 +329,7 @@ struct ReviewApp {
     filter_dirty: bool,
     sender: mpsc::Sender<Event>,
     receiver: mpsc::Receiver<Event>,
+    worker: Option<std::thread::JoinHandle<()>>,
     busy: bool,
     message: String,
     message_is_error: bool,
@@ -344,6 +355,7 @@ impl Default for ReviewApp {
     fn default() -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
+            context: egui::Context::default(),
             doc: None,
             db: None,
             source_review: None,
@@ -367,6 +379,7 @@ impl Default for ReviewApp {
             filter_dirty: true,
             sender,
             receiver,
+            worker: None,
             busy: false,
             message: String::new(),
             message_is_error: false,
@@ -436,13 +449,12 @@ impl ReviewApp {
             Some(handle) => handle.report().is_file().then(|| handle.report()),
             None => self.source_review.clone(),
         };
-        let sender = self.sender.clone();
         self.busy = true;
         self.message_is_error = false;
         self.message = tr(self.zh(), "正在读取书签…", "Reading bookmarks…").into();
-        std::thread::spawn(move || {
+        self.spawn_worker(move || {
             let result = ReviewDocument::load(&path, db.as_deref(), source.as_deref());
-            let _ = sender.send(Event::Loaded(result, db.is_some(), scan));
+            Event::Loaded(result, db.is_some(), scan)
         });
     }
 
@@ -477,10 +489,31 @@ impl ReviewApp {
             "Reading browsers, profiles and reading lists…",
         )
         .into();
+        self.spawn_worker(move || Event::Imported(native_sources::collect_browser_copy()));
+    }
+
+    fn spawn_worker(&mut self, task: impl FnOnce() -> Event + Send + 'static) {
         let sender = self.sender.clone();
-        std::thread::spawn(move || {
-            let _ = sender.send(Event::Imported(native_sources::collect_browser_copy()));
-        });
+        self.context.request_repaint();
+        let context = self.context.clone();
+        match std::thread::Builder::new().spawn(move || {
+            let _repaint = RepaintOnExit(context);
+            let _ = sender.send(task());
+        }) {
+            Ok(worker) => self.worker = Some(worker),
+            Err(error) => {
+                self.busy = false;
+                self.message_is_error = true;
+                self.message = format!(
+                    "{} {error}",
+                    tr(
+                        self.zh(),
+                        "无法启动后台任务：",
+                        "Could not start background task:"
+                    )
+                );
+            }
+        }
     }
 
     fn accept_document(&mut self, doc: ReviewDocument, active_db: bool) {
@@ -516,6 +549,27 @@ impl ReviewApp {
     }
 
     fn poll(&mut self) {
+        let finished = self
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished);
+        // Join only finished workers, before draining their queued result.
+        if finished
+            && self
+                .worker
+                .take()
+                .is_some_and(|worker| worker.join().is_err())
+        {
+            self.busy = false;
+            self.message_is_error = true;
+            self.scan_verified = false;
+            self.message = tr(
+                self.zh(),
+                "后台任务意外中止；当前内容和清理决定未改变。请先检查输出文件或检测批次状态，再重试。",
+                "The background task ended unexpectedly; current content and decisions are unchanged. Check output files or the check batch before retrying.",
+            )
+            .into();
+        }
         while let Ok(event) = self.receiver.try_recv() {
             if let Event::ProxyChecked(network, result) = event {
                 self.proxy_test_running = false;
@@ -756,7 +810,7 @@ impl ReviewApp {
         let Some(doc) = self.doc.clone() else {
             return;
         };
-        let (sender, network) = (self.sender.clone(), self.preferences.network);
+        let network = self.preferences.network;
         self.busy = true;
         self.message_is_error = false;
         self.message = tr(
@@ -765,13 +819,13 @@ impl ReviewApp {
             "Preparing an independent check…",
         )
         .into();
-        std::thread::spawn(move || {
-            let _ = sender.send(Event::ScanStarted(native_scan::begin(
+        self.spawn_worker(move || {
+            Event::ScanStarted(native_scan::begin(
                 &doc.input_path,
                 &doc.input_hash,
                 doc.coverage.as_ref(),
                 network,
-            )));
+            ))
         });
     }
 
@@ -806,12 +860,11 @@ impl ReviewApp {
         let (Some(handle), Some(doc)) = (self.scan.clone(), self.doc.clone()) else {
             return;
         };
-        let sender = self.sender.clone();
         self.busy = true;
-        std::thread::spawn(move || {
+        self.spawn_worker(move || {
             let result = ReviewDocument::load(&doc.input_path, Some(&handle.db()), None)
                 .map(|doc| (doc, handle.verify_complete().is_ok()));
-            let _ = sender.send(Event::EvidenceLoaded(result));
+            Event::EvidenceLoaded(result)
         });
     }
 
@@ -839,7 +892,7 @@ impl ReviewApp {
         let Some(doc) = self.doc.clone() else {
             return;
         };
-        let (decisions, sender) = (self.decisions.clone(), self.sender.clone());
+        let decisions = self.decisions.clone();
         self.busy = true;
         self.message_is_error = false;
         self.message = tr(
@@ -848,11 +901,11 @@ impl ReviewApp {
             "Exporting a new HTML file…",
         )
         .into();
-        std::thread::spawn(move || {
+        self.spawn_worker(move || {
             let result = doc
                 .export_copy(&decisions, &path, true)
                 .map(|audit| (path, audit.retained_count, audit.removed_count));
-            let _ = sender.send(Event::Exported(result));
+            Event::Exported(result)
         });
     }
 }
@@ -2207,9 +2260,12 @@ impl ReviewApp {
                         if ui.add_enabled(proxy_enabled && draft.network.validate().is_ok() && !self.proxy_test_running, egui::Button::new(tr(zh, "检查代理端口", "Check proxy port"))).clicked() {
                             let network = draft.network;
                             let sender = self.sender.clone();
+                            let context = self.context.clone();
                             self.proxy_test_running = true;
                             self.proxy_test_result = None;
+                            self.context.request_repaint();
                             std::thread::spawn(move || {
+                                let _repaint = RepaintOnExit(context);
                                 let _ = sender.send(Event::ProxyChecked(network, network.check_proxy_connection()));
                             });
                         }
@@ -2572,6 +2628,90 @@ mod tests {
             assert_eq!(app.decisions, decisions);
             assert_eq!(app.saved_decisions, saved);
             assert!(app.dirty());
+        }
+    }
+
+    #[test]
+    fn panicked_worker_releases_busy_state_and_preserves_decisions() {
+        let mut app = ReviewApp::default();
+        app.accept_document(fixture(), false);
+        app.decide(vec![0], Some(Decision::Keep));
+        let doc = app.doc.clone().unwrap();
+        let decisions = app.decisions.clone();
+        app.busy = true;
+        app.scan_verified = true;
+        app.spawn_worker(|| panic!("synthetic worker panic"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.worker.as_ref().unwrap().is_finished() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        app.poll();
+
+        assert!(!app.busy, "a terminated worker must not keep the UI busy");
+        assert!(app.worker.is_none());
+        assert!(app.message_is_error);
+        assert!(!app.scan_verified);
+        assert!(Arc::ptr_eq(&doc, app.doc.as_ref().unwrap()));
+        assert_eq!(app.decisions, decisions);
+        assert!(app.dirty());
+    }
+
+    #[test]
+    fn completed_worker_keeps_its_queued_result() {
+        let mut app = ReviewApp::default();
+        app.accept_document(fixture(), false);
+        app.busy = true;
+        app.spawn_worker(|| {
+            Event::Loaded(Err(anyhow::anyhow!("synthetic read error")), false, None)
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.worker.as_ref().unwrap().is_finished() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+
+        app.poll();
+
+        assert!(!app.busy);
+        assert!(app.worker.is_none());
+        assert!(app.message_is_error);
+        assert!(app.message.contains("synthetic read error"));
+        assert!(!app.message.contains("unexpectedly"));
+    }
+
+    #[test]
+    fn worker_completion_wakes_the_ui_even_after_a_panic() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        for panic in [false, true] {
+            let mut app = ReviewApp::default();
+            let repainted = Arc::new(AtomicBool::new(false));
+            let observed = repainted.clone();
+            let ui_thread = std::thread::current().id();
+            app.context.set_repaint_observer(move |_| {
+                if std::thread::current().id() != ui_thread {
+                    observed.store(true, Ordering::SeqCst);
+                }
+            });
+            app.busy = true;
+            app.spawn_worker(move || {
+                assert!(!panic, "synthetic wake-up panic");
+                Event::Loaded(Err(anyhow::anyhow!("synthetic result")), false, None)
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !app.worker.as_ref().unwrap().is_finished() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+
+            assert!(
+                repainted.load(Ordering::SeqCst),
+                "worker did not wake the UI"
+            );
+            app.poll();
+            assert!(!app.busy);
         }
     }
 
