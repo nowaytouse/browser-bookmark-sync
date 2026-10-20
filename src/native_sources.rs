@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::path::Path;
 
 use crate::health::review::ReviewDocument;
+use crate::sync::cancellation::Cancellation;
 use crate::sync::{reading_list, ExportConfig, SyncEngine};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +48,13 @@ pub struct BrowserImport {
 /// Called on the GUI's worker thread, not its event loop. Unread sources remain
 /// explicit issues beside successful reads, never silently empty collections.
 pub fn collect_browser_copy() -> Result<BrowserImport> {
+    collect_browser_copy_cancellable(&Cancellation::default())
+}
+
+pub(crate) fn collect_browser_copy_cancellable(
+    cancellation: &Cancellation,
+) -> Result<BrowserImport> {
+    cancellation.check()?;
     let directory = tempfile::Builder::new()
         .prefix("bookmark-cleaner-import-")
         .tempdir()
@@ -62,9 +70,11 @@ pub fn collect_browser_copy() -> Result<BrowserImport> {
         .build()
         .context("create browser-import worker runtime")?;
     runtime.block_on(async {
-        let (extra, reports) = reading_list::collect_for_import("all")
+        let (extra, reports) = reading_list::collect_for_import_cancellable("all", cancellation)
             .context("read supported browser/Profile reading lists")?;
+        cancellation.check()?;
         SyncEngine::new()?
+            .with_import_cancellation(cancellation.clone())
             .export_to_html_with_report(
                 None,
                 html_path,
@@ -82,13 +92,16 @@ pub fn collect_browser_copy() -> Result<BrowserImport> {
             .await
             .context("export isolated browser/Profile bookmark copies")
     })?;
+    cancellation.check()?;
     let document = ReviewDocument::load(&html, None, Some(&report_path))?;
+    cancellation.check()?;
     let sources = document
         .coverage
         .as_ref()
         .map(rows_from_report)
         .unwrap_or_default();
     validate_import_read_results(&document, &sources)?;
+    cancellation.check()?;
     Ok(BrowserImport {
         document,
         directory,
@@ -412,6 +425,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn cancelled_browser_import_stops_before_any_live_source_read() {
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        let result = collect_browser_copy_cancellable(&cancellation);
+        let error = result
+            .err()
+            .expect("cancelled import must not produce a document");
+        assert!(error.is::<crate::sync::cancellation::Cancelled>());
+    }
     #[test]
     fn unverified_discovery_is_not_a_browser_or_empty_collection() {
         let rows = rows_from_report(&json!({"sources":{"external_files_and_directories":[{

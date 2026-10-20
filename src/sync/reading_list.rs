@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::browser_utils::create_profile_snapshot;
 use crate::browsers::{Bookmark, ReadingListItem};
 use crate::data_types::models::{BrowserInstallation, BrowserKind, BrowserProfile};
+use crate::sync::cancellation::Cancellation;
 use crate::sync::collector::BookmarkCollector;
 
 fn item_bookmark(source: &str, item: ReadingListItem) -> Bookmark {
@@ -65,8 +66,17 @@ pub fn collect_for_export(browser_names: &str) -> Result<(Vec<Bookmark>, Vec<ser
 
 /// Interactive import keeps successful sources, with unread sources explicitly reported.
 pub fn collect_for_import(browser_names: &str) -> Result<(Vec<Bookmark>, Vec<serde_json::Value>)> {
-    let (installations, issues) = BookmarkCollector::discover_installations_with_report()?;
-    collect_installed_lists(browser_names, installations, issues, true)
+    collect_for_import_cancellable(browser_names, &Cancellation::default())
+}
+
+pub(crate) fn collect_for_import_cancellable(
+    browser_names: &str,
+    cancellation: &Cancellation,
+) -> Result<(Vec<Bookmark>, Vec<serde_json::Value>)> {
+    cancellation.check()?;
+    let (installations, issues) =
+        BookmarkCollector::discover_installations_cancellable(cancellation)?;
+    collect_installed_lists_cancellable(browser_names, installations, issues, true, cancellation)
 }
 
 fn failed_report(
@@ -88,16 +98,36 @@ fn failed_report(
 fn collect_installed_lists(
     browser_names: &str,
     installations: Vec<BrowserInstallation>,
-    mut reports: Vec<serde_json::Value>,
+    reports: Vec<serde_json::Value>,
     allow_partial: bool,
 ) -> Result<(Vec<Bookmark>, Vec<serde_json::Value>)> {
+    collect_installed_lists_cancellable(
+        browser_names,
+        installations,
+        reports,
+        allow_partial,
+        &Cancellation::default(),
+    )
+}
+
+fn collect_installed_lists_cancellable(
+    browser_names: &str,
+    installations: Vec<BrowserInstallation>,
+    mut reports: Vec<serde_json::Value>,
+    allow_partial: bool,
+    cancellation: &Cancellation,
+) -> Result<(Vec<Bookmark>, Vec<serde_json::Value>)> {
+    cancellation.check()?;
     let temp = tempfile::tempdir().context("create isolated reading-list snapshots")?;
     let mut bookmarks = Vec::new();
     for installation in installations {
+        cancellation.check()?;
         if !selected(&installation.name, browser_names) {
             continue;
         }
-        let profiles = match BookmarkCollector::discover_reading_list_profiles(&installation) {
+        let profiles_result = BookmarkCollector::discover_reading_list_profiles(&installation);
+        cancellation.check()?;
+        let profiles = match profiles_result {
             Ok(profiles) => profiles,
             Err(error) if allow_partial => {
                 reports.push(failed_report(
@@ -111,6 +141,7 @@ fn collect_installed_lists(
             Err(error) => return Err(error),
         };
         for profile in profiles {
+            cancellation.check()?;
             let collection_path = match installation.kind {
                 BrowserKind::Chromium(_) => profile.path.join("Sync Data/LevelDB"),
                 _ => profile.path.clone(),
@@ -121,7 +152,9 @@ fn collect_installed_lists(
                 profile.id,
                 profile.path.display()
             );
-            match read_profile(&installation, &profile, temp.path()) {
+            let read_result = read_profile(&installation, &profile, temp.path());
+            cancellation.check()?;
+            match read_result {
                 Ok((items, status)) => {
                     let count = items.len();
                     bookmarks.extend(items.into_iter().map(|item| item_bookmark(&source, item)));
@@ -145,6 +178,7 @@ fn collect_installed_lists(
             }
         }
     }
+    cancellation.check()?;
     Ok((bookmarks, reports))
 }
 
@@ -184,6 +218,30 @@ fn read_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_does_not_become_a_partial_reading_list_success() -> Result<()> {
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        let error = collect_installed_lists_cancellable(
+            "all",
+            vec![BrowserInstallation {
+                name: "Invalid fixture".into(),
+                kind: BrowserKind::Safari,
+                channel: None,
+                root_path: Path::new("unread-cancelled-fixture").to_path_buf(),
+            }],
+            vec![serde_json::json!({"status": "complete", "bookmark_count": 1})],
+            true,
+            &cancellation,
+        )
+        .unwrap_err();
+        assert!(error.is::<crate::sync::cancellation::Cancelled>());
+        assert!(collect_for_import_cancellable("all", &cancellation)
+            .unwrap_err()
+            .is::<crate::sync::cancellation::Cancelled>());
+        Ok(())
+    }
 
     #[test]
     fn reading_list_ids_include_source_and_url() {

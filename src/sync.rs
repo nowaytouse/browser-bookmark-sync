@@ -1,3 +1,4 @@
+pub(crate) mod cancellation;
 pub mod collector;
 pub mod dedupe;
 pub mod exporter;
@@ -126,6 +127,7 @@ pub struct SyncStats {
 pub struct SyncEngine {
     adapters: Vec<Box<dyn BrowserAdapter + Send + Sync>>,
     last_sync_time: Option<i64>,
+    import_cancellation: cancellation::Cancellation,
 }
 
 fn atomic_copy_replace(source: &Path, target: &Path) -> Result<()> {
@@ -165,7 +167,17 @@ impl SyncEngine {
         Ok(Self {
             adapters,
             last_sync_time: None,
+            import_cancellation: cancellation::Cancellation::default(),
         })
+    }
+
+    #[cfg(feature = "native-gui")]
+    pub(crate) fn with_import_cancellation(
+        mut self,
+        cancellation: cancellation::Cancellation,
+    ) -> Self {
+        self.import_cancellation = cancellation;
+        self
     }
 
     fn read_single_profile_for_write(
@@ -4026,6 +4038,64 @@ mod tests {
         path: PathBuf,
     }
 
+    struct CancelReadAdapter(cancellation::Cancellation);
+
+    impl BrowserAdapter for CancelReadAdapter {
+        fn browser_type(&self) -> BrowserType {
+            BrowserType::Chrome
+        }
+        fn detect_bookmark_path(&self) -> Result<PathBuf> {
+            panic!("synthetic read only")
+        }
+        fn read_bookmarks(&self) -> Result<Vec<Bookmark>> {
+            self.0.cancel();
+            Ok(vec![create_bookmark(
+                "cancelled",
+                "Do not publish",
+                Some("https://fixture.invalid"),
+            )])
+        }
+        fn write_bookmarks(&self, _: &[Bookmark]) -> Result<()> {
+            panic!("must not write browsers")
+        }
+        fn backup_bookmarks(&self) -> Result<PathBuf> {
+            panic!("must not back up browsers")
+        }
+        fn validate_bookmarks(&self, _: &[Bookmark]) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_read_prevents_html_and_report_publication() {
+        let cancellation = cancellation::Cancellation::default();
+        let engine = SyncEngine {
+            adapters: vec![Box::new(CancelReadAdapter(cancellation.clone()))],
+            last_sync_time: None,
+            import_cancellation: cancellation,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let html = directory.path().join("cancelled.html");
+        let report = directory.path().join("cancelled.json");
+        let error = engine
+            .export_to_html_with_report(
+                Some("chrome"),
+                html.to_str().unwrap(),
+                Some(report.to_str().unwrap()),
+                &ExportConfig {
+                    all_profiles: false,
+                    ..Default::default()
+                },
+                Vec::new(),
+                Vec::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.is::<cancellation::Cancelled>());
+        assert!(!html.exists());
+        assert!(!report.exists());
+    }
+
     struct MultiProfileWriteTestAdapter {
         path: PathBuf,
     }
@@ -4185,6 +4255,7 @@ mod tests {
                     path: current.clone(),
                 })],
                 last_sync_time: None,
+                import_cancellation: cancellation::Cancellation::default(),
             };
             engine.restore_backup("Chrome", None).await.unwrap();
             if file_name == "places.sqlite" {
@@ -4207,6 +4278,7 @@ mod tests {
         let mut engine = SyncEngine {
             adapters: vec![Box::new(MultiProfileWriteTestAdapter { path })],
             last_sync_time: None,
+            import_cancellation: cancellation::Cancellation::default(),
         };
 
         let error = engine
@@ -5362,11 +5434,13 @@ impl SyncEngine {
     fn collect_comprehensive_profiles(
         merge: bool,
         exclude_onion: bool,
+        cancellation: &cancellation::Cancellation,
     ) -> Result<(Vec<Bookmark>, InventoryReport)> {
         let snapshots = tempfile::tempdir().context("create isolated profile snapshots")?;
-        let (tree, inventory, _) = collector::BookmarkCollector::collect_all_with_options(
+        let (tree, inventory, _) = collector::BookmarkCollector::collect_all_cancellable(
             snapshots.path(),
             exclude_onion,
+            cancellation,
         )?;
         Ok((Self::legacy_bookmarks_from_tree(tree, merge), inventory))
     }
@@ -5386,7 +5460,11 @@ impl SyncEngine {
         let mut all_bookmarks = extra_bookmarks;
 
         if config.all_profiles && Self::requests_all_browsers(browser_names) {
-            let (bookmarks, _) = Self::collect_comprehensive_profiles(merge, config.exclude_onion)?;
+            let (bookmarks, _) = Self::collect_comprehensive_profiles(
+                merge,
+                config.exclude_onion,
+                &cancellation::Cancellation::default(),
+            )?;
             all_bookmarks.extend(bookmarks);
             return Ok(all_bookmarks);
         }
@@ -5468,6 +5546,7 @@ impl SyncEngine {
         mut extra_bookmarks: Vec<Bookmark>,
         external_source_reports: Vec<serde_json::Value>,
     ) -> Result<usize> {
+        self.import_cancellation.check()?;
         let merge = config.merge;
         let deduplicate = config.deduplicate;
         let clean_empty = config.clean_empty;
@@ -5536,8 +5615,11 @@ impl SyncEngine {
         }
 
         if comprehensive {
-            let (bookmarks, inventory) =
-                Self::collect_comprehensive_profiles(merge, config.exclude_onion)?;
+            let (bookmarks, inventory) = Self::collect_comprehensive_profiles(
+                merge,
+                config.exclude_onion,
+                &self.import_cancellation,
+            )?;
             inventory_warnings = inventory.warnings.clone();
             for warning in &inventory.warnings {
                 warn!("  ⚠️  {warning}");
@@ -5582,6 +5664,7 @@ impl SyncEngine {
             all_bookmarks.extend(bookmarks);
         } else {
             for adapter in &target_adapters {
+                self.import_cancellation.check()?;
                 let browser_name = adapter.browser_type().name();
                 let profiles_res = if config.all_profiles {
                     adapter.read_all_bookmarks_with_profiles()
@@ -5651,6 +5734,7 @@ impl SyncEngine {
             }
         }
 
+        self.import_cancellation.check()?;
         // Apply folder filter if specified
         if let Some(ref folder_name) = config.folder_filter {
             info!("📁 Filtering by folder: \"{}\"", folder_name);
@@ -5782,7 +5866,9 @@ impl SyncEngine {
             output_path.to_string()
         };
 
+        self.import_cancellation.check()?;
         export_bookmarks_to_html(&all_bookmarks, &output)?;
+        self.import_cancellation.check()?;
 
         let report_path_str = if let Some(p) = report_json_path {
             if p.starts_with("~/") {
@@ -5849,6 +5935,7 @@ impl SyncEngine {
         });
 
         let json_content = serde_json::to_string_pretty(&report)?;
+        self.import_cancellation.check()?;
         crate::browser_utils::atomic_write_file(
             Path::new(&report_path_str),
             json_content.as_bytes(),
@@ -5870,6 +5957,7 @@ impl SyncEngine {
             }
         }
 
+        self.import_cancellation.check()?;
         Ok(final_count)
     }
 

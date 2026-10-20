@@ -30,12 +30,33 @@ impl BookmarkCollector {
 
     pub fn discover_installations_with_report(
     ) -> Result<(Vec<BrowserInstallation>, Vec<serde_json::Value>)> {
-        Self::discover_installations_from_home(std::env::var_os("HOME").map(PathBuf::from))
+        Self::discover_installations_cancellable(&super::cancellation::Cancellation::default())
     }
 
+    pub(crate) fn discover_installations_cancellable(
+        cancellation: &super::cancellation::Cancellation,
+    ) -> Result<(Vec<BrowserInstallation>, Vec<serde_json::Value>)> {
+        Self::discover_installations_from_home_cancellable(
+            std::env::var_os("HOME").map(PathBuf::from),
+            cancellation,
+        )
+    }
+
+    #[cfg(test)]
     fn discover_installations_from_home(
         home: Option<PathBuf>,
     ) -> Result<(Vec<BrowserInstallation>, Vec<serde_json::Value>)> {
+        Self::discover_installations_from_home_cancellable(
+            home,
+            &super::cancellation::Cancellation::default(),
+        )
+    }
+
+    fn discover_installations_from_home_cancellable(
+        home: Option<PathBuf>,
+        cancellation: &super::cancellation::Cancellation,
+    ) -> Result<(Vec<BrowserInstallation>, Vec<serde_json::Value>)> {
+        cancellation.check()?;
         let home = home.context("HOME is required for full browser profile discovery")?;
 
         let candidates = vec![
@@ -178,6 +199,7 @@ impl BookmarkCollector {
         let mut discovered = Vec::new();
         let mut issues = Vec::new();
         for (name, kind, channel, path) in candidates {
+            cancellation.check()?;
             match path.try_exists() {
                 Ok(true) => discovered.push(BrowserInstallation {
                     name: name.to_string(),
@@ -196,6 +218,7 @@ impl BookmarkCollector {
         let entries = fs::read_dir(&app_support)
             .with_context(|| format!("Cannot read Application Support at {app_support:?}"))?;
         for entry in entries {
+            cancellation.check()?;
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -235,6 +258,7 @@ impl BookmarkCollector {
                 }
             };
             for child in children {
+                cancellation.check()?;
                 let child = match child {
                     Ok(child) => child,
                     Err(error) => {
@@ -263,7 +287,7 @@ impl BookmarkCollector {
 
         Self::deduplicate_installations(&mut discovered);
         discovered.sort_by(|left, right| left.name.cmp(&right.name));
-
+        cancellation.check()?;
         Ok((discovered, issues))
     }
 
@@ -631,23 +655,58 @@ impl BookmarkCollector {
         output_dir: &Path,
         exclude_onion: bool,
     ) -> Result<(BookmarkTree, InventoryReport, RunManifest)> {
-        let (installations, issues) = Self::discover_installations_with_report()?;
+        Self::collect_all_cancellable(
+            output_dir,
+            exclude_onion,
+            &super::cancellation::Cancellation::default(),
+        )
+    }
+
+    pub(crate) fn collect_all_cancellable(
+        output_dir: &Path,
+        exclude_onion: bool,
+        cancellation: &super::cancellation::Cancellation,
+    ) -> Result<(BookmarkTree, InventoryReport, RunManifest)> {
+        cancellation.check()?;
+        let (installations, issues) = Self::discover_installations_cancellable(cancellation)?;
         let (tree, mut inventory, mut manifest) =
-            Self::collect_discovered_installations(output_dir, exclude_onion, installations)?;
+            Self::collect_discovered_installations_cancellable(
+                output_dir,
+                exclude_onion,
+                installations,
+                cancellation,
+            )?;
         for issue in issues {
             if let Some(error) = issue["error"].as_str() {
                 inventory.warnings.push(error.to_owned());
                 manifest.warnings.push(error.to_owned());
             }
         }
+        cancellation.check()?;
         Ok((tree, inventory, manifest))
     }
 
+    #[cfg(test)]
     fn collect_discovered_installations(
         output_dir: &Path,
         exclude_onion: bool,
         installations: Vec<BrowserInstallation>,
     ) -> Result<(BookmarkTree, InventoryReport, RunManifest)> {
+        Self::collect_discovered_installations_cancellable(
+            output_dir,
+            exclude_onion,
+            installations,
+            &super::cancellation::Cancellation::default(),
+        )
+    }
+
+    fn collect_discovered_installations_cancellable(
+        output_dir: &Path,
+        exclude_onion: bool,
+        installations: Vec<BrowserInstallation>,
+        cancellation: &super::cancellation::Cancellation,
+    ) -> Result<(BookmarkTree, InventoryReport, RunManifest)> {
+        cancellation.check()?;
         let snapshots_dir = output_dir.join("snapshots");
         fs::create_dir_all(&snapshots_dir)?;
 
@@ -663,7 +722,10 @@ impl BookmarkCollector {
         let mut warnings = Vec::new();
 
         for inst in &installations {
-            let profiles = match Self::discover_profiles(inst) {
+            cancellation.check()?;
+            let profiles_result = Self::discover_profiles(inst);
+            cancellation.check()?;
+            let profiles = match profiles_result {
                 Ok(profiles) => profiles,
                 Err(error) => {
                     let message = format!(
@@ -688,6 +750,7 @@ impl BookmarkCollector {
             }
 
             for prof in &profiles {
+                cancellation.check()?;
                 let snapshot_root = snapshots_dir.join(inst.name.replace(['/', ':'], "_"));
                 let source_desc = SourceDescriptor {
                     browser: inst.kind.clone(),
@@ -705,15 +768,20 @@ impl BookmarkCollector {
                 let mut read_success = true;
                 let mut read_error = None;
 
-                match create_profile_snapshot(prof, &snapshot_root) {
+                let snapshot_result = create_profile_snapshot(prof, &snapshot_root);
+                cancellation.check()?;
+                match snapshot_result {
                     Ok(snapshot) => {
                         snapshot_path = Some(snapshot.snapshot_path.clone());
                         for (k, v) in &snapshot.blake3_hashes {
                             snapshot_hashes
                                 .insert(format!("{}/{}/{}", inst.name, prof.id, k), v.clone());
                         }
-                        match Self::harvest_snapshot_bookmarks(inst, prof, &snapshot, &source_desc)
-                        {
+                        cancellation.check()?;
+                        let harvest_result =
+                            Self::harvest_snapshot_bookmarks(inst, prof, &snapshot, &source_desc);
+                        cancellation.check()?;
+                        match harvest_result {
                             Ok((nodes, count, folders)) => {
                                 prof_nodes = nodes;
                                 bm_count = count;
@@ -785,6 +853,7 @@ impl BookmarkCollector {
         let has_safari_source = sources
             .iter()
             .any(|source| matches!(&source.browser, BrowserKind::Safari));
+        cancellation.check()?;
         anyhow::ensure!(
             total_profiles_count > 0 || has_safari_source,
             "Full bookmark collection found no readable browser profiles and no Safari source"
@@ -824,6 +893,7 @@ impl BookmarkCollector {
             blake3_snapshot_hashes: snapshot_hashes,
         };
 
+        cancellation.check()?;
         Ok((tree, inventory, manifest))
     }
 
@@ -1302,6 +1372,32 @@ impl BookmarkCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_precedes_discovery_and_snapshot_output() -> Result<()> {
+        let cancellation = super::super::cancellation::Cancellation::default();
+        cancellation.cancel();
+        let error =
+            BookmarkCollector::discover_installations_from_home_cancellable(None, &cancellation)
+                .unwrap_err();
+        assert!(error.is::<super::super::cancellation::Cancelled>());
+        let temp = tempfile::tempdir()?;
+        let output = temp.path().join("not-created");
+        let error =
+            BookmarkCollector::collect_all_cancellable(&output, false, &cancellation).unwrap_err();
+        assert!(error.is::<super::super::cancellation::Cancelled>());
+        assert!(!output.exists());
+        let error = BookmarkCollector::collect_discovered_installations_cancellable(
+            &output,
+            false,
+            Vec::new(),
+            &cancellation,
+        )
+        .unwrap_err();
+        assert!(error.is::<super::super::cancellation::Cancelled>());
+        assert!(!output.exists());
+        Ok(())
+    }
 
     #[test]
     fn full_discovery_requires_home() {

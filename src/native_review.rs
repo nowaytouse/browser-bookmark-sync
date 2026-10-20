@@ -9,6 +9,7 @@ use crate::native_preferences::{
 };
 use crate::native_scan::{self, ScanHandle, ScanStatus};
 use crate::native_sources::{self, BrowserImport, SourceRow, SourceState};
+use crate::sync::cancellation::Cancellation;
 use chrono::{DateTime, Utc};
 use eframe::egui::{self, RichText};
 use std::collections::{BTreeMap, BTreeSet};
@@ -330,6 +331,8 @@ struct ReviewApp {
     sender: mpsc::Sender<Event>,
     receiver: mpsc::Receiver<Event>,
     worker: Option<std::thread::JoinHandle<()>>,
+    pending_result: Option<Event>,
+    import_cancellation: Option<Cancellation>,
     busy: bool,
     message: String,
     message_is_error: bool,
@@ -380,6 +383,8 @@ impl Default for ReviewApp {
             sender,
             receiver,
             worker: None,
+            pending_result: None,
+            import_cancellation: None,
             busy: false,
             message: String::new(),
             message_is_error: false,
@@ -489,7 +494,26 @@ impl ReviewApp {
             "Reading browsers, profiles and reading lists…",
         )
         .into();
-        self.spawn_worker(move || Event::Imported(native_sources::collect_browser_copy()));
+        let cancellation = Cancellation::default();
+        self.import_cancellation = Some(cancellation.clone());
+        self.spawn_worker(move || {
+            Event::Imported(native_sources::collect_browser_copy_cancellable(
+                &cancellation,
+            ))
+        });
+    }
+
+    fn cancel_import(&mut self) {
+        if let Some(cancellation) = &self.import_cancellation {
+            cancellation.cancel();
+            self.message = tr(
+                self.zh(),
+                "正在取消；等待当前读取结束，不再读取后续来源…",
+                "Cancelling; waiting for the current read to finish, then stopping further sources…",
+            )
+            .into();
+            self.context.request_repaint();
+        }
     }
 
     fn spawn_worker(&mut self, task: impl FnOnce() -> Event + Send + 'static) {
@@ -503,6 +527,7 @@ impl ReviewApp {
             Ok(worker) => self.worker = Some(worker),
             Err(error) => {
                 self.busy = false;
+                self.import_cancellation = None;
                 self.message_is_error = true;
                 self.message = format!(
                     "{} {error}",
@@ -561,6 +586,8 @@ impl ReviewApp {
                 .is_some_and(|worker| worker.join().is_err())
         {
             self.busy = false;
+            self.import_cancellation = None;
+            self.pending_result = None;
             self.message_is_error = true;
             self.scan_verified = false;
             self.message = tr(
@@ -570,14 +597,34 @@ impl ReviewApp {
             )
             .into();
         }
-        while let Ok(event) = self.receiver.try_recv() {
+        let mut pending = finished.then(|| self.pending_result.take()).flatten();
+        while let Some(event) = pending.take().or_else(|| self.receiver.try_recv().ok()) {
             if let Event::ProxyChecked(network, result) = event {
                 self.proxy_test_running = false;
                 self.proxy_test_result = Some((network, result));
                 continue;
             }
+            // A queued result is not completion until the worker has exited.
+            if self.worker.is_some() {
+                self.pending_result = Some(event);
+                continue;
+            }
             self.busy = false;
             self.message_is_error = false;
+            if matches!(&event, Event::Imported(_))
+                && self
+                    .import_cancellation
+                    .take()
+                    .is_some_and(|cancellation| cancellation.is_cancelled())
+            {
+                self.message = tr(
+                    self.zh(),
+                    "已取消浏览器导入；当前内容和清理决定未改变。",
+                    "Browser import cancelled; current content and decisions are unchanged.",
+                )
+                .into();
+                continue;
+            }
             match event {
                 Event::ScanStarted(Ok(handle)) => {
                     self.message = tr(self.zh(), "检测已独立启动。可关闭窗口，之后打开批次载入结果。", "Check started independently. You can close this window and reopen the batch to load results.").into();
@@ -988,6 +1035,17 @@ impl eframe::App for ReviewApp {
                 ui.horizontal(|ui| {
                     if self.busy {
                         ui.spinner();
+                    }
+                    if let Some(cancellation) = &self.import_cancellation {
+                        if ui
+                            .add_enabled(
+                                !cancellation.is_cancelled(),
+                                egui::Button::new(tr(self.zh(), "取消导入", "Cancel import")),
+                            )
+                            .clicked()
+                        {
+                            self.cancel_import();
+                        }
                     }
                     ui.add(egui::Label::new(RichText::new(&self.message).small()).truncate())
                         .on_hover_text(&self.message);
@@ -2679,6 +2737,130 @@ mod tests {
         assert!(app.message_is_error);
         assert!(app.message.contains("synthetic read error"));
         assert!(!app.message.contains("unexpectedly"));
+    }
+
+    #[test]
+    fn cancelled_import_waits_for_worker_exit_and_discards_a_late_success() {
+        let mut app = ReviewApp::default();
+        app.preferences.language = LanguageChoice::English;
+        app.accept_document(fixture(), true);
+        app.decide(vec![0], Some(Decision::Keep));
+        app.selected.insert(0);
+        app.import_directory = Some(tempfile::tempdir().unwrap());
+        let document = app.doc.clone().unwrap();
+        let decisions = app.decisions.clone();
+        let saved = app.saved_decisions.clone();
+        let sources = app.sources.clone();
+        let history = app.history.clone();
+        let snapshot = app.import_directory.as_ref().unwrap().path().to_path_buf();
+        let incoming = tempfile::tempdir().unwrap();
+        let discarded = incoming.path().to_path_buf();
+        let imported = BrowserImport {
+            document: fixture(),
+            sources: Vec::new(),
+            directory: incoming,
+        };
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let sender = app.sender.clone();
+        app.busy = true;
+        app.import_cancellation = Some(Cancellation::default());
+        app.worker = Some(std::thread::spawn(move || {
+            sender.send(Event::Imported(Ok(imported))).unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+        }));
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+
+        app.cancel_import();
+        app.proxy_test_running = true;
+        let network = NetworkSettings::default();
+        app.sender
+            .send(Event::ProxyChecked(network, Ok(())))
+            .unwrap();
+        app.poll();
+        let stayed_busy = app.busy;
+        let proxy_completed =
+            !app.proxy_test_running && app.proxy_test_result == Some((network, Ok(())));
+        let waiting_message = app.message.clone();
+        let kept_document_while_waiting = Arc::ptr_eq(&document, app.doc.as_ref().unwrap());
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.worker.as_ref().unwrap().is_finished() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        app.poll();
+
+        assert!(
+            stayed_busy,
+            "must not report cancellation before worker exit"
+        );
+        assert!(waiting_message.starts_with("Cancelling;"));
+        assert!(
+            proxy_completed,
+            "proxy results must not wait for an import to exit"
+        );
+        assert!(kept_document_while_waiting);
+        assert!(!app.busy);
+        assert!(app.worker.is_none());
+        assert!(app.import_cancellation.is_none());
+        assert!(!app.message_is_error);
+        assert_eq!(
+            app.message,
+            "Browser import cancelled; current content and decisions are unchanged."
+        );
+        assert!(Arc::ptr_eq(&document, app.doc.as_ref().unwrap()));
+        assert_eq!(app.decisions, decisions);
+        assert_eq!(app.saved_decisions, saved);
+        assert_eq!(app.sources, sources);
+        assert_eq!(app.history, history);
+        assert_eq!(app.selected, BTreeSet::from([0]));
+        assert!(app.active_db);
+        assert_eq!(app.import_directory.as_ref().unwrap().path(), snapshot);
+        assert!(snapshot.exists());
+        assert!(
+            !discarded.exists(),
+            "discard the cancelled private import copy"
+        );
+    }
+
+    #[test]
+    fn cancellation_does_not_leak_into_the_next_import() {
+        let mut app = ReviewApp::default();
+        app.preferences.language = LanguageChoice::English;
+        app.busy = true;
+        app.import_cancellation = Some(Cancellation::default());
+        app.cancel_import();
+        app.sender
+            .send(Event::Imported(Err(
+                crate::sync::cancellation::Cancelled.into()
+            )))
+            .unwrap();
+        app.poll();
+        assert!(app.doc.is_none());
+        assert!(!app.message_is_error);
+        assert!(!app.busy);
+        assert!(app.import_cancellation.is_none());
+
+        app.busy = true;
+        app.import_cancellation = Some(Cancellation::default());
+        app.sender
+            .send(Event::Imported(Ok(BrowserImport {
+                document: fixture(),
+                sources: Vec::new(),
+                directory: tempfile::tempdir().unwrap(),
+            })))
+            .unwrap();
+        app.poll();
+        assert!(app.doc.is_some());
+        assert!(!app.busy);
+        assert!(app.import_cancellation.is_none());
+        assert!(!app.message_is_error);
     }
 
     #[test]
