@@ -33,6 +33,17 @@ fn group_label(zh: bool, choice: GroupChoice) -> &'static str {
     }
 }
 
+fn count_verdicts(doc: &ReviewDocument) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for item in &doc.items {
+        *counts.entry(&item.verdict).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(verdict, count)| (verdict.to_owned(), count))
+        .collect()
+}
+
 fn app_mark(ui: &mut egui::Ui, size: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     let ink = ui.visuals().hyperlink_color;
@@ -308,6 +319,7 @@ fn apply_style(ctx: &egui::Context, preferences: NativePreferences) {
 struct ReviewApp {
     context: egui::Context,
     doc: Option<Arc<ReviewDocument>>,
+    verdict_counts: BTreeMap<String, usize>,
     db: Option<PathBuf>,
     source_review: Option<PathBuf>,
     import_directory: Option<tempfile::TempDir>,
@@ -360,6 +372,7 @@ impl Default for ReviewApp {
         Self {
             context: egui::Context::default(),
             doc: None,
+            verdict_counts: BTreeMap::new(),
             db: None,
             source_review: None,
             import_directory: None,
@@ -541,6 +554,11 @@ impl ReviewApp {
         }
     }
 
+    fn set_document(&mut self, doc: ReviewDocument) {
+        self.verdict_counts = count_verdicts(&doc);
+        self.doc = Some(Arc::new(doc));
+    }
+
     fn accept_document(&mut self, doc: ReviewDocument, active_db: bool) {
         self.message_is_error = false;
         self.source_details_open = None;
@@ -553,7 +571,7 @@ impl ReviewApp {
             .map(native_sources::rows_from_report)
             .unwrap_or_default();
         self.duplicates = duplicate_ids(&doc);
-        self.doc = Some(Arc::new(doc));
+        self.set_document(doc);
         self.decisions.clear();
         self.saved_decisions.clear();
         self.selected.clear();
@@ -646,7 +664,7 @@ impl ReviewApp {
                         .is_some_and(|old| old.input_hash == doc.input_hash)
                     {
                         doc.coverage = self.doc.as_ref().and_then(|old| old.coverage.clone());
-                        self.doc = Some(Arc::new(doc));
+                        self.set_document(doc);
                         self.active_db = true;
                         self.scan_verified = verified;
                         self.filter_dirty = true;
@@ -1345,12 +1363,12 @@ impl ReviewApp {
         let Some(doc) = self.doc.clone() else {
             return;
         };
-        let untested = doc.items.iter().filter(|i| i.verdict == "untested").count();
-        let dead = doc
-            .items
-            .iter()
-            .filter(|i| i.verdict == "confirmed_dead")
-            .count();
+        let untested = self.verdict_counts.get("untested").copied().unwrap_or(0);
+        let dead = self
+            .verdict_counts
+            .get("confirmed_dead")
+            .copied()
+            .unwrap_or(0);
         let removed = self.removed();
         let retained = doc.items.len().saturating_sub(removed);
         egui::Frame::default()
@@ -1370,15 +1388,22 @@ impl ReviewApp {
                     ] {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            ui.label(RichText::new(value.to_string()).size(18.0).strong().color(
-                                if primary {
-                                    ui.visuals().hyperlink_color
-                                } else {
-                                    ui.visuals().text_color()
-                                },
-                            ))
+                            ui.label(
+                                RichText::new(value.to_string())
+                                    .size(if primary { 24.0 } else { 16.0 })
+                                    .strong()
+                                    .color(if primary {
+                                        ui.visuals().hyperlink_color
+                                    } else {
+                                        ui.visuals().text_color()
+                                    }),
+                            )
                             .on_hover_text(format!("{label}: {value}"));
-                            ui.small(label);
+                            if primary {
+                                ui.label(label);
+                            } else {
+                                ui.weak(label);
+                            }
                         });
                     }
                     if self.scan.is_none()
@@ -1578,7 +1603,7 @@ impl ReviewApp {
                         .selected_text(verdict_label(zh, &self.verdict_filter))
                         .show_ui(ui, |ui| {
                             let mut verdicts: BTreeSet<_> =
-                                doc.items.iter().map(|i| i.verdict.as_str()).collect();
+                                self.verdict_counts.keys().map(String::as_str).collect();
                             verdicts.insert("");
                             verdicts.insert("duplicates");
                             for value in verdicts {
@@ -1825,7 +1850,7 @@ impl ReviewApp {
                             let mut all = count == group.ids.len();
                             let partial = count > 0 && !all;
                             egui::Frame::default()
-                                .fill(ui.visuals().faint_bg_color)
+                                .fill(egui::Color32::TRANSPARENT)
                                 .stroke(egui::Stroke::NONE)
                                 .corner_radius(egui::CornerRadius::same(4))
                                 .inner_margin(egui::Margin::symmetric(8, 0))
@@ -1837,7 +1862,8 @@ impl ReviewApp {
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
                                             let group_selection = ui
-                                                .add(
+                                                .add_sized(
+                                                    [24.0, 24.0],
                                                     egui::Checkbox::new(&mut all, "")
                                                     .indeterminate(partial),
                                                 )
@@ -1899,7 +1925,7 @@ impl ReviewApp {
                                             }
                                             ui.add(
                                                 egui::Label::new(
-                                                    RichText::new(label).strong().size(15.0),
+                                                    RichText::new(label).strong().size(13.0),
                                                 )
                                                 .truncate(),
                                             );
@@ -1940,7 +1966,7 @@ impl ReviewApp {
                                     };
                                     let mut selected = self.selected.contains(&id);
                                     let selection_response = ui
-                                        .checkbox(&mut selected, "")
+                                        .add_sized([24.0, 24.0], egui::Checkbox::new(&mut selected, ""))
                                         .on_hover_text(tr(zh, "选择此书签", "Select this bookmark"))
                                         .accessible_name(format!(
                                             "{}: {title}",
@@ -2988,6 +3014,70 @@ mod tests {
     }
 
     #[test]
+    fn document_counts_refresh_on_evidence_reload_and_replacement_not_review_decisions() {
+        let mut app = ReviewApp::default();
+        app.accept_document(fixture(), false);
+        assert_eq!(app.verdict_counts, BTreeMap::from([("untested".into(), 5)]));
+        let mut checked = fixture();
+        checked.items[0].verdict = "confirmed_dead".into();
+        checked.items[1].verdict = "protected".into();
+        app.sender
+            .send(Event::EvidenceLoaded(Ok((checked, true))))
+            .unwrap();
+        app.poll();
+        assert_eq!(
+            app.verdict_counts,
+            BTreeMap::from([
+                ("untested".into(), 3),
+                ("confirmed_dead".into(), 1),
+                ("protected".into(), 1),
+            ])
+        );
+        app.decide(vec![0], Some(Decision::Keep));
+        app.undo();
+        assert_eq!(app.verdict_counts.get("confirmed_dead"), Some(&1));
+        app.accept_document(fixture(), false);
+        assert_eq!(app.verdict_counts, BTreeMap::from([("untested".into(), 5)]));
+    }
+
+    #[test]
+    fn synthetic_large_document_counter_benchmark() {
+        let mut doc = fixture();
+        let item = doc.items[0].clone();
+        doc.items = (0..100_000)
+            .map(|id| {
+                let mut item = item.clone();
+                item.id = id;
+                item
+            })
+            .collect();
+        let cached = count_verdicts(&doc);
+        assert_eq!(cached.get("untested"), Some(&100_000));
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            std::hint::black_box(
+                std::hint::black_box(&doc.items)
+                    .iter()
+                    .filter(|item| item.verdict == "untested")
+                    .count(),
+            );
+            std::hint::black_box(
+                std::hint::black_box(&doc.items)
+                    .iter()
+                    .filter(|item| item.verdict == "confirmed_dead")
+                    .count(),
+            );
+        }
+        let rescanned = started.elapsed();
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            std::hint::black_box(std::hint::black_box(&cached).get("untested"));
+            std::hint::black_box(std::hint::black_box(&cached).get("confirmed_dead"));
+        }
+        println!("synthetic 100000 entries, 100 counter reads: rescanned={rescanned:?}, cached={:?}; count construction is excluded", started.elapsed());
+    }
+
+    #[test]
     fn primary_action_fills_keep_white_text_readable() {
         let channel = |value: u8| {
             let value = f32::from(value) / 255.0;
@@ -3066,6 +3156,63 @@ mod tests {
                 assert!(
                     (pair[1] - pair[0] - expected).abs() < 1.0,
                     "row stride must match virtual scrolling: {pair:?}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_review_layout_keeps_the_list_visible_and_selection_targets_large_enough() {
+        for theme in [ThemeChoice::Light, ThemeChoice::Dark] {
+            for (language, scale, width) in [
+                (LanguageChoice::English, 1.0, 1180.0),
+                (LanguageChoice::SimplifiedChinese, 1.3, 800.0),
+            ] {
+                let ctx = egui::Context::default();
+                ctx.enable_accesskit();
+                install_chinese_font(&ctx);
+                let mut app = ReviewApp::default();
+                app.preferences.theme = theme;
+                app.preferences.language = language;
+                app.preferences.text_scale = scale;
+                app.load_demo().unwrap();
+                app.rebuild_filter();
+                apply_style(&ctx, app.preferences);
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 780.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        app.summary(ui);
+                        app.list(ui);
+                    },
+                );
+                output.textures_delta.clear();
+                let nodes = output.platform_output.accesskit_update.unwrap().nodes;
+                let selection: Vec<_> = nodes
+                    .iter()
+                    .filter(|(_, node)| node.role() == egui::accesskit::Role::CheckBox)
+                    .map(|(_, node)| node.bounds().unwrap())
+                    .collect();
+                assert!(!selection.is_empty());
+                assert!(
+                    selection
+                        .iter()
+                        .all(|rect| rect.width() >= 24.0 && rect.height() >= 24.0),
+                    "selection controls must have usable targets"
+                );
+                let first = selection
+                    .iter()
+                    .map(|rect| rect.y0)
+                    .min_by(f64::total_cmp)
+                    .unwrap();
+                assert!(
+                    first < 780.0 * 0.5,
+                    "the list must start in the upper half: {first}"
                 );
             }
         }

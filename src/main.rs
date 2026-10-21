@@ -2327,13 +2327,15 @@ async fn run_cli(cli: Cli) -> Result<()> {
             };
 
             // Copy databases to temp for safety
-            let temp_dir = std::path::Path::new("/tmp/browser-sync-export");
-            std::fs::create_dir_all(temp_dir)?;
+            let temp_dir = tempfile::Builder::new()
+                .prefix("browser-sync-export-")
+                .tempdir()
+                .context("create private isolated export directory")?;
 
             if export_passwords {
                 info!("🔑 Exporting passwords...");
                 let login_db = format!("{db_base}/Login Data");
-                let temp_db = temp_dir.join("LoginData");
+                let temp_db = temp_dir.path().join("LoginData");
 
                 if std::path::Path::new(&login_db).exists() {
                     std::fs::copy(&login_db, &temp_db)?;
@@ -2370,7 +2372,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
             if export_cookies {
                 info!("🍪 Exporting cookies...");
                 let cookies_db = format!("{db_base}/Cookies");
-                let temp_db = temp_dir.join("Cookies");
+                let temp_db = temp_dir.path().join("Cookies");
 
                 if std::path::Path::new(&cookies_db).exists() {
                     std::fs::copy(&cookies_db, &temp_db)?;
@@ -2434,7 +2436,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
             if export_downloads {
                 info!("📥 Exporting download history...");
                 let history_db = format!("{db_base}/History");
-                let temp_db = temp_dir.join("History");
+                let temp_db = temp_dir.path().join("History");
 
                 if std::path::Path::new(&history_db).exists() {
                     std::fs::copy(&history_db, &temp_db)?;

@@ -36,7 +36,12 @@ pub fn validate_url_parsed(parsed: &Url, allow_private: bool) -> SecurityCheckRe
     }
 
     // IP address checks
-    if let Ok(ip) = host_str.parse::<IpAddr>() {
+    // URL hosts retain brackets around IPv6 literals; IpAddr does not accept them.
+    let literal = host_str
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(&host_str);
+    if let Ok(ip) = literal.parse::<IpAddr>() {
         if let Err(reason) = is_ip_allowed(ip, allow_private) {
             return SecurityCheckResult::Denied(reason);
         }
@@ -92,6 +97,9 @@ pub fn is_ip_allowed(ip: IpAddr, allow_private: bool) -> Result<(), String> {
             }
         }
         IpAddr::V6(ip6) => {
+            if let Some(ip4) = ip6.to_ipv4_mapped() {
+                return is_ip_allowed(IpAddr::V4(ip4), false);
+            }
             // Loopback ::1
             if ip6.is_loopback() {
                 return Err("Loopback IPv6 address blocked".to_string());
@@ -122,6 +130,44 @@ pub fn is_ip_allowed(ip: IpAddr, allow_private: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipv6_literals_and_mapped_ipv4_cannot_bypass_private_address_checks() {
+        for address in [
+            "::1",
+            "::",
+            "fc00::1",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.168.1.1",
+            "::ffff:169.254.169.254",
+        ] {
+            let url = format!("http://[{address}]/");
+            assert!(
+                matches!(
+                    validate_url_security(&url, false),
+                    SecurityCheckResult::Denied(_)
+                ),
+                "unsafe literal was allowed: {url}"
+            );
+            assert!(
+                is_ip_allowed(address.parse().unwrap(), false).is_err(),
+                "unsafe resolved address was allowed: {address}"
+            );
+            assert_eq!(
+                validate_url_security(&url, true),
+                SecurityCheckResult::Allowed
+            );
+        }
+        for address in ["2606:4700:4700::1111", "::ffff:1.1.1.1"] {
+            assert_eq!(
+                validate_url_security(&format!("https://[{address}]/"), false),
+                SecurityCheckResult::Allowed
+            );
+            assert!(is_ip_allowed(address.parse().unwrap(), false).is_ok());
+        }
+    }
 
     #[test]
     fn test_security_schemes() {

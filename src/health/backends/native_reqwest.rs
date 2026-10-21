@@ -406,6 +406,11 @@ mod tests {
             .unwrap_err()
             .starts_with("SecurityBlocked:"));
         assert!(validate_resolved_addresses(&[private], true).is_ok());
+        let mapped: SocketAddr = "[::ffff:127.0.0.1]:80".parse().unwrap();
+        assert!(validate_resolved_addresses(&[public, mapped], false)
+            .unwrap_err()
+            .starts_with("SecurityBlocked:"));
+        assert!(validate_resolved_addresses(&[mapped], true).is_ok());
     }
 
     #[test]
