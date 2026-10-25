@@ -95,6 +95,39 @@ impl CurlCliBackend {
             }
         }
     }
+
+    fn build_command(
+        binary: &str,
+        target_url: &str,
+        body_path: &std::path::Path,
+        timeout_secs: u64,
+        proxy_url: Option<&str>,
+        resolve_entry: Option<&str>,
+    ) -> Command {
+        let mut command = Command::new(binary);
+        command
+            // This must be first: local curlrc must not add requests, credentials or uploads.
+            .arg("-q")
+            .arg("--globoff")
+            .arg("-s")
+            .arg("--proto")
+            .arg("=http,https")
+            .arg("--max-redirs")
+            .arg("0")
+            .arg("--max-filesize")
+            .arg(MAX_BODY_BYTES.to_string())
+            .arg("--connect-timeout")
+            .arg("10")
+            .arg("-m")
+            .arg(format!("{timeout_secs}"))
+            .arg("-o")
+            .arg(body_path)
+            .arg("-w")
+            .arg("%{json}\n%header{retry-after}");
+        Self::configure_route(&mut command, proxy_url, resolve_entry);
+        command.arg("--url").arg(target_url);
+        command
+    }
 }
 
 impl Default for CurlCliBackend {
@@ -189,25 +222,14 @@ impl ProbeBackend for CurlCliBackend {
         let content_target_url = target_url.clone();
         let output = tokio::task::spawn_blocking(move || {
             let body_file = tempfile::NamedTempFile::new()?;
-            let mut command = Command::new(&bin_path);
-            command
-                .arg("-s")
-                .arg("--proto")
-                .arg("=http,https")
-                .arg("--max-redirs")
-                .arg("0")
-                .arg("--max-filesize")
-                .arg(MAX_BODY_BYTES.to_string())
-                .arg("--connect-timeout")
-                .arg("10")
-                .arg("-m")
-                .arg(format!("{timeout_secs}"))
-                .arg("-o")
-                .arg(body_file.path())
-                .arg("-w")
-                .arg("%{json}\n%header{retry-after}");
-            Self::configure_route(&mut command, proxy_url.as_deref(), resolve_entry.as_deref());
-            command.arg(target_url);
+            let mut command = Self::build_command(
+                &bin_path,
+                &target_url,
+                body_file.path(),
+                timeout_secs,
+                proxy_url.as_deref(),
+                resolve_entry.as_deref(),
+            );
             let command_output = command.output()?;
             let mut body = Vec::new();
             std::fs::File::open(body_file.path())?
@@ -309,6 +331,130 @@ mod tests {
     use super::CurlCliBackend;
     use crate::health::models::BackendObservation;
     use std::process::Command;
+
+    #[test]
+    fn curl_command_disables_config_and_treats_the_target_as_one_literal_url() {
+        let url = "https://example.test/items[1-2]?tag={one,two}";
+        let command = CurlCliBackend::build_command(
+            "curl",
+            url,
+            std::path::Path::new("body"),
+            10,
+            None,
+            None,
+        );
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            args[0], "-q",
+            "curl must ignore its config before any other argument"
+        );
+        assert!(args.contains(&"--globoff"));
+        assert_eq!(&args[args.len() - 2..], ["--url", url]);
+    }
+
+    #[test]
+    fn curl_does_not_read_an_ambient_config_file() {
+        let Some(binary) = CurlCliBackend::find_binary() else {
+            return;
+        };
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(".curlrc"),
+            "synthetic-invalid-option = true\n",
+        )
+        .unwrap();
+        let output = CurlCliBackend::build_command(
+            &binary,
+            "http://127.0.0.1:1/unused",
+            &temp.path().join("body"),
+            2,
+            None,
+            None,
+        )
+        .env("CURL_HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path())
+        .env("HOME", temp.path())
+        .arg("--version")
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("synthetic-invalid-option"));
+    }
+
+    #[test]
+    fn curl_sends_brackets_and_braces_without_expanding_the_bookmark() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::time::{Duration, Instant};
+        let Some(binary) = CurlCliBackend::find_binary() else {
+            return;
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((mut socket, _)) => {
+                        socket.set_nonblocking(false).unwrap();
+                        socket
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let mut request = String::new();
+                        let mut reader = BufReader::new(&mut socket);
+                        reader.read_line(&mut request).unwrap();
+                        loop {
+                            let mut header = String::new();
+                            if reader.read_line(&mut header).unwrap() == 0 || header == "\r\n" {
+                                break;
+                            }
+                        }
+                        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").unwrap();
+                        return request;
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("curl fixture was not reached: {error}"),
+                }
+            }
+        });
+        let output = CurlCliBackend::build_command(
+            &binary,
+            &format!("http://{address}/items[1-2]?tag={{one,two}}"),
+            &temp.path().join("body"),
+            2,
+            None,
+            None,
+        )
+        .env("CURL_HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path())
+        .env("HOME", temp.path())
+        .output()
+        .unwrap();
+        let request = server.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(request, "GET /items[1-2]?tag={one,two} HTTP/1.1\r\n");
+        let metadata = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(metadata.lines().next().unwrap()).is_ok()
+        );
+    }
 
     #[test]
     fn find_binary_returns_cached_discovery_result() {

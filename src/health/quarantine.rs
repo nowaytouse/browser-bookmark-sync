@@ -11,7 +11,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 
 const SELECTION_SCHEMA: &str = "quarantine-selection-v1";
 const AUDIT_SCHEMA: &str = "deletion-audit-v1";
@@ -93,16 +95,10 @@ pub fn apply_selection(
     if let Some(parent) = nonempty_parent(output_path) {
         fs::create_dir_all(parent).context("create output directory")?;
     }
-    ensure!(
-        !output_path.exists(),
-        "refusing to overwrite existing output"
-    );
+    ensure_unoccupied(output_path, "output")?;
 
     let audit_path = audit_path_for(output_path);
-    ensure!(
-        !audit_path.exists(),
-        "refusing to overwrite existing deletion audit"
-    );
+    ensure_unoccupied(&audit_path, "deletion audit")?;
     ensure!(
         !same_path(selection_path, output_path)?,
         "selection and output must differ"
@@ -251,31 +247,36 @@ pub fn apply_selection(
         hash_file(input_path)? == input_hash_before,
         "input check copy changed while applying selection"
     );
-    let temp_output = output_path.with_file_name(format!(
-        ".{}.tmp-{}",
-        output_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("cleaned.html"),
-        uuid::Uuid::new_v4()
-    ));
+    let parent = nonempty_parent(output_path).unwrap_or_else(|| Path::new("."));
+    // The shared exporter replaces its destination; keep it inside a private
+    // directory rather than replacing a NamedTempFile's owned path.
+    let staging = tempfile::tempdir_in(parent).context("create private export directory")?;
+    let staged_output = staging.path().join("cleaned.html");
     crate::sync::export_bookmarks_to_html(
         &bookmarks,
-        temp_output.to_str().context("output path is not UTF-8")?,
+        staged_output.to_str().context("output path is not UTF-8")?,
     )
     .context("write temporary cleaned copy")?;
-    File::open(&temp_output)
-        .context("open temporary cleaned copy")?
+    let mut temp_output = NamedTempFile::new_in(parent).context("stage cleaned copy")?;
+    io::copy(
+        &mut File::open(&staged_output).context("open temporary cleaned copy")?,
+        temp_output.as_file_mut(),
+    )
+    .context("stage temporary cleaned copy")?;
+    temp_output
+        .as_file()
         .sync_all()
         .context("sync temporary cleaned copy")?;
 
     let input_hash_after = hash_file(input_path)?;
     if input_hash_after != input_hash_before {
-        let _ = fs::remove_file(&temp_output);
         bail!("input check copy changed during apply; cleaned output discarded");
     }
     let output_bookmarks = crate::sync::import_bookmarks_from_html(
-        temp_output.to_str().context("output path is not UTF-8")?,
+        temp_output
+            .path()
+            .to_str()
+            .context("output path is not UTF-8")?,
     )
     .context("verify cleaned output")?;
     let output_count = count_bookmarks(&output_bookmarks);
@@ -302,12 +303,15 @@ pub fn apply_selection(
         removed_items: selection.items,
     };
     let data = serde_json::to_vec_pretty(&audit).context("serialize deletion audit")?;
-    atomic_write(&audit_path, &data)?;
-    if let Err(error) = fs::rename(&temp_output, output_path) {
-        let _ = fs::remove_file(&audit_path);
-        let _ = fs::remove_file(&temp_output);
-        return Err(error).context("publish cleaned copy atomically");
-    }
+    let mut temp_audit = NamedTempFile::new_in(parent).context("stage deletion audit")?;
+    temp_audit
+        .write_all(&data)
+        .context("write deletion audit")?;
+    temp_audit
+        .as_file()
+        .sync_all()
+        .context("sync deletion audit")?;
+    publish_quarantine_files(temp_output, output_path, temp_audit, &audit_path)?;
     if hash_file(input_path)? != audit.input_hash_before {
         let _ = fs::remove_file(output_path);
         let _ = fs::remove_file(&audit_path);
@@ -334,6 +338,38 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     crate::browser_utils::atomic_write_file(path, data).context("atomic write")
 }
 
+fn ensure_unoccupied(path: &Path, label: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => bail!("refusing to overwrite existing {label}"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspect {label}: {}", path.display())),
+    }
+}
+
+fn publish_quarantine_files(
+    output: NamedTempFile,
+    output_path: &Path,
+    audit: NamedTempFile,
+    audit_path: &Path,
+) -> Result<()> {
+    // These are two separate publications, not a crash-atomic transaction.
+    // No-clobber persistence is the boundary even if a target appears after preflight.
+    audit
+        .persist_noclobber(audit_path)
+        .map_err(|error| error.error)
+        .context("publish deletion audit without overwrite")?;
+    if let Err(error) = output.persist_noclobber(output_path) {
+        let error = error.error;
+        // Only reached after this call published the audit. As before, rollback
+        // assumes no concurrent writer replaces that newly published path.
+        fs::remove_file(audit_path).with_context(|| {
+            format!("publish cleaned copy failed ({error}); rollback deletion audit failed")
+        })?;
+        return Err(error).context("publish cleaned copy without overwrite");
+    }
+    Ok(())
+}
+
 fn nonempty_parent(path: &Path) -> Option<&Path> {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -356,7 +392,7 @@ fn same_path(left: &Path, right: &Path) -> Result<bool> {
 fn hash_file(path: &Path) -> Result<String> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hasher = Hasher::new();
-    std::io::copy(&mut file, &mut hasher).context("hash file")?;
+    io::copy(&mut file, &mut hasher).context("hash file")?;
     Ok(hasher.finalize().to_hex().to_string())
 }
 
@@ -549,6 +585,118 @@ mod tests {
         assert_eq!(audit.removed_count, 0);
         assert_eq!(audit.source_count, audit.output_count);
         assert!(audit.input_hash_before == audit.input_hash_after);
+    }
+
+    #[test]
+    fn quarantine_no_clobber_rejects_occupied_targets() {
+        for occupy_audit in [false, true] {
+            let db = HealthDatabase::in_memory().unwrap();
+            let temp = tempfile::tempdir().unwrap();
+            let input = temp.path().join("input.html");
+            let selection = temp.path().join("selection.json");
+            let output = temp.path().join("cleaned.html");
+            let audit = audit_path_for(&output);
+            crate::sync::export_bookmarks_to_html(&fixture_bookmarks(), input.to_str().unwrap())
+                .unwrap();
+            write_selection(&db, &selection).unwrap();
+            let input_before = fs::read(&input).unwrap();
+            let selection_before = fs::read(&selection).unwrap();
+            let occupied = if occupy_audit { &audit } else { &output };
+            fs::write(occupied, b"existing user data").unwrap();
+
+            assert!(apply_selection(&db, &selection, &input, &output, true).is_err());
+            assert_eq!(fs::read(occupied).unwrap(), b"existing user data");
+            assert_eq!(fs::read(&input).unwrap(), input_before);
+            assert_eq!(fs::read(&selection).unwrap(), selection_before);
+            let absent = if occupy_audit { &output } else { &audit };
+            assert!(fs::symlink_metadata(absent).is_err());
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
+        }
+    }
+
+    #[test]
+    fn quarantine_no_clobber_rejects_targets_appearing_at_publication() {
+        for occupy_audit in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let output = temp.path().join("cleaned.html");
+            let audit = audit_path_for(&output);
+            let mut staged_output = NamedTempFile::new_in(temp.path()).unwrap();
+            let mut staged_audit = NamedTempFile::new_in(temp.path()).unwrap();
+            staged_output.write_all(b"new cleaned copy").unwrap();
+            staged_audit.write_all(b"new audit").unwrap();
+            ensure_unoccupied(&output, "output").unwrap();
+            ensure_unoccupied(&audit, "audit").unwrap();
+            let occupied = if occupy_audit { &audit } else { &output };
+            fs::write(occupied, b"late user data").unwrap();
+
+            assert!(
+                publish_quarantine_files(staged_output, &output, staged_audit, &audit).is_err()
+            );
+            assert_eq!(fs::read(occupied).unwrap(), b"late user data");
+            let absent = if occupy_audit { &output } else { &audit };
+            assert!(fs::symlink_metadata(absent).is_err());
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quarantine_no_clobber_rejects_symlinks_appearing_at_publication() {
+        use std::os::unix::fs::symlink;
+
+        for link_audit in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let output = temp.path().join("cleaned.html");
+            let audit = audit_path_for(&output);
+            let missing = temp.path().join("missing-target");
+            let staged_output = NamedTempFile::new_in(temp.path()).unwrap();
+            let staged_audit = NamedTempFile::new_in(temp.path()).unwrap();
+            ensure_unoccupied(&output, "output").unwrap();
+            ensure_unoccupied(&audit, "audit").unwrap();
+            let link = if link_audit { &audit } else { &output };
+            symlink(&missing, link).unwrap();
+
+            assert!(
+                publish_quarantine_files(staged_output, &output, staged_audit, &audit).is_err()
+            );
+            assert_eq!(fs::read_link(link).unwrap(), missing);
+            let absent = if link_audit { &output } else { &audit };
+            assert!(fs::symlink_metadata(absent).is_err());
+            assert!(fs::symlink_metadata(&missing).is_err());
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quarantine_no_clobber_rejects_dangling_target_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        for link_audit in [false, true] {
+            let db = HealthDatabase::in_memory().unwrap();
+            let temp = tempfile::tempdir().unwrap();
+            let input = temp.path().join("input.html");
+            let selection = temp.path().join("selection.json");
+            let output = temp.path().join("cleaned.html");
+            let audit = audit_path_for(&output);
+            let missing = temp.path().join("missing-target");
+            crate::sync::export_bookmarks_to_html(&fixture_bookmarks(), input.to_str().unwrap())
+                .unwrap();
+            write_selection(&db, &selection).unwrap();
+            let input_before = fs::read(&input).unwrap();
+            let selection_before = fs::read(&selection).unwrap();
+            let link = if link_audit { &audit } else { &output };
+            symlink(&missing, link).unwrap();
+
+            assert!(apply_selection(&db, &selection, &input, &output, true).is_err());
+            assert_eq!(fs::read_link(link).unwrap(), missing);
+            assert_eq!(fs::read(&input).unwrap(), input_before);
+            assert_eq!(fs::read(&selection).unwrap(), selection_before);
+            let absent = if link_audit { &output } else { &audit };
+            assert!(fs::symlink_metadata(absent).is_err());
+            assert!(fs::symlink_metadata(&missing).is_err());
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
+        }
     }
 
     #[test]
