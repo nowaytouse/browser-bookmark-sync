@@ -524,6 +524,50 @@ mod tests {
     }
 
     #[test]
+    fn apply_rechecks_future_and_invalid_evidence_without_publishing_output() {
+        for field in ["summary", "check", "run"] {
+            for timestamp in [
+                (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+                (Utc::now() - chrono::Duration::hours(25)).to_rfc3339(),
+                "invalid-timestamp".to_string(),
+            ] {
+                let db = confirmed_db();
+                let temp = tempfile::tempdir().unwrap();
+                let input = temp.path().join("input.html");
+                let selection = temp.path().join("selection.json");
+                let output = temp.path().join("cleaned.html");
+                crate::sync::export_bookmarks_to_html(
+                    &fixture_bookmarks(),
+                    input.to_str().unwrap(),
+                )
+                .unwrap();
+                write_selection(&db, &selection).unwrap();
+                let input_before = fs::read(&input).unwrap();
+                let selection_before = fs::read(&selection).unwrap();
+                let sql = match field {
+                    "summary" => "UPDATE health_summaries SET last_checked_at = ?1",
+                    "check" => "UPDATE health_checks SET finished_at = ?1",
+                    _ => "UPDATE health_runs SET finished_at = ?1",
+                };
+                db.raw_conn_for_test()
+                    .execute(sql, params![timestamp])
+                    .unwrap();
+                let error = apply_selection(&db, &selection, &input, &output, true).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("stale, changed, or not confirmed_dead"),
+                    "{field}: {error:#}"
+                );
+                assert_eq!(fs::read(&input).unwrap(), input_before);
+                assert_eq!(fs::read(&selection).unwrap(), selection_before);
+                assert!(fs::symlink_metadata(&output).is_err());
+                assert!(fs::symlink_metadata(audit_path_for(&output)).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn stale_or_non_confirmed_selection_is_rejected() {
         let db = confirmed_db();
         let temp = tempfile::tempdir().unwrap();

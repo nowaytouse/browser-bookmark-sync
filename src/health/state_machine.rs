@@ -29,7 +29,7 @@ pub struct BookmarkHistoryStats {
 pub struct StateMachine;
 
 impl StateMachine {
-    fn is_current_evidence(at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+    pub(crate) fn is_current_evidence(at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
         let age = now.signed_duration_since(at);
         age >= Duration::zero() && age <= EVIDENCE_WINDOW
     }

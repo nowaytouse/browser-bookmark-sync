@@ -48,6 +48,14 @@ The existing, user-approved dependency edits were checked separately from the he
 
 CLI quarantine apply uses private staging and same-directory no-clobber publication for both HTML and audit, just as native review refuses occupied destinations. Existing serializer metadata and input hash/count checks remain. Two files cannot be committed as one crash-atomic filesystem transaction; an interruption may leave an audit without its HTML. Rollback assumes another writer does not replace the newly published audit path. A failed apply is not an instruction to delete existing files and retry blindly.
 
+## Evidence time boundaries
+
+Quarantine candidates exclude future, expired or malformed summary timestamps. Before applying an existing selection, both site and content scopes revalidate the exact bookmark/run/URL identity and require the summary, check completion and completed-run timestamps to parse as RFC3339 instants in the inclusive interval `[now - 24h, now]`. A recent summary cannot make an invalid check or run fresh. Rust's timestamp comparison preserves sub-millisecond boundaries and equivalent timezone offsets; SQLite's rounded `julianday` remains only a coarse candidate prefilter, not final eligibility proof.
+
+The native details panel shares the engine's time-window predicate and warns in both languages about future, old or invalid evidence, without rewriting historical verdicts or manual decisions. Untested bookmarks without a check time are not called dead. Future-time checks handle persisted clock anomalies; they do not establish an authenticated or trustworthy system clock. Manually choosing removal in native review remains an explicit user decision, not a quarantine eligibility claim.
+
+Executable acceptance covers the public database verification methods with exact time boundaries, candidate enumeration, and applying a previously prepared selection after its recorded time becomes invalid. Rejection preserves input and selection bytes and publishes neither cleaned output nor audit. Actual headless native details output is checked for warnings, retained verdict visibility and unchanged decisions. These tests use temporary databases and synthetic files only.
+
 ## Test isolation
 
 Ordinary CLI integration tests use child-process-only private profile/configuration roots and a synthetic Safari bookmark file; they never need the caller's real browser data. Child stdin is closed and execution has a ten-second bound. All seven command tests remain enabled; success/failure is asserted explicitly, and macOS analysis must report the one synthetic bookmark. This replaces an older harness that inherited the caller's home and could read real Profiles during `analyze`/`validate`; earlier unisolated test runs are not evidence of a fixture-only session. The commands involved perform read-only local structural analysis, not URL probing. Test isolation does not change the user's environment or any toolchain settings.

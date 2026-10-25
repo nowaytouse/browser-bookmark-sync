@@ -1,6 +1,7 @@
 //! Native bookmark cleaning workspace. All changes are exported to a new HTML copy.
 
 use crate::health::review::{audit_path_for, Decision, ReviewDocument};
+use crate::health::state_machine::StateMachine;
 use crate::native_groups::{self, BookmarkGroup, GroupRow};
 use crate::native_preferences::{
     AccentChoice, DisplayDensity, DnsStrategy, FontChoice, GroupChoice, LanguageChoice,
@@ -2117,8 +2118,8 @@ impl ReviewApp {
             ui.separator();
             if let Some(when) = &item.last_checked_at {
                 ui.small(when);
-                if DateTime::parse_from_rfc3339(when).map(|t| Utc::now().signed_duration_since(t.with_timezone(&Utc)) > chrono::Duration::hours(24)).unwrap_or(true) {
-                    ui.colored_label(ui.visuals().warn_fg_color, tr(zh, "证据已超过 24 小时或时间无效，请重新核对。", "Evidence is older than 24 hours or has an invalid timestamp. Recheck before removal."));
+                if DateTime::parse_from_rfc3339(when).map(|t| !StateMachine::is_current_evidence(t.with_timezone(&Utc), Utc::now())).unwrap_or(true) {
+                    ui.colored_label(ui.visuals().warn_fg_color, tr(zh, "证据已超过 24 小时、时间在未来或时间无效，请在移除前重新核对。", "Evidence is older than 24 hours or has a future or invalid timestamp. Recheck before removal."));
                 }
             }
             if item.evidence.is_empty() { ui.label(tr(zh, "暂无检测证据；这不代表链接失效。", "No check evidence is available. This does not mean the link is dead.")); }
@@ -2686,6 +2687,68 @@ mod tests {
         assert!(app.dirty());
         app.undo();
         assert!(!app.dirty());
+    }
+
+    #[test]
+    fn evidence_details_warn_for_future_expired_and_invalid_times_without_changing_decisions() {
+        let now = Utc::now();
+        for (language, warning) in [
+            (
+                LanguageChoice::English,
+                "Evidence is older than 24 hours or has a future or invalid timestamp. Recheck before removal.",
+            ),
+            (
+                LanguageChoice::SimplifiedChinese,
+                "证据已超过 24 小时、时间在未来或时间无效，请在移除前重新核对。",
+            ),
+        ] {
+            for (when, warn) in [
+                (Some((now + chrono::Duration::hours(1)).to_rfc3339()), true),
+                (Some((now - chrono::Duration::hours(25)).to_rfc3339()), true),
+                (Some("invalid-timestamp".to_string()), true),
+                (Some((now - chrono::Duration::hours(1)).to_rfc3339()), false),
+                (None, false),
+            ] {
+                let ctx = egui::Context::default();
+                ctx.enable_accesskit();
+                let mut doc = fixture();
+                doc.items.truncate(1);
+                doc.items[0].verdict = if when.is_some() {
+                    "confirmed_dead".into()
+                } else {
+                    "untested".into()
+                };
+                doc.items[0].last_checked_at = when.clone();
+                let verdict = doc.items[0].verdict.clone();
+                let mut app = ReviewApp::default();
+                app.preferences.language = language;
+                app.accept_document(doc, false);
+                app.focused = Some(0);
+                let decisions = app.decisions.clone();
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(900.0, 800.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| app.details(ui),
+                );
+                output.textures_delta.clear();
+                let nodes = output.platform_output.accesskit_update.unwrap().nodes;
+                assert!(nodes.iter().any(|(_, node)| {
+                    node.value() == Some(verdict_label(app.zh(), &verdict))
+                }), "the historical verdict must remain visible");
+                assert_eq!(
+                    nodes.iter().any(|(_, node)| node.value() == Some(warning)),
+                    warn,
+                    "timestamp {when:?}, language {language:?}"
+                );
+                assert_eq!(app.decisions, decisions);
+                assert_eq!(app.doc.as_ref().unwrap().items[0].verdict, verdict);
+            }
+        }
     }
 
     #[test]

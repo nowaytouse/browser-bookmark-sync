@@ -19,6 +19,16 @@ fn sql_count(value: usize) -> SqlResult<i64> {
     i64::try_from(value).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
 }
 
+fn current_evidence_timestamp(at: Option<&str>, now: chrono::DateTime<Utc>) -> bool {
+    at.and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .is_some_and(|at| {
+            crate::health::state_machine::StateMachine::is_current_evidence(
+                at.with_timezone(&Utc),
+                now,
+            )
+        })
+}
+
 impl HealthDatabase {
     /// Open SQLite database connection and run schema migrations
     pub fn open<P: AsRef<Path>>(path: P) -> SqlResult<Self> {
@@ -1023,7 +1033,8 @@ impl HealthDatabase {
     pub fn get_quarantine_candidates_detailed(
         &self,
     ) -> SqlResult<Vec<(String, String, String, String, String)>> {
-        let cutoff = (Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+        let now = Utc::now();
+        let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
         let mut stmt = self.conn.prepare(
             "SELECT bookmark_id, url, last_run_id, current_verdict, last_checked_at
              FROM health_summaries
@@ -1037,12 +1048,15 @@ impl HealthDatabase {
                 row.get(1)?,
                 row.get(2)?,
                 row.get(3)?,
-                row.get(4)?,
+                row.get::<_, String>(4)?,
             ))
         })?;
         let mut results = Vec::new();
         for r in rows {
-            results.push(r?);
+            let candidate = r?;
+            if current_evidence_timestamp(Some(&candidate.4), now) {
+                results.push(candidate);
+            }
         }
         Ok(results)
     }
@@ -1055,39 +1069,40 @@ impl HealthDatabase {
         url: &str,
         now: chrono::DateTime<Utc>,
     ) -> SqlResult<bool> {
-        let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
-        let matches: Option<(String, String, String, String)> = self
-            .conn
-            .query_row(
-                "SELECT s.last_run_id, s.url, s.current_verdict, s.last_checked_at
+        let mut stmt = self.conn.prepare(
+            "SELECT s.last_checked_at, c.finished_at, r.finished_at
                  FROM health_summaries s
+                 JOIN health_checks c ON c.bookmark_id = s.bookmark_id
+                      AND c.run_id = s.last_run_id AND c.original_url = s.url
+                 JOIN health_runs r ON r.run_id = c.run_id
                  WHERE s.bookmark_id = ?1
                    AND s.last_run_id = ?2
                    AND s.url = ?3
                    AND s.current_verdict = 'confirmed_dead'
-                   AND julianday(s.last_checked_at) >= julianday(?4)
-                   AND EXISTS (
-                       SELECT 1
-                       FROM health_checks c
-                       JOIN health_runs r ON r.run_id = c.run_id
-                       WHERE c.bookmark_id = s.bookmark_id
-                         AND c.run_id = s.last_run_id
-                         AND c.original_url = s.url
-                         AND c.run_verdict = 'confirmed_dead'
-                         AND r.completed = 1
-                         AND r.rule_version = ?5
-                   )",
-                params![
-                    bookmark_id,
-                    run_id,
-                    url,
-                    cutoff,
-                    crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?;
-        Ok(matches.is_some())
+                   AND c.run_verdict = 'confirmed_dead'
+                   AND r.completed = 1
+                   AND r.rule_version = ?4",
+        )?;
+        let matches = stmt.query_map(
+            params![
+                bookmark_id,
+                run_id,
+                url,
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
+            ],
+            |row| Ok([row.get::<_, Option<String>>(0)?, row.get(1)?, row.get(2)?]),
+        )?;
+        for times in matches {
+            // Parse exact RFC3339 instants: SQLite julianday rounds sub-millisecond
+            // boundaries and a fresh summary cannot make an invalid check/run fresh.
+            if times?
+                .iter()
+                .all(|at| current_evidence_timestamp(at.as_deref(), now))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Re-check a site-scoped selection item using its representative URL.
@@ -1098,40 +1113,7 @@ impl HealthDatabase {
         url: &str,
         now: chrono::DateTime<Utc>,
     ) -> SqlResult<bool> {
-        let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
-        let matches: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT 1
-                 FROM health_summaries s
-                 WHERE s.bookmark_id = ?1
-                   AND s.last_run_id = ?2
-                   AND s.url = ?3
-                   AND s.current_verdict = 'confirmed_dead'
-                   AND julianday(s.last_checked_at) >= julianday(?4)
-                   AND EXISTS (
-                       SELECT 1
-                       FROM health_checks c
-                       JOIN health_runs r ON r.run_id = c.run_id
-                       WHERE c.bookmark_id = s.bookmark_id
-                         AND c.run_id = s.last_run_id
-                         AND c.original_url = s.url
-                         AND c.run_verdict = 'confirmed_dead'
-                         AND r.completed = 1
-                         AND r.rule_version = ?5
-                   )
-                 LIMIT 1",
-                params![
-                    bookmark_id,
-                    run_id,
-                    url,
-                    cutoff,
-                    crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION
-                ],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(matches.is_some())
+        self.verify_quarantine_item(run_id, bookmark_id, url, now)
     }
 
     /// Return counts of bookmarks grouped by `current_verdict` in `health_summaries`.
@@ -1620,11 +1602,67 @@ mod tests {
     }
 
     #[test]
+    fn quarantine_time_window_is_exact_for_summary_check_and_completed_run() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-25T12:00:00.123456789Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let cases = [
+            ((now + chrono::Duration::hours(1)).to_rfc3339(), false),
+            ((now + chrono::Duration::nanoseconds(1)).to_rfc3339(), false),
+            (now.to_rfc3339(), true),
+            ((now - chrono::Duration::hours(24)).to_rfc3339(), true),
+            (
+                (now - chrono::Duration::hours(24) - chrono::Duration::nanoseconds(1)).to_rfc3339(),
+                false,
+            ),
+            ("2026-10-25T20:00:00.123456789+08:00".to_string(), true),
+            ("not a timestamp".to_string(), false),
+            (String::new(), false),
+        ];
+        for site in [false, true] {
+            for field in ["summary", "check", "run"] {
+                for (timestamp, expected) in &cases {
+                    let db = HealthDatabase::in_memory().unwrap();
+                    let id = if site {
+                        "site:fixture.example"
+                    } else {
+                        "bookmark"
+                    };
+                    let current = now.to_rfc3339();
+                    let started = (now - chrono::Duration::hours(25)).to_rfc3339();
+                    let summary_at = if field == "summary" {
+                        timestamp
+                    } else {
+                        &current
+                    };
+                    let check_at = if field == "check" {
+                        timestamp
+                    } else {
+                        &current
+                    };
+                    let run_at = if field == "run" { timestamp } else { &current };
+                    db.conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,rule_version) VALUES ('run',?1,?2,1,'standard',?3)", params![started, run_at, CURRENT_HEALTH_RULE_VERSION]).unwrap();
+                    db.conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES ('check','run',?1,'https://fixture.example/',?2,?3,'confirmed_dead')", params![id, started, check_at]).unwrap();
+                    db.conn.execute("INSERT INTO health_summaries (summary_id,bookmark_id,url,last_run_id,last_checked_at,current_verdict,total_checks,consecutive_failures) VALUES ('summary',?1,'https://fixture.example/','run',?2,'confirmed_dead',3,3)", params![id, summary_at]).unwrap();
+                    let eligible = if site {
+                        db.verify_quarantine_site_item("run", id, "https://fixture.example/", now)
+                    } else {
+                        db.verify_quarantine_item("run", id, "https://fixture.example/", now)
+                    }
+                    .unwrap();
+                    assert_eq!(eligible, *expected, "site={site}, {field}={timestamp}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn quarantine_expires_after_one_day() {
         let db = HealthDatabase::in_memory().unwrap();
         for (id, checked_at) in [
             ("recent", Utc::now() - chrono::Duration::minutes(5)),
             ("stale", Utc::now() - chrono::Duration::hours(25)),
+            ("future", Utc::now() + chrono::Duration::hours(1)),
         ] {
             db.conn
                 .execute(
