@@ -670,10 +670,10 @@ impl HealthDatabase {
         let now = Utc::now();
 
         // 1. Find the last real success timestamp for this bookmark.
-        //    Pre-v3 rows have no attempt timestamp and cannot be promoted into evidence.
-        let last_real_success: Option<String> = conn
-            .query_row(
-                "SELECT MAX(a.started_at)
+        //    Compare parsed instants, not RFC3339 text (offsets change lexical ordering).
+        //    A real success with unknown time cannot be forgotten to confirm death.
+        let mut success_query = conn.prepare(
+            "SELECT a.started_at
              FROM health_attempts a
              JOIN health_checks c ON c.check_id = a.check_id
              JOIN health_runs r ON r.run_id = c.run_id
@@ -681,7 +681,6 @@ impl HealthDatabase {
                AND r.completed = 1
                AND (?2 IS NULL OR r.config_hash = ?2)
                AND r.rule_version = ?3
-               AND a.started_at IS NOT NULL
                AND a.actual_request = 'yes'
                AND a.cache_hit = 0
                AND (
@@ -710,23 +709,37 @@ impl HealthDatabase {
                            )
                        )
                    )
-               )",
-                params![
-                    bookmark_id,
-                    current_config_hash,
-                    current_rule_version,
-                    site_scope
-                ],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-
-        let last_success_dt: Option<DateTime<Utc>> = last_real_success.as_deref().and_then(|s| {
-            DateTime::parse_from_rfc3339(s)
-                .ok()
-                .map(|d| d.with_timezone(&Utc))
-        });
+                )",
+        )?;
+        let successes = success_query.query_map(
+            params![
+                bookmark_id,
+                current_config_hash,
+                current_rule_version,
+                site_scope
+            ],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        let mut last_success_dt: Option<DateTime<Utc>> = None;
+        for success in successes {
+            let Some(at) = success?
+                .as_deref()
+                .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+            else {
+                tracing::warn!(
+                    "health history has an unorderable real success; withholding death evidence"
+                );
+                return Ok(Vec::new());
+            };
+            let at = at.with_timezone(&Utc);
+            if at > now {
+                tracing::warn!(
+                    "health history has a future real success; withholding death evidence"
+                );
+                return Ok(Vec::new());
+            }
+            last_success_dt = Some(last_success_dt.map_or(at, |previous| previous.max(at)));
+        }
 
         // 2. Query all completed runs that have at least one strong-failure attempt
         //    for this bookmark, after the last success, matching config_hash if required.
