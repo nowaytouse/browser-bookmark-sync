@@ -4021,32 +4021,34 @@ mod sqlite_integration_tests {
     }
 
     #[test]
-    fn soft_404_candidate_is_not_strong_history_evidence() {
-        let db = setup_db();
-        let rule = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
-        insert_run(&db, "soft_run", true, rule);
-        insert_check(&db, "soft_check", "soft_run", "soft_bookmark", 0);
-        insert_attempt(
-            &db,
-            "soft_attempt",
-            "soft_check",
-            "yes",
-            Some(200),
-            None,
-            None,
-            "native_reqwest",
-        );
-        db.conn
-            .execute(
-                "UPDATE health_attempts SET error_kind = 'Soft404Candidate' WHERE attempt_id = 'soft_attempt'",
-                [],
-            )
-            .unwrap();
+    fn accuracy_heuristic_warnings_are_not_strong_history_evidence() {
+        for error_kind in ["Soft404Candidate", "RedirectedToHomepage"] {
+            let db = setup_db();
+            let rule = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
+            insert_run(&db, "soft_run", true, rule);
+            insert_check(&db, "soft_check", "soft_run", "soft_bookmark", 0);
+            insert_attempt(
+                &db,
+                "soft_attempt",
+                "soft_check",
+                "yes",
+                Some(200),
+                None,
+                None,
+                "native_reqwest",
+            );
+            db.conn
+                .execute(
+                    "UPDATE health_attempts SET error_kind = ?1 WHERE attempt_id = 'soft_attempt'",
+                    [error_kind],
+                )
+                .unwrap();
 
-        assert!(db
-            .get_qualifying_run_evidences("soft_bookmark", Some("testhash"), rule)
-            .unwrap()
-            .is_empty());
+            assert!(db
+                .get_qualifying_run_evidences("soft_bookmark", Some("testhash"), rule)
+                .unwrap()
+                .is_empty());
+        }
     }
 
     #[test]

@@ -273,7 +273,7 @@ impl ConfigHashInput {
                 "direct".to_string()
             },
             request_strategy: format!(
-                "head_then_get_html_content_v3_explicit_route:{:?}",
+                "head_then_get_html_content_v4_complete_literal_target:{:?}",
                 context.probe_scope
             )
             .to_ascii_lowercase(),

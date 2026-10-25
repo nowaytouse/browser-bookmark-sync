@@ -345,7 +345,7 @@ fn load_summaries(path: &Path) -> Result<HashMap<String, ReviewSummary>> {
     let mut stmt = tx.prepare(
         "WITH ranked AS (
             SELECT s.url, s.current_verdict, s.last_checked_at, s.total_checks,
-                   c.check_id,
+                   c.check_id, r.rule_version,
                    ROW_NUMBER() OVER (
                      PARTITION BY s.url ORDER BY s.last_checked_at DESC, c.finished_at DESC, c.check_id DESC, s.summary_id DESC
                    ) AS rank
@@ -357,7 +357,8 @@ fn load_summaries(path: &Path) -> Result<HashMap<String, ReviewSummary>> {
             WHERE s.bookmark_id NOT LIKE 'site:%'
         )
         SELECT ranked.url, ranked.current_verdict, ranked.last_checked_at,
-               ranked.total_checks, a.backend, a.status_code, a.error_kind, a.finished_at
+               ranked.total_checks, a.backend, a.status_code, a.error_kind, a.finished_at,
+               ranked.rule_version
         FROM ranked
         LEFT JOIN health_attempts a ON a.check_id = ranked.check_id
         WHERE ranked.rank = 1
@@ -370,11 +371,20 @@ fn load_summaries(path: &Path) -> Result<HashMap<String, ReviewSummary>> {
         let verdict = row.get(1)?;
         let last_checked_at = row.get(2)?;
         let total_checks = row.get::<_, i64>(3)?.max(0);
+        let recorded_rule: Option<String> = row.get(8)?;
+        let current_rule = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
+        let current_rules = recorded_rule.as_deref() == Some(current_rule);
         let summary = summaries.entry(url).or_insert_with(|| ReviewSummary {
-            verdict,
+            verdict: if current_rules { verdict } else { "needs_review".to_string() },
             last_checked_at,
             total_checks,
-            evidence: Vec::new(),
+            evidence: if current_rules { Vec::new() } else {
+                vec![ReviewEvidence {
+                    backend: "rule_policy".to_string(),
+                    error_kind: Some(format!("RuleVersionMismatch: recorded={}, current={current_rule}; recheck required", recorded_rule.as_deref().unwrap_or("unknown"))),
+                    ..Default::default()
+                }]
+            },
         });
         if let Some(backend) = row.get::<_, Option<String>>(4)? {
             summary.evidence.push(ReviewEvidence {
@@ -473,7 +483,7 @@ mod tests {
                 "confirmed_dead",
             ),
         ] {
-            db.conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode) VALUES (?1,?2,?2,?3,'standard')", params![run, now, completed]).unwrap();
+            db.conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,rule_version) VALUES (?1,?2,?2,?3,'standard',?4)", params![run, now, completed, crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION]).unwrap();
             db.conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?1,?2,?3,?4,?4,?5)", params![run, bookmark, url, now, verdict]).unwrap();
             db.conn.execute("INSERT INTO health_summaries (summary_id,bookmark_id,url,last_run_id,last_checked_at,current_verdict,total_checks,consecutive_failures) VALUES (?1,?2,?3,?4,?5,?6,1,0)", params![run, bookmark, url, run, now, verdict]).unwrap();
         }
@@ -486,6 +496,39 @@ mod tests {
         let summaries = load_summaries(&db_path).unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries["https://x/"].evidence[0].backend, "curl");
+        assert_eq!(fs::read(&db_path).unwrap(), before);
+    }
+
+    #[test]
+    fn accuracy_review_downgrades_stale_rules_without_changing_the_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.html");
+        let db_path = dir.path().join("health.sqlite");
+        fs::write(&input, "<DL><DT><A HREF='https://old.example/'>Old</A><DT><A HREF='https://new.example/'>New</A></DL>").unwrap();
+        let db = crate::health::db::HealthDatabase::open(&db_path).unwrap();
+        let now = Utc::now().to_rfc3339();
+        for (run, url, rule, verdict) in [
+            ("old", "https://old.example/", "8", "confirmed_dead"),
+            (
+                "new",
+                "https://new.example/",
+                crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION,
+                "live",
+            ),
+        ] {
+            db.conn.execute("INSERT INTO health_runs (run_id,started_at,finished_at,completed,mode,rule_version) VALUES (?1,?2,?2,1,'standard',?3)", params![run, now, rule]).unwrap();
+            db.conn.execute("INSERT INTO health_checks (check_id,run_id,bookmark_id,original_url,started_at,finished_at,run_verdict) VALUES (?1,?1,?1,?2,?3,?3,?4)", params![run, url, now, verdict]).unwrap();
+            db.conn.execute("INSERT INTO health_summaries (summary_id,bookmark_id,url,last_run_id,last_checked_at,current_verdict,total_checks,consecutive_failures) VALUES (?1,?1,?2,?1,?3,?4,1,0)", params![run, url, now, verdict]).unwrap();
+        }
+        drop(db);
+        let before = fs::read(&db_path).unwrap();
+        let doc = ReviewDocument::load(&input, Some(&db_path), None).unwrap();
+        assert_eq!(doc.items[0].verdict, "needs_review");
+        assert!(doc.items[0].evidence.iter().any(|e| e
+            .error_kind
+            .as_deref()
+            .is_some_and(|error| error.starts_with("RuleVersionMismatch:"))));
+        assert_eq!(doc.items[1].verdict, "live");
         assert_eq!(fs::read(&db_path).unwrap(), before);
     }
 

@@ -150,6 +150,7 @@ impl NativeReqwestBackend {
             // Initial URL had a deep path (e.g. /docs/v1/api), but final URL returned / or index.html
             if !path1.is_empty()
                 && (path2.is_empty() || path2 == "index.html" || path2 == "index.php")
+                && u2.query().is_none()
             {
                 return true;
             }
@@ -291,13 +292,14 @@ impl ProbeBackend for NativeReqwestBackend {
                     let max_bytes = 256 * 1024;
                     let mut body_read_error = None;
 
-                    while buffer.len() < max_bytes {
+                    loop {
                         match resp.chunk().await {
                             Ok(Some(chunk)) => {
                                 let available = max_bytes - buffer.len();
                                 let to_take = chunk.len().min(available);
                                 buffer.extend_from_slice(&chunk[..to_take]);
                                 if to_take < chunk.len() {
+                                    body_read_error = Some("BodyTooLarge".to_string());
                                     break;
                                 }
                             }
@@ -517,6 +519,16 @@ mod tests {
         html: &str,
         probe_scope: ProbeScope,
     ) -> BackendObservation {
+        probe_html_response(path, html, probe_scope, 200, Some(html.len())).await
+    }
+
+    async fn probe_html_response(
+        path: &str,
+        html: &str,
+        probe_scope: ProbeScope,
+        status: u16,
+        declared_length: Option<usize>,
+    ) -> BackendObservation {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let body = html.to_string();
@@ -525,9 +537,11 @@ mod tests {
             let mut request = [0_u8; 2048];
             let size = socket.read(&mut request).await.unwrap();
             let is_head = request[..size].starts_with(b"HEAD ");
+            let length_header = declared_length
+                .map(|length| format!("Content-Length: {length}\r\n"))
+                .unwrap_or_default();
             let headers = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
+                "HTTP/1.1 {status} Fixture\r\nContent-Type: text/html; charset=utf-8\r\n{length_header}Connection: close\r\n\r\n"
             );
             socket.write_all(headers.as_bytes()).await.unwrap();
             if !is_head {
@@ -536,7 +550,16 @@ mod tests {
         });
 
         let url = format!("http://{address}{path}");
-        let target = ProbeTarget::from_url("test-bookmark", &url).unwrap();
+        let observation = probe_local_target(&url, probe_scope).await;
+        tokio::time::timeout(Duration::from_secs(6), server)
+            .await
+            .unwrap()
+            .unwrap();
+        observation
+    }
+
+    async fn probe_local_target(url: &str, probe_scope: ProbeScope) -> BackendObservation {
+        let target = ProbeTarget::from_url("test-bookmark", url).unwrap();
         let context = ProbeContext {
             run_id: "test-run".to_string(),
             check_id: "test-check".to_string(),
@@ -550,12 +573,10 @@ mod tests {
             secondary_backends: Vec::new(),
             artifact_dir: None,
         };
-        let observation = NativeReqwestBackend::new()
+        NativeReqwestBackend::new()
             .probe(&target, &context)
             .await
-            .unwrap();
-        server.await.unwrap();
-        observation
+            .unwrap()
     }
 
     #[tokio::test]
@@ -582,15 +603,108 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_html_is_not_success_but_an_oversized_prefix_is_usable() {
+    async fn accuracy_incomplete_html_is_not_full_content_evidence() {
         let empty = probe_html("/empty", "").await;
         assert_eq!(empty.content_length, Some(0));
         assert!(empty.body_hash.is_none());
 
-        let oversized_html = format!("<html>{}</html>", "x".repeat(300 * 1024));
-        let oversized = probe_html("/large", &oversized_html).await;
-        assert_eq!(oversized.actual_request, "yes");
-        assert!(oversized.error_kind.is_none());
-        assert!(oversized.body_hash.is_some());
+        let limit = 256 * 1024;
+        for status in [200, 404, 410] {
+            for declared in [None, Some(limit + 1)] {
+                let oversized = probe_html_response(
+                    "/large",
+                    &"x".repeat(limit + 1),
+                    ProbeScope::Content,
+                    status,
+                    declared,
+                )
+                .await;
+                assert_eq!(oversized.actual_request, "unknown");
+                assert_eq!(oversized.error_kind.as_deref(), Some("BodyTooLarge"));
+                assert!(oversized.body_hash.is_none());
+                assert!(oversized.body_preview.is_none());
+            }
+        }
+        for declared in [None, Some(limit)] {
+            let exact = probe_html_response(
+                "/exact",
+                &"x".repeat(limit),
+                ProbeScope::Content,
+                200,
+                declared,
+            )
+            .await;
+            assert_eq!(exact.actual_request, "yes");
+            assert!(exact.error_kind.is_none());
+            assert!(exact.body_hash.is_some());
+        }
+        let truncated = probe_html_response(
+            "/truncated",
+            &"x".repeat(limit),
+            ProbeScope::Content,
+            404,
+            Some(limit + 1),
+        )
+        .await;
+        assert_eq!(truncated.actual_request, "unknown");
+        assert!(truncated
+            .error_kind
+            .as_deref()
+            .unwrap()
+            .starts_with("BodyReadError:"));
+        assert!(truncated.body_hash.is_none());
+    }
+
+    #[tokio::test]
+    async fn accuracy_query_routed_redirect_preserves_the_article() {
+        use tokio::io::AsyncBufReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for redirect in [true, false] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut reader = tokio::io::BufReader::new(&mut socket);
+                let mut request = String::new();
+                assert!(reader.read_line(&mut request).await.unwrap() > 0);
+                let expected_path = if redirect {
+                    "/articles/42"
+                } else {
+                    "/index.php?article=42"
+                };
+                assert_eq!(request, format!("GET {expected_path} HTTP/1.1\r\n"));
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).await.unwrap() == 0 || header == "\r\n" {
+                        break;
+                    }
+                }
+                drop(reader);
+                let response = if redirect {
+                    "HTTP/1.1 301 Moved\r\nLocation: /index.php?article=42\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 25\r\nConnection: close\r\n\r\n<title>Article 42</title>"
+                };
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let observation = probe_local_target(
+            &format!("http://{address}/articles/42"),
+            ProbeScope::Content,
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(6), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            observation.error_kind.is_none(),
+            "{:?}",
+            observation.error_kind
+        );
+        assert_eq!(observation.title.as_deref(), Some("Article 42"));
+        assert_eq!(
+            crate::health::state_machine::StateMachine::compute_single_run_verdict(&[observation]),
+            crate::health::models::HealthVerdict::Live
+        );
     }
 }

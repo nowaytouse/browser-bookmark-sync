@@ -5,7 +5,7 @@ use crate::health::targets::ProbeScope;
 use chrono::{DateTime, Duration, Utc};
 
 /// Current rule version. Increment this when evidence semantics change.
-pub const CURRENT_HEALTH_RULE_VERSION: &str = "8";
+pub const CURRENT_HEALTH_RULE_VERSION: &str = "9";
 
 /// Failure evidence expires after one rolling day. This avoids calendar-timezone
 /// edge cases while ensuring routine health decisions finish in one scan day.
@@ -155,19 +155,24 @@ impl StateMachine {
             if let Some(ref err) = obs.error_kind {
                 if err.starts_with("SecurityBlocked:") {
                     has_protected = true;
-                } else if err == "RedirectedToHomepage" || err == "ContentMissing" {
-                    if !obs.cache_hit {
+                } else if err == "ContentMissing" {
+                    if obs.actual_request == "yes" && !obs.cache_hit {
                         has_missing_content = true;
+                    } else {
+                        has_temp_fail = true;
                     }
                 } else if matches!(
                     err.as_str(),
-                    "Soft404Candidate" | "ParkedDomainCandidate" | "BodyTooLarge"
+                    "Soft404Candidate"
+                        | "ParkedDomainCandidate"
+                        | "BodyTooLarge"
+                        | "RedirectedToHomepage"
                 ) {
                     if !obs.cache_hit {
                         has_suspicious_content = true;
                     }
                 } else if err == "DnsNxdomain" {
-                    if !obs.cache_hit {
+                    if obs.actual_request == "yes" && !obs.cache_hit {
                         has_probable_dead = true;
                     }
                 } else {
@@ -176,7 +181,10 @@ impl StateMachine {
             }
 
             if let Some(ref rcode) = obs.dns_rcode {
-                if rcode.eq_ignore_ascii_case("NXDOMAIN") && !obs.cache_hit {
+                if rcode.eq_ignore_ascii_case("NXDOMAIN")
+                    && obs.actual_request == "yes"
+                    && !obs.cache_hit
+                {
                     has_probable_dead = true;
                 }
             }
@@ -200,8 +208,10 @@ impl StateMachine {
                 } else if matches!(code, 401 | 403 | 407 | 423 | 429 | 451 | 503 | 520..=527) {
                     has_protected = true;
                 } else if matches!(code, 404 | 410) {
-                    if !obs.cache_hit {
+                    if obs.actual_request == "yes" && !obs.cache_hit && obs.error_kind.is_none() {
                         has_probable_dead = true;
+                    } else if !obs.cache_hit {
+                        has_temp_fail = true;
                     }
                 } else if (500..600).contains(&code) || (300..400).contains(&code) || code == 408 {
                     has_temp_fail = true;
@@ -582,11 +592,11 @@ mod tests {
     fn test_confirmed_dead_requires_three_same_day_runs() {
         let mut obs1 = BackendObservation::default();
         obs1.backend = "native_reqwest".to_string();
-        obs1.error_kind = Some("RedirectedToHomepage".to_string());
+        obs1.status_code = Some(404);
 
         let mut obs2 = BackendObservation::default();
         obs2.backend = "lychee".to_string();
-        obs2.error_kind = Some("RedirectedToHomepage".to_string());
+        obs2.status_code = Some(404);
 
         let now = Utc::now();
         let history_insufficient = BookmarkHistoryStats {
@@ -828,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn single_family_homepage_redirects_do_not_use_content_missing_exception() {
+    fn homepage_redirects_remain_review_only_despite_repeated_history() {
         use crate::health::models::StrongFailureKind;
 
         let now = Utc::now();
@@ -858,7 +868,7 @@ mod tests {
 
         assert_eq!(
             StateMachine::resolve_final_verdict(&[observation], &history, now),
-            HealthVerdict::ProbableDead
+            HealthVerdict::NeedsReview
         );
     }
 
@@ -874,6 +884,59 @@ mod tests {
             StateMachine::compute_single_run_verdict(&[observation]),
             HealthVerdict::NeedsReview
         );
+    }
+
+    #[test]
+    fn accuracy_incomplete_current_failures_cannot_borrow_confirmed_history() {
+        let now = Utc::now();
+        let history = BookmarkHistoryStats {
+            qualifying_evidences: mock_evidences(3, Some(now - Duration::minutes(3)), Some(now)),
+            ..Default::default()
+        };
+        for status in [404, 410] {
+            for (actual, cached, error) in [
+                ("unknown", false, Some("BodyReadError: incomplete message")),
+                ("unknown", false, Some("ContentMissing")),
+                ("no", false, None),
+                ("yes", true, None),
+                ("yes", false, Some("Timeout")),
+            ] {
+                let observation = BackendObservation {
+                    status_code: Some(status),
+                    actual_request: actual.into(),
+                    cache_hit: cached,
+                    error_kind: error.map(str::to_owned),
+                    ..Default::default()
+                };
+                assert!(
+                    !matches!(
+                        StateMachine::resolve_final_verdict(&[observation], &history, now),
+                        HealthVerdict::ProbableDead | HealthVerdict::ConfirmedDead
+                    ),
+                    "incomplete {status}: {actual}, cached={cached}, {error:?}"
+                );
+            }
+            let complete = BackendObservation {
+                status_code: Some(status),
+                ..Default::default()
+            };
+            assert_eq!(
+                StateMachine::resolve_final_verdict(&[complete], &history, now),
+                HealthVerdict::ConfirmedDead
+            );
+        }
+        for status in [
+            301, 302, 401, 403, 407, 408, 423, 429, 451, 500, 502, 503, 520, 527,
+        ] {
+            let observation = BackendObservation {
+                status_code: Some(status),
+                ..Default::default()
+            };
+            assert!(!matches!(
+                StateMachine::resolve_final_verdict(&[observation], &history, now),
+                HealthVerdict::ProbableDead | HealthVerdict::ConfirmedDead
+            ));
+        }
     }
 
     #[test]

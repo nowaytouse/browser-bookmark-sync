@@ -840,9 +840,6 @@ impl HealthDatabase {
                 }
             }
             if let Some(ref err) = a.error_kind {
-                if !site_scope && err == "RedirectedToHomepage" {
-                    return Some(StrongFailureKind::RedirectedToHomepage);
-                }
                 if !site_scope && err == "ContentMissing" {
                     return Some(StrongFailureKind::ContentMissing);
                 }
