@@ -29,6 +29,9 @@ fn current_evidence_timestamp(at: Option<&str>, now: chrono::DateTime<Utc>) -> b
         })
 }
 
+#[cfg(test)]
+mod evidence_time_tests;
+
 impl HealthDatabase {
     /// Open SQLite database connection and run schema migrations
     pub fn open<P: AsRef<Path>>(path: P) -> SqlResult<Self> {
@@ -664,6 +667,7 @@ impl HealthDatabase {
         use chrono::DateTime;
         use std::collections::{BTreeMap, BTreeSet};
         let site_scope = bookmark_id.starts_with("site:");
+        let now = Utc::now();
 
         // 1. Find the last real success timestamp for this bookmark.
         //    Pre-v3 rows have no attempt timestamp and cannot be promoted into evidence.
@@ -726,8 +730,8 @@ impl HealthDatabase {
 
         // 2. Query all completed runs that have at least one strong-failure attempt
         //    for this bookmark, after the last success, matching config_hash if required.
-        //    Only real per-attempt timestamps are accepted. Check/run timestamps are not
-        //    substitutes because they can cross a later-success boundary.
+        //    Keep missing timestamps visible so an incomplete/conflicting row cannot
+        //    disappear from a run. Check/run times never substitute for attempt times.
         let config_filter = if current_config_hash.is_some() {
             "AND r.config_hash = ?2"
         } else {
@@ -753,7 +757,6 @@ impl HealthDatabase {
              JOIN health_runs    r ON r.run_id   = c.run_id
              WHERE c.bookmark_id = ?1
                AND r.completed   = 1
-               AND a.started_at IS NOT NULL
                AND r.rule_version = ?3
                {config_filter}
              ORDER BY r.run_id, a.attempt_id"
@@ -764,7 +767,7 @@ impl HealthDatabase {
         struct AttemptRow {
             run_id: String,
             finished_at: Option<String>,
-            attempt_time: String,
+            attempt_time: Option<String>,
             backend: String,
             status_code: Option<i64>,
             error_kind: Option<String>,
@@ -901,6 +904,27 @@ impl HealthDatabase {
         let mut evidences: Vec<QualifyingRunEvidence> = Vec::new();
 
         for (run_id, (finished_at, attempts)) in by_run {
+            let Some(completed_at) = finished_at.as_deref().and_then(|at| {
+                DateTime::parse_from_rfc3339(at)
+                    .ok()
+                    .map(|at| at.with_timezone(&Utc))
+            }) else {
+                continue;
+            };
+            if completed_at > now {
+                continue;
+            }
+            if attempts.iter().any(|attempt| {
+                attempt
+                    .attempt_time
+                    .as_deref()
+                    .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                    .is_none_or(|at| at.with_timezone(&Utc) > completed_at)
+            }) {
+                // Do not drop only the bad row: it may contradict another failure.
+                // Every contributing attempt must precede the known run completion.
+                continue;
+            }
             // Structured ambiguity vetoes deletion evidence from another backend.
             if attempts.iter().any(|attempt| {
                 attempt.actual_request != "yes"
@@ -946,10 +970,11 @@ impl HealthDatabase {
                 if a.actual_request != "yes" || a.cache_hit != 0 {
                     continue;
                 }
-                let Some(attempt_at) = DateTime::parse_from_rfc3339(&a.attempt_time)
-                    .ok()
-                    .map(|time| time.with_timezone(&Utc))
-                else {
+                let Some(attempt_at) = a.attempt_time.as_deref().and_then(|at| {
+                    DateTime::parse_from_rfc3339(at)
+                        .ok()
+                        .map(|time| time.with_timezone(&Utc))
+                }) else {
                     continue;
                 };
                 if last_success_dt.is_some_and(|last_success| attempt_at <= last_success) {
@@ -994,17 +1019,10 @@ impl HealthDatabase {
                 continue; // No qualifying strong failure
             }
 
-            let completed_at = finished_at
-                .as_deref()
-                .and_then(|s| {
-                    DateTime::parse_from_rfc3339(s)
-                        .ok()
-                        .map(|d| d.with_timezone(&Utc))
-                })
-                .unwrap_or_else(Utc::now);
-
             // Use earliest real attempt timestamp as the strong_failure_at for span calculation.
-            let strong_failure_at = qualifying_times.into_iter().min().unwrap_or(completed_at);
+            let Some(strong_failure_at) = qualifying_times.into_iter().min() else {
+                continue;
+            };
 
             evidences.push(QualifyingRunEvidence {
                 run_id,

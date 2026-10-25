@@ -3305,10 +3305,11 @@ mod sqlite_integration_tests {
     }
 
     fn insert_run(db: &HealthDatabase, run_id: &str, completed: bool, rule_version: &str) {
+        let now = Utc::now();
         db.conn.execute(
-            "INSERT INTO health_runs (run_id, started_at, completed, mode, config_json, config_hash, rule_version, app_version)
-             VALUES (?1, ?2, ?3, 'standard', '{}', 'testhash', ?4, '1.0.0')",
-            params![run_id, Utc::now().to_rfc3339(), if completed { 1 } else { 0 }, rule_version],
+            "INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_json, config_hash, rule_version, app_version)
+             VALUES (?1, ?2, ?3, ?4, 'standard', '{}', 'testhash', ?5, '1.0.0')",
+            params![run_id, (now - Duration::seconds(60)).to_rfc3339(), completed.then(|| now.to_rfc3339()), if completed { 1 } else { 0 }, rule_version],
         ).unwrap();
     }
 
@@ -3319,7 +3320,10 @@ mod sqlite_integration_tests {
         bookmark_id: &str,
         start_offset_secs: i64,
     ) {
-        let started_at = (Utc::now() + Duration::seconds(start_offset_secs)).to_rfc3339();
+        // Offsets describe an ordered, completed history, not requests in the future.
+        let started_at = (Utc::now() - Duration::seconds(60)
+            + Duration::seconds(start_offset_secs))
+        .to_rfc3339();
         db.conn.execute(
             "INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, run_verdict)
              VALUES (?1, ?2, ?3, 'http://test.com', ?4, 'needs_review')",
@@ -3434,13 +3438,15 @@ mod sqlite_integration_tests {
         let db = setup_db();
         let b = "bm_revive";
         let rv = crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
-        let t_success = (Utc::now() + Duration::seconds(20)).to_rfc3339();
-        let t_fail_attempt = (Utc::now() + Duration::seconds(5)).to_rfc3339();
+        let now = Utc::now();
+        let t_success = (now - Duration::seconds(40)).to_rfc3339();
+        let t_fail_attempt = (now - Duration::seconds(55)).to_rfc3339();
+        let t_completed = (now - Duration::seconds(20)).to_rfc3339();
 
         db.conn.execute(
-            "INSERT INTO health_runs (run_id, started_at, completed, mode, config_json, config_hash, rule_version, app_version)
-             VALUES ('run_s', ?1, 1, 'standard', '{}', 'testhash', ?2, '1')",
-            params![&t_success, rv],
+            "INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_json, config_hash, rule_version, app_version)
+             VALUES ('run_s', ?1, ?2, 1, 'standard', '{}', 'testhash', ?3, '1')",
+            params![&t_success, &t_completed, rv],
         ).unwrap();
         db.conn.execute(
             "INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, run_verdict)
@@ -3455,9 +3461,9 @@ mod sqlite_integration_tests {
 
         // Run containing failure started (attempt time = 5s) before success (20s)
         db.conn.execute(
-            "INSERT INTO health_runs (run_id, started_at, completed, mode, config_json, config_hash, rule_version, app_version)
-             VALUES ('run_f', ?1, 1, 'standard', '{}', 'testhash', ?2, '1')",
-            params![&t_fail_attempt, rv],
+            "INSERT INTO health_runs (run_id, started_at, finished_at, completed, mode, config_json, config_hash, rule_version, app_version)
+             VALUES ('run_f', ?1, ?2, 1, 'standard', '{}', 'testhash', ?3, '1')",
+            params![&t_fail_attempt, &t_completed, rv],
         ).unwrap();
         db.conn.execute(
             "INSERT INTO health_checks (check_id, run_id, bookmark_id, original_url, started_at, run_verdict)
