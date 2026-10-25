@@ -64,10 +64,10 @@ impl CurlCliBackend {
                 observation.body_preview.as_deref(),
             ) {
                 observation.error_kind = Some("ParkedDomainCandidate".to_string());
-            } else if crate::health::content::is_deep_content_url(target_url)
-                && crate::health::content::is_structured_content_missing(&text)
+            } else if let Some(issue) =
+                crate::health::content::structured_content_error(target_url, &text)
             {
-                observation.error_kind = Some("ContentMissing".to_string());
+                observation.error_kind = Some(issue.to_string());
             } else if crate::health::content::is_soft_404(
                 observation.title.as_deref(),
                 observation.body_preview.as_deref(),
@@ -470,8 +470,8 @@ mod tests {
         };
         CurlCliBackend::observe_html_content(
             &mut observation,
-            "https://video.example/watch?v=gone",
-            br#"<html><script>{"playabilityStatus":{"status":"ERROR","reason":"Video has been removed"}}</script></html>"#,
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            br#"<html><script>var ytInitialPlayerResponse = {"playabilityStatus":{"status":"ERROR","reason":"Video has been removed"}};</script></html>"#,
         );
         assert_eq!(observation.error_kind.as_deref(), Some("ContentMissing"));
     }

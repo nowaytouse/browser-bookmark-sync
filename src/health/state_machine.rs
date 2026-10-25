@@ -5,7 +5,7 @@ use crate::health::targets::ProbeScope;
 use chrono::{DateTime, Duration, Utc};
 
 /// Current rule version. Increment this when evidence semantics change.
-pub const CURRENT_HEALTH_RULE_VERSION: &str = "9";
+pub const CURRENT_HEALTH_RULE_VERSION: &str = "10";
 
 /// Failure evidence expires after one rolling day. This avoids calendar-timezone
 /// edge cases while ensuring routine health decisions finish in one scan day.
@@ -125,6 +125,7 @@ impl StateMachine {
         let mut has_probable_dead = false;
         let mut has_missing_content = false;
         let mut has_suspicious_content = false;
+        let mut has_structured_uncertainty = false;
         let mut has_content_success = false;
 
         for obs in observations {
@@ -161,6 +162,8 @@ impl StateMachine {
                     } else {
                         has_temp_fail = true;
                     }
+                } else if err == "StructuredContentUncertain" {
+                    has_structured_uncertainty = true;
                 } else if matches!(
                     err.as_str(),
                     "Soft404Candidate"
@@ -223,6 +226,10 @@ impl StateMachine {
         // that the requested deep resource was removed or replaced by an unavailable page.
         if has_content_success {
             HealthVerdict::Live
+        } else if has_structured_uncertainty {
+            // A conflicting login/private/unknown player state is not deletion evidence,
+            // even when another verifier reports removal or earlier runs failed.
+            HealthVerdict::NeedsReview
         } else if has_missing_content {
             HealthVerdict::ProbableDead
         } else if has_suspicious_content {
@@ -937,6 +944,55 @@ mod tests {
                 HealthVerdict::ProbableDead | HealthVerdict::ConfirmedDead
             ));
         }
+    }
+
+    #[test]
+    fn accuracy_conflicting_player_state_cannot_borrow_deletion_history() {
+        let now = Utc::now();
+        let history = BookmarkHistoryStats {
+            previous_verdict: Some(HealthVerdict::ConfirmedDead),
+            qualifying_evidences: mock_content_missing_evidences(
+                3,
+                now - Duration::minutes(3),
+                now,
+            ),
+            ..Default::default()
+        };
+        let uncertain = BackendObservation {
+            backend: "native-reqwest".into(),
+            status_code: Some(200),
+            error_kind: Some("StructuredContentUncertain".into()),
+            ..Default::default()
+        };
+        let missing = BackendObservation {
+            backend: "curl".into(),
+            status_code: Some(200),
+            error_kind: Some("ContentMissing".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            StateMachine::resolve_final_verdict(&[missing.clone()], &history, now),
+            HealthVerdict::ConfirmedDead
+        );
+        for observations in [
+            vec![uncertain.clone(), missing.clone()],
+            vec![missing, uncertain.clone()],
+        ] {
+            assert_eq!(
+                StateMachine::resolve_final_verdict(&observations, &history, now),
+                HealthVerdict::NeedsReview
+            );
+        }
+        let complete_success = BackendObservation {
+            status_code: Some(200),
+            content_length: Some(100),
+            body_hash: Some("valid-content".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            StateMachine::resolve_final_verdict(&[uncertain, complete_success], &history, now),
+            HealthVerdict::Recovered
+        );
     }
 
     #[test]

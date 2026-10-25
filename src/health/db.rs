@@ -891,10 +891,13 @@ impl HealthDatabase {
         let mut evidences: Vec<QualifyingRunEvidence> = Vec::new();
 
         for (run_id, (finished_at, attempts)) in by_run {
-            if attempts
-                .iter()
-                .any(|attempt| attempt.actual_request != "yes" || attempt.cache_hit != 0)
-            {
+            // Structured ambiguity vetoes deletion evidence from another backend.
+            if attempts.iter().any(|attempt| {
+                attempt.actual_request != "yes"
+                    || attempt.cache_hit != 0
+                    || (!site_scope
+                        && attempt.error_kind.as_deref() == Some("StructuredContentUncertain"))
+            }) {
                 continue;
             }
             let has_content_signal = attempts.iter().any(|attempt| {
@@ -1545,6 +1548,75 @@ mod tests {
             .get_qualifying_run_evidences("bm-conflict", None, CURRENT_HEALTH_RULE_VERSION)
             .unwrap();
         assert!(evidence.is_empty());
+    }
+
+    #[test]
+    fn structured_uncertainty_excludes_conflicting_failure_run_from_evidence() {
+        for status in [200, 404] {
+            for uncertain in [false, true] {
+                let db = HealthDatabase::in_memory().unwrap();
+                let ctx = ProbeContext {
+                    run_id: "run-structured-conflict".to_string(),
+                    check_id: "check-structured-conflict".to_string(),
+                    proxy_url: None,
+                    timeout_secs: 10,
+                    slow_mode: false,
+                    probe_scope: crate::health::targets::ProbeScope::Content,
+                    dns_policy_hash: "test-dns-policy".to_string(),
+                    allow_private_ips: false,
+                    history_db_path: None,
+                    secondary_backends: vec!["curl".to_string()],
+                    artifact_dir: None,
+                };
+                db.record_run_start(&ctx).unwrap();
+                let primary = BackendObservation {
+                    backend: "native_reqwest".to_string(),
+                    status_code: Some(200),
+                    error_kind: Some(
+                        if uncertain {
+                            "StructuredContentUncertain"
+                        } else {
+                            "ContentMissing"
+                        }
+                        .to_string(),
+                    ),
+                    body_hash: Some("structured-body".to_string()),
+                    content_length: Some(16),
+                    ..Default::default()
+                };
+                let secondary = BackendObservation {
+                    backend: "curl".to_string(),
+                    status_code: Some(status),
+                    error_kind: Some("ContentMissing".to_string()),
+                    body_hash: Some("missing-body".to_string()),
+                    content_length: Some(12),
+                    ..Default::default()
+                };
+                db.record_check_result(
+                    &ctx.run_id,
+                    &ctx.check_id,
+                    "bm-structured-conflict",
+                    "https://www.youtube.com/watch?v=fixture",
+                    HealthVerdict::NeedsReview,
+                    &[primary, secondary],
+                )
+                .unwrap();
+                db.record_run_finish(&ctx.run_id).unwrap();
+
+                let evidence = db
+                    .get_qualifying_run_evidences(
+                        "bm-structured-conflict",
+                        None,
+                        CURRENT_HEALTH_RULE_VERSION,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    evidence.len(),
+                    usize::from(!uncertain),
+                    "secondary HTTP {status}, structured uncertainty={uncertain}"
+                );
+            }
+        }
     }
 
     #[test]

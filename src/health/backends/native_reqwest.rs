@@ -345,12 +345,13 @@ impl ProbeBackend for NativeReqwestBackend {
                                 obs.body_preview.as_deref(),
                             ) {
                                 obs.error_kind = Some("ParkedDomainCandidate".to_string());
-                            } else if crate::health::content::is_deep_content_url(
-                                &target.original_url,
-                            ) && crate::health::content::is_structured_content_missing(
-                                &text,
-                            ) {
-                                obs.error_kind = Some("ContentMissing".to_string());
+                            } else if let Some(issue) =
+                                crate::health::content::structured_content_error(
+                                    obs.final_url.as_deref().unwrap_or(&target.original_url),
+                                    &text,
+                                )
+                            {
+                                obs.error_kind = Some(issue.to_string());
                             } else if crate::health::content::is_soft_404(
                                 obs.title.as_deref(),
                                 obs.body_preview.as_deref(),
@@ -585,13 +586,127 @@ mod tests {
         assert_eq!(parked.request_method, "GET");
         assert_eq!(parked.error_kind.as_deref(), Some("ParkedDomainCandidate"));
 
-        let removed_video = probe_html(
-            "/watch?v=gone",
-            r#"<html><script>{"playabilityStatus":{"status":"ERROR","reason":"Video has been removed"}}</script></html>"#,
+        let removed_video = probe_player_page(
+            &NativeReqwestBackend::new(),
+            r#"<html><script>var ytInitialPlayerResponse = {"playabilityStatus":{"status":"ERROR","reason":"Video has been removed"}};</script></html>"#,
         )
         .await;
         assert_eq!(removed_video.request_method, "GET");
         assert_eq!(removed_video.error_kind.as_deref(), Some("ContentMissing"));
+    }
+
+    // A loopback HTTP proxy serves a provider URL without DNS or internet access.
+    async fn probe_player_page(backend: &dyn ProbeBackend, html: &str) -> BackendObservation {
+        use tokio::io::AsyncBufReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = html.to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut reader = tokio::io::BufReader::new(&mut socket);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert_eq!(
+                line,
+                "GET http://www.youtube.com/watch?v=abcdefghijk HTTP/1.1\r\n"
+            );
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).await.unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            drop(reader);
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let target =
+            ProbeTarget::from_url("video", "http://www.youtube.com/watch?v=abcdefghijk").unwrap();
+        let context = ProbeContext {
+            run_id: "player-fixture".into(),
+            check_id: "player-fixture".into(),
+            proxy_url: Some(format!("http://{address}")),
+            timeout_secs: 5,
+            slow_mode: false,
+            probe_scope: ProbeScope::Content,
+            dns_policy_hash: "synthetic".into(),
+            allow_private_ips: true,
+            history_db_path: None,
+            secondary_backends: Vec::new(),
+            artifact_dir: None,
+        };
+        let observation = backend.probe(&target, &context).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(6), server)
+            .await
+            .unwrap()
+            .unwrap();
+        observation
+    }
+
+    #[tokio::test]
+    async fn accuracy_quoted_player_error_is_not_page_deletion_evidence() {
+        let article = probe_html(
+            "/guides/player-errors",
+            r#"<html><title>Player response guide</title><h1>Understanding player responses</h1><pre>{"playabilityStatus":{"status":"ERROR","reason":"Video has been removed"}}</pre></html>"#,
+        )
+        .await;
+        assert_eq!(article.actual_request, "yes");
+        assert!(article.body_hash.is_some());
+        assert_eq!(
+            article.error_kind, None,
+            "normal article must not supply missing-content evidence"
+        );
+        assert_eq!(
+            crate::health::state_machine::StateMachine::compute_single_run_verdict(&[article]),
+            crate::health::models::HealthVerdict::Live,
+            "quoted player JSON is article content, not evidence that this article was removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn accuracy_player_rules_agree_across_native_and_curl_probes() {
+        use crate::health::backends::curl::CurlCliBackend;
+        use crate::health::models::HealthVerdict;
+        let native = NativeReqwestBackend::new();
+        let curl = CurlCliBackend::new();
+        let mut backends: Vec<&dyn ProbeBackend> = vec![&native];
+        if CurlCliBackend::find_binary().is_some() {
+            backends.push(&curl);
+        }
+        for backend in backends {
+            for (status, reason, expected_error, expected_verdict) in [
+                (
+                    "ERROR",
+                    "Video has been removed",
+                    "ContentMissing",
+                    HealthVerdict::ProbableDead,
+                ),
+                (
+                    "UNPLAYABLE",
+                    "Video unavailable",
+                    "StructuredContentUncertain",
+                    HealthVerdict::NeedsReview,
+                ),
+                (
+                    "LOGIN_REQUIRED",
+                    "This video is private",
+                    "StructuredContentUncertain",
+                    HealthVerdict::NeedsReview,
+                ),
+            ] {
+                let html = format!(
+                    r#"<title>Player page</title><script>var ytInitialPlayerResponse = {{"playabilityStatus":{{"status":"{status}","reason":"{reason}"}}}};</script>"#
+                );
+                let observation = probe_player_page(backend, &html).await;
+                assert_eq!(observation.actual_request, "yes");
+                assert_eq!(observation.error_kind.as_deref(), Some(expected_error));
+                assert_eq!(
+                    crate::health::state_machine::StateMachine::compute_single_run_verdict(&[
+                        observation
+                    ]),
+                    expected_verdict
+                );
+            }
+        }
     }
 
     #[tokio::test]
