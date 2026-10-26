@@ -2,22 +2,48 @@
 
 use crate::health::backends::ProbeBackend;
 use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
+use crate::health::scheduler::{HostScheduler, RequestPermit, SchedulerConfig};
 use crate::health::security::{
     is_ip_allowed, validate_url_parsed, validate_url_security, SecurityCheckResult,
 };
 use crate::health::targets::ProbeScope;
 use async_trait::async_trait;
 use chrono::Utc;
-use reqwest::Client;
+use reqwest::{Client, Method, Response};
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct NativeReqwestBackend {
     client: Option<Client>,
     client_config: Option<(Option<String>, u64, bool)>,
+    schedulers: [Arc<OnceLock<HostScheduler>>; 2],
+}
+
+// Field order ensures the response is disposed before its host/global permission.
+struct ScheduledResponse {
+    response: Response,
+    _permit: RequestPermit,
+}
+
+enum RequestError {
+    Transport(reqwest::Error),
+    Policy(String),
+}
+
+#[derive(Default)]
+struct RequestTrace {
+    requests_sent: usize,
+    first_send: Option<(chrono::DateTime<Utc>, Instant)>,
+    redirects: Vec<String>,
+}
+
+impl From<reqwest::Error> for RequestError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Transport(error)
+    }
 }
 
 #[derive(Debug)]
@@ -65,24 +91,53 @@ impl reqwest::dns::Resolve for SecureSystemResolver {
 }
 
 impl NativeReqwestBackend {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             client: None,
             client_config: None,
+            schedulers: std::array::from_fn(|_| Arc::new(OnceLock::new())),
         }
     }
 
     pub fn configured(context: &ProbeContext) -> Result<Self, String> {
+        Self::configured_with_scheduler(context, Self::default_scheduler(context.slow_mode))
+    }
+
+    pub fn configured_with_scheduler(
+        context: &ProbeContext,
+        scheduler: HostScheduler,
+    ) -> Result<Self, String> {
         let config = (
             context.proxy_url.clone(),
             context.timeout_secs,
             context.allow_private_ips,
         );
         let client = Self::build_client(config.0.as_deref(), config.1, config.2)?;
+        let schedulers = std::array::from_fn(|index| {
+            Arc::new(if index == usize::from(context.slow_mode) {
+                OnceLock::from(scheduler.clone())
+            } else {
+                OnceLock::new()
+            })
+        });
         Ok(Self {
             client: Some(client),
             client_config: Some(config),
+            schedulers,
         })
+    }
+
+    fn default_scheduler(slow: bool) -> HostScheduler {
+        HostScheduler::new(if slow {
+            SchedulerConfig::slow_mode()
+        } else {
+            SchedulerConfig::default()
+        })
+    }
+
+    fn scheduler_for(&self, context: &ProbeContext) -> &HostScheduler {
+        self.schedulers[usize::from(context.slow_mode)]
+            .get_or_init(|| Self::default_scheduler(context.slow_mode))
     }
 
     fn build_client(
@@ -90,18 +145,6 @@ impl NativeReqwestBackend {
         timeout_secs: u64,
         allow_private: bool,
     ) -> Result<Client, String> {
-        let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= 10 {
-                return attempt.error("Too many redirects");
-            }
-            if let SecurityCheckResult::Denied(reason) =
-                validate_url_parsed(attempt.url(), allow_private)
-            {
-                return attempt.error(format!("SecurityBlocked: {reason}"));
-            }
-            attempt.follow()
-        });
-
         let mut builder = Client::builder()
             // Route evidence must describe the actual connection, not inherited proxy settings.
             .no_proxy()
@@ -110,7 +153,9 @@ impl NativeReqwestBackend {
             .pool_idle_timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(10)
             .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-            .redirect(redirect_policy);
+            // Every redirect and explicit retry must re-enter the shared scheduler.
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never());
 
         if let Some(proxy) = proxy_url {
             let p = reqwest::Proxy::all(proxy).map_err(|e| format!("Proxy config error: {e}"))?;
@@ -136,6 +181,144 @@ impl NativeReqwestBackend {
             }
         }
         Self::build_client(config.0.as_deref(), config.1, config.2)
+    }
+
+    async fn send_chain(
+        &self,
+        client: &Client,
+        target: &ProbeTarget,
+        context: &ProbeContext,
+        method: Method,
+        trace: &mut RequestTrace,
+    ) -> Result<ScheduledResponse, RequestError> {
+        let scheduler = self.scheduler_for(context);
+        let mut request = client.request(method, &target.original_url).build()?;
+        let mut deadline = None;
+        let mut followed = 0;
+        loop {
+            if let SecurityCheckResult::Denied(reason) =
+                validate_url_parsed(request.url(), context.allow_private_ips)
+            {
+                return Err(RequestError::Policy(format!("SecurityBlocked: {reason}")));
+            }
+            let current = ProbeTarget::from_url("request", request.url().as_str())
+                .map_err(RequestError::Policy)?;
+            let mut keys = vec![current.host.as_str()];
+            if current.registrable_domain != current.host {
+                keys.push(current.registrable_domain.as_str());
+            }
+            let acquire = scheduler.acquire_request(&keys);
+            let mut permit = if let Some(at) = deadline {
+                tokio::time::timeout_at(at, acquire)
+                    .await
+                    .map_err(|_| RequestError::Policy("Timeout".into()))?
+            } else {
+                acquire.await
+            }
+            .map_err(|error| RequestError::Policy(format!("SchedulingError: {error}")))?;
+            let at = match deadline {
+                Some(at) => at,
+                None => tokio::time::Instant::now()
+                    .checked_add(Duration::from_secs(context.timeout_secs))
+                    .ok_or_else(|| RequestError::Policy("Invalid request timeout".into()))?,
+            };
+            deadline = Some(at);
+            let remaining = at.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(RequestError::Policy("Timeout".into()));
+            }
+            *request.timeout_mut() = Some(remaining);
+            let outgoing = request
+                .try_clone()
+                .ok_or_else(|| RequestError::Policy("Cannot repeat request safely".into()))?;
+            if trace.requests_sent == 0 {
+                trace.first_send = Some((Utc::now(), Instant::now()));
+            }
+            trace.requests_sent += 1;
+            if followed > 0 {
+                trace.redirects.push(request.url().to_string());
+            }
+            let response = client.execute(outgoing).await?;
+            let status = response.status().as_u16();
+            let is_redirect = matches!(status, 301 | 302 | 303 | 307 | 308);
+            let default_wait = if context.slow_mode { 60 } else { 30 };
+            let server_wait = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| HostScheduler::parse_retry_after(value, default_wait));
+            if let Some(wait) = server_wait
+                .or_else(|| matches!(status, 429 | 503).then(|| Duration::from_secs(default_wait)))
+            {
+                permit.set_cooldown(wait);
+            }
+            let next = is_redirect
+                .then(|| response.headers().get(reqwest::header::LOCATION))
+                .flatten()
+                .and_then(|location| location.to_str().ok())
+                .and_then(|location| request.url().join(location).ok());
+            let Some(mut next) = next else {
+                return Ok(ScheduledResponse {
+                    response,
+                    _permit: permit,
+                });
+            };
+            // Preserve the old policy's limit: attempt.previous().len() >= 10.
+            if followed + 1 >= 10 {
+                return Err(RequestError::Policy("HttpError: Too many redirects".into()));
+            }
+            if let SecurityCheckResult::Denied(reason) =
+                validate_url_parsed(&next, context.allow_private_ips)
+            {
+                return Err(RequestError::Policy(format!("SecurityBlocked: {reason}")));
+            }
+            // Do not synthesize new BasicAuth from untrusted Location userinfo.
+            next.set_username("")
+                .map_err(|_| RequestError::Policy("Invalid redirect userinfo".into()))?;
+            next.set_password(None)
+                .map_err(|_| RequestError::Policy("Invalid redirect userinfo".into()))?;
+            let previous = request.url().clone();
+            if next.origin() != previous.origin() {
+                for name in [
+                    "authorization",
+                    "cookie",
+                    "cookie2",
+                    "proxy-authorization",
+                    "www-authenticate",
+                ] {
+                    request.headers_mut().remove(name);
+                }
+            }
+            request.headers_mut().remove(reqwest::header::REFERER);
+            if !(previous.scheme() == "https" && next.scheme() == "http") {
+                let mut referer = previous.clone();
+                referer
+                    .set_username("")
+                    .map_err(|_| RequestError::Policy("Invalid referrer userinfo".into()))?;
+                referer
+                    .set_password(None)
+                    .map_err(|_| RequestError::Policy("Invalid referrer userinfo".into()))?;
+                referer.set_fragment(None);
+                if let Ok(value) = reqwest::header::HeaderValue::from_str(referer.as_str()) {
+                    request
+                        .headers_mut()
+                        .insert(reqwest::header::REFERER, value);
+                }
+            }
+            // Drop the previous response before releasing its accounting or waiting.
+            drop(response);
+            drop(permit);
+            if let Some(wait) = server_wait {
+                // A server delay applies before following even to a different host.
+                // Never overflow a timer or reset the chain's transport deadline.
+                if wait >= at.saturating_duration_since(tokio::time::Instant::now()) {
+                    return Err(RequestError::Policy("Timeout".into()));
+                }
+                tokio::time::sleep(wait).await;
+            }
+            *request.url_mut() = next.clone();
+            followed += 1;
+        }
     }
 
     /// Check if initial deep URL was redirected to root homepage
@@ -202,8 +385,6 @@ impl ProbeBackend for NativeReqwestBackend {
         };
         let client = self.client_for(context)?;
 
-        let start_time = Instant::now();
-
         // Content checks need the response body, so issue one GET directly.  The old HEAD→GET
         // sequence doubled requests for every saved page and made long-tail scans needlessly
         // slow.  Site checks stay HEAD-first and only fall back when a server rejects HEAD.
@@ -212,25 +393,37 @@ impl ProbeBackend for NativeReqwestBackend {
         } else {
             "HEAD"
         };
-        let mut response_res = if context.probe_scope == ProbeScope::Content {
-            client.get(&target.original_url).send().await
+        let mut trace = RequestTrace::default();
+        let first_method = if context.probe_scope == ProbeScope::Content {
+            Method::GET
         } else {
-            client.head(&target.original_url).send().await
+            Method::HEAD
         };
+        let mut response_res = self
+            .send_chain(&client, target, context, first_method, &mut trace)
+            .await;
 
         let mut fell_back = false;
-        if context.probe_scope == ProbeScope::Site {
-            if let Ok(ref resp) = response_res {
-                let status = resp.status().as_u16();
-                if matches!(status, 400 | 403 | 404 | 405 | 501) {
-                    method = "GET";
-                    fell_back = true;
-                    response_res = client.get(&target.original_url).send().await;
-                }
-            }
+        let needs_fallback = context.probe_scope == ProbeScope::Site
+            && response_res.as_ref().is_ok_and(|result| {
+                matches!(
+                    result.response.status().as_u16(),
+                    400 | 403 | 404 | 405 | 501
+                )
+            });
+        if needs_fallback {
+            method = "GET";
+            fell_back = true;
+            drop(response_res);
+            response_res = self
+                .send_chain(&client, target, context, Method::GET, &mut trace)
+                .await;
         }
 
-        let latency_ms = start_time.elapsed().as_millis() as u64;
+        let latency_ms = trace
+            .first_send
+            .as_ref()
+            .map_or(0, |(_, start)| start.elapsed().as_millis() as u64);
         let finished_at = Utc::now();
 
         let mut obs = BackendObservation::default();
@@ -239,22 +432,29 @@ impl ProbeBackend for NativeReqwestBackend {
         obs.run_id = context.run_id.clone();
         obs.check_id = context.check_id.clone();
         obs.route = route.to_string();
-        obs.started_at = started_at;
+        obs.started_at = trace.first_send.as_ref().map_or(started_at, |(at, _)| *at);
         obs.finished_at = finished_at;
-        obs.actual_request = "yes".to_string();
+        obs.actual_request = if trace.requests_sent == 0 {
+            "no"
+        } else {
+            "yes"
+        }
+        .to_string();
         obs.request_method = method.to_string();
         obs.initial_url = target.original_url.clone();
         obs.response_time_ms = latency_ms;
+        obs.redirect_count = trace.redirects.len();
+        obs.redirect_chain = trace.redirects;
 
         match response_res {
-            Ok(mut resp) => {
+            Ok(mut scheduled) => {
+                let resp = &mut scheduled.response;
                 let status_code = resp.status().as_u16();
                 obs.status_code = Some(status_code);
 
                 let final_url_str = resp.url().to_string();
                 if final_url_str != target.original_url {
                     obs.final_url = Some(final_url_str.clone());
-                    obs.redirect_count = 1;
 
                     if Self::is_redirected_to_homepage(&target.original_url, &final_url_str) {
                         obs.error_kind = Some("RedirectedToHomepage".to_string());
@@ -362,7 +562,10 @@ impl ProbeBackend for NativeReqwestBackend {
                     }
                 }
             }
-            Err(err) => {
+            Err(RequestError::Policy(reason)) => {
+                obs.error_kind = Some(reason);
+            }
+            Err(RequestError::Transport(err)) => {
                 let err_str = err.to_string();
                 if let Some(index) = err_str.find("SecurityBlocked:") {
                     obs.error_kind = Some(err_str[index..].to_string());

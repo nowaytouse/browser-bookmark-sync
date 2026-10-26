@@ -99,6 +99,27 @@ fn should_probe_dns(scope: ProbeScope, verdict: HealthVerdict) -> bool {
 
 const MAX_RETRY_INTERVAL_SECS: u64 = 60;
 
+fn observation_cooldown(
+    observations: &[BackendObservation],
+    slow: bool,
+) -> Option<std::time::Duration> {
+    let default_secs = if slow { 60 } else { 30 };
+    observations
+        .iter()
+        .filter(|observation| matches!(observation.status_code, Some(429 | 503)))
+        .map(|observation| {
+            observation
+                .error_kind
+                .as_deref()
+                .and_then(|error| error.strip_prefix("RetryAfter:"))
+                .map_or_else(
+                    || std::time::Duration::from_secs(default_secs),
+                    |value| HostScheduler::parse_retry_after(value, default_secs),
+                )
+        })
+        .max()
+}
+
 // Keep the scan bounded per registrable domain while avoiding multi-hour queues
 // when a single host owns thousands of saved pages.
 const STANDARD_PER_HOST_CONCURRENCY: usize = 8;
@@ -268,7 +289,11 @@ impl HealthEngine {
         }
 
         let sched_config = if options.slow_mode {
-            SchedulerConfig::slow_mode()
+            let slow = SchedulerConfig::slow_mode();
+            SchedulerConfig {
+                max_global_concurrency: options.concurrency.min(slow.max_global_concurrency),
+                ..slow
+            }
         } else {
             SchedulerConfig {
                 max_global_concurrency: options.concurrency,
@@ -482,7 +507,10 @@ impl HealthEngine {
             secondary_backends: self.options.secondary_backends.clone(),
             artifact_dir: self.options.output_dir.clone(),
         };
-        let native_backend = NativeReqwestBackend::configured(&backend_context)?;
+        let native_backend = NativeReqwestBackend::configured_with_scheduler(
+            &backend_context,
+            self.scheduler.clone(),
+        )?;
         let (dns_cloudflare_backend, dns_alidns_backend) = if self.options.proxy_url.is_none() {
             (
                 Some(NativeDnsBackend::cloudflare(self.options.timeout_secs)?),
@@ -726,11 +754,6 @@ impl HealthEngine {
                     let mut item_ctx = ctx_base.clone();
                     item_ctx.check_id = check_id.clone();
 
-                    let mut permit = scheduler
-                        .acquire_keys(&key_vec)
-                        .await
-                        .map_err(str::to_string)?;
-
                     cb(idx + 1, total, &target.original_url);
 
                     let mut observations = Vec::new();
@@ -750,6 +773,10 @@ impl HealthEngine {
                     let skip_secondary = should_skip_secondary(item_ctx.slow_mode, initial_verdict);
 
                     if should_probe_dns(item_ctx.probe_scope, initial_verdict) {
+                        let _permit = scheduler
+                            .acquire_request(&key_vec)
+                            .await
+                            .map_err(str::to_string)?;
                         observations.extend(
                             run_dns_policy(
                                 &dns_policy,
@@ -766,12 +793,11 @@ impl HealthEngine {
                         for sec in &secondary_list {
                             // Confirmation requests share the same host/domain pacing as
                             // first probes, including cooldowns registered by other targets.
-                            scheduler.release_keys(&key_vec, None).await;
-                            drop(permit);
-                            permit = scheduler
-                                .acquire_keys(&key_vec)
+                            let mut permit = scheduler
+                                .acquire_request(&key_vec)
                                 .await
                                 .map_err(str::to_string)?;
+                            let first_observation = observations.len();
                             match sec.as_str() {
                                 "lychee" => {
                                     if let Ok(obs) = lychee_backend.probe(&target, &item_ctx).await
@@ -829,6 +855,13 @@ impl HealthEngine {
                                 }
                                 _ => {}
                             }
+                            if let Some(cooldown) = observation_cooldown(
+                                &observations[first_observation..],
+                                item_ctx.slow_mode,
+                            ) {
+                                permit.set_cooldown(cooldown);
+                            }
+                            drop(permit);
                             if item_ctx.slow_mode {
                                 break;
                             }
@@ -853,31 +886,6 @@ impl HealthEngine {
                     } else {
                         Ok(())
                     };
-
-                    // Respect the longest server delay from every verifier and route.
-                    let default_cooldown = if item_ctx.slow_mode { 60 } else { 30 };
-                    let cooldown = observations
-                        .iter()
-                        .filter_map(|o| {
-                            if matches!(o.status_code, Some(429 | 503)) {
-                                if let Some(ref err) = o.error_kind {
-                                    if err.starts_with("RetryAfter:") {
-                                        let val = err.trim_start_matches("RetryAfter:");
-                                        return Some(HostScheduler::parse_retry_after(
-                                            val,
-                                            default_cooldown,
-                                        ));
-                                    }
-                                }
-                                Some(std::time::Duration::from_secs(default_cooldown))
-                            } else {
-                                None
-                            }
-                        })
-                        .max();
-
-                    scheduler.release_keys(&key_vec, cooldown).await;
-                    drop(permit);
 
                     persistence_result?;
                     Ok((
@@ -1379,8 +1387,15 @@ mod tests {
                     let mut request = [0_u8; 2048];
                     let received = socket.read(&mut request).await.unwrap();
                     assert!(received > 0);
+                    // Only the secondary response is rate-limited in this fixture.
+                    // A Retry-After on the primary would correctly delay that verifier.
+                    let retry_after = if code == status {
+                        "Retry-After: 120\r\n"
+                    } else {
+                        ""
+                    };
                     socket.write_all(format!(
-                        "HTTP/1.1 {code} Test\r\nRetry-After: 120\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 {code} Test\r\n{retry_after}Content-Length: 0\r\nConnection: close\r\n\r\n"
                     ).as_bytes()).await.unwrap();
                 }
             });

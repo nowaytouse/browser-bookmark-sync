@@ -273,7 +273,7 @@ impl ConfigHashInput {
                 "direct".to_string()
             },
             request_strategy: format!(
-                "head_then_get_html_content_v4_complete_literal_target:{:?}",
+                "head_then_get_html_content_v5_paced_physical_sends:{:?}",
                 context.probe_scope
             )
             .to_ascii_lowercase(),
@@ -282,7 +282,7 @@ impl ConfigHashInput {
             rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION.to_string(),
             dns_resolver_policy: context.dns_policy_hash.clone(),
             cache_policy: "no_cache".to_string(),
-            retry_preset: "single_attempt".to_string(),
+            retry_preset: "single_send_no_protocol_retry".to_string(),
             verifier_family_mapping_version: "1".to_string(),
         }
     }

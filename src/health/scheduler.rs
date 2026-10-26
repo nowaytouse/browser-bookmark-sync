@@ -1,8 +1,7 @@
 //! Host/Domain Scheduler and Rate Limiter
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::time::{sleep, Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -35,18 +34,57 @@ impl SchedulerConfig {
     }
 }
 
+#[derive(Debug)]
 struct HostState {
     last_request: Option<Instant>,
     cooldown: Option<(Instant, Duration)>,
     active_requests: usize,
 }
 
+impl HostState {
+    fn extend_cooldown(&mut self, now: Instant, duration: Duration) {
+        let remaining = self
+            .cooldown
+            .map(|(start, duration)| duration.saturating_sub(now.duration_since(start)))
+            .unwrap_or_default();
+        self.cooldown = Some((now, duration.max(remaining)));
+    }
+}
+
 /// Host & Domain Rate Limiter for probes
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HostScheduler {
     config: SchedulerConfig,
     hosts: Arc<Mutex<HashMap<String, HostState>>>,
     global_semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+/// Permission for one physical request. Hold it until the response is consumed
+/// or dropped; cancellation releases host accounting as well as the global slot.
+#[derive(Debug)]
+#[must_use = "hold the request permit until its response is consumed or dropped"]
+pub struct RequestPermit {
+    scheduler: HostScheduler,
+    keys: Vec<String>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl RequestPermit {
+    /// Retain the longest server delay observed for this request.
+    pub fn set_cooldown(&mut self, duration: Duration) {
+        // Other active requests must see headers immediately, not after this body ends.
+        self.scheduler
+            .register_cooldown_sync(self.keys.iter().map(String::as_str), duration);
+    }
+}
+
+impl Drop for RequestPermit {
+    fn drop(&mut self) {
+        self.scheduler
+            .release_keys_sync(self.keys.iter().map(String::as_str), None);
+        // Host state must be released before another request gets the global slot.
+        drop(self.permit.take());
+    }
 }
 
 impl HostScheduler {
@@ -57,6 +95,26 @@ impl HostScheduler {
             hosts: Arc::new(Mutex::new(HashMap::new())),
             global_semaphore,
         }
+    }
+
+    fn lock_hosts(&self) -> Result<MutexGuard<'_, HashMap<String, HostState>>, &'static str> {
+        self.hosts.lock().map_err(|_| {
+            self.global_semaphore.close();
+            tracing::error!("Health request scheduler state poisoned; stopping further requests");
+            "scheduler state lock poisoned"
+        })
+    }
+
+    /// Acquire one cancellation-safe physical-request permit for the supplied
+    /// host/domain keys, respecting the same limits and cooldowns as other probes.
+    pub async fn acquire_request(&self, keys: &[&str]) -> Result<RequestPermit, &'static str> {
+        let owned_keys = keys.iter().map(|key| (*key).to_owned()).collect();
+        let permit = self.acquire_keys(keys).await?;
+        Ok(RequestPermit {
+            scheduler: self.clone(),
+            keys: owned_keys,
+            permit: Some(permit),
+        })
     }
 
     /// Acquire permission to probe target keys (host and/or registrable domain), respecting interval and cooldown
@@ -76,7 +134,7 @@ impl HostScheduler {
         let mut permit = None;
         loop {
             let max_delay = {
-                let mut guard = self.hosts.lock().await;
+                let mut guard = self.lock_hosts()?;
                 let now = Instant::now();
                 let mut delay = Duration::ZERO;
 
@@ -156,9 +214,36 @@ impl HostScheduler {
 
     /// Mark request complete for multiple keys and optionally register a 429 cooldown
     pub async fn release_keys(&self, keys: &[&str], cooldown_duration: Option<Duration>) {
-        let mut guard = self.hosts.lock().await;
+        self.release_keys_sync(keys.iter().copied(), cooldown_duration);
+    }
+
+    fn register_cooldown_sync<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a str>,
+        duration: Duration,
+    ) {
+        let Ok(mut guard) = self.lock_hosts() else {
+            return;
+        };
         let now = Instant::now();
-        for &k in keys {
+        for key in keys {
+            if let Some(state) = guard.get_mut(key) {
+                state.extend_cooldown(now, duration);
+            }
+        }
+    }
+
+    fn release_keys_sync<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a str>,
+        cooldown_duration: Option<Duration>,
+    ) {
+        let Ok(mut guard) = self.lock_hosts() else {
+            // lock_hosts has closed scheduling and reported the poisoned state.
+            return;
+        };
+        let now = Instant::now();
+        for k in keys {
             if let Some(state) = guard.get_mut(k) {
                 if state.active_requests > 0 {
                     state.active_requests -= 1;
@@ -166,11 +251,7 @@ impl HostScheduler {
                 state.last_request = Some(now);
 
                 if let Some(cooldown) = cooldown_duration {
-                    let remaining = state
-                        .cooldown
-                        .map(|(start, duration)| duration.saturating_sub(now.duration_since(start)))
-                        .unwrap_or_default();
-                    state.cooldown = Some((now, cooldown.max(remaining)));
+                    state.extend_cooldown(now, cooldown);
                 }
             }
         }
