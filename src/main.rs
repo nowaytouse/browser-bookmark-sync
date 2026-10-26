@@ -1984,7 +1984,13 @@ async fn run_cli(cli: Cli) -> Result<()> {
 
                 println!("\n📊 健康检查结果 (多后端多历史分析)");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                println!("  总计检查:      {}", report.total_checked);
+                println!("  处理目标:      {}（包含复用结果）", report.total_checked);
+                if let Some(counts) = &report.provenance {
+                    println!("  本轮新探测:    {}", counts.fresh_probe_targets);
+                    println!("  仅复用旧证据:  {}", counts.reused_only_targets);
+                    println!("  无网络证据:    {}", counts.unprobed_targets);
+                    println!("  以上为最终报告目标数，不是全部重试或请求数。");
+                }
                 println!("  ✅ 有效:       {}", report.live_count);
                 println!("  🔄 已恢复:     {}", report.recovered_count);
                 println!("  🛡️  受保护:    {}", report.protected_count);
@@ -1996,7 +2002,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
                 if history_db.is_some() {
-                    println!("\n💾 历史已写入 DB。后续运行:");
+                    println!("\n💾 已关联历史数据库；复用结果不会新增检测记录。后续运行:");
                     println!("   bsync health quarantine   -- 查看需审核的书签");
                     println!("   bsync health rebuild-summary  -- 重建汇总统计");
                 }

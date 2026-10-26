@@ -8,9 +8,21 @@ use std::fs::create_dir_all;
 use std::io::{self, Write};
 use std::path::Path;
 
+mod provenance;
+pub use provenance::ReportProvenanceCounts;
+
+#[cfg(test)]
+mod provenance_tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HealthRunSummaryReport {
+    /// Compatibility alias for the invocation/scan ID, not a database evidence run ID.
     pub run_id: String,
+    #[serde(default)]
+    pub scan_id: Option<String>,
+    /// Absent in older reports; unknown must not be presented as zero new requests.
+    #[serde(default)]
+    pub provenance: Option<ReportProvenanceCounts>,
     pub probe_scope: String,
     #[serde(default)]
     pub partial: bool,
@@ -98,6 +110,8 @@ impl ReportExporter {
 
         let mut summary = HealthRunSummaryReport {
             run_id: run_id.to_string(),
+            scan_id: Some(run_id.to_string()),
+            provenance: Some(ReportProvenanceCounts::from_results(results)),
             probe_scope: scope_name(probe_scope).to_string(),
             partial,
             total_checked: results.len(),
@@ -209,10 +223,16 @@ impl ReportExporter {
         let scope_report = format!("{}-health-report.html", summary.probe_scope);
         Self::write_main_report_html(dir.join(&scope_report), &summary)?;
         Self::write_csv_observations(dir.join(&scope_observations), results)?;
+        Self::write_csv_observations(dir.join("health-observations.csv"), results)?;
+        if let Some(counts) = &summary.provenance {
+            provenance::write(dir, run_id, &summary.probe_scope, counts, results)?;
+        }
+        let scope_provenance = format!("{}-health-provenance.json", summary.probe_scope);
 
         let manifest = serde_json::json!({
             "schema_version": "health-run-manifest-v1",
             "run_id": run_id,
+            "scan_id": run_id,
             "app_version": env!("CARGO_PKG_VERSION"),
             "generated_at": chrono::Utc::now().to_rfc3339(),
             "probe_scope": summary.probe_scope.clone(),
@@ -229,6 +249,8 @@ impl ReportExporter {
                 scope_report,
                 "health-observations.csv",
                 scope_observations,
+                "health-provenance.json",
+                scope_provenance,
                 "probably-dead.html",
                 "probable-dead.html"
             ]
@@ -237,9 +259,6 @@ impl ReportExporter {
             dir.join("health-run-manifest.json"),
             serde_json::to_string_pretty(&manifest)?.as_bytes(),
         )?;
-
-        // Export health-observations.csv
-        Self::write_csv_observations(dir.join("health-observations.csv"), results)?;
 
         Ok(summary)
     }
@@ -358,10 +377,14 @@ impl ReportExporter {
             output,
             "<h1>🔍 Bookmark Health Comprehensive Audit Report</h1>"
         )?;
-        writeln!(output, "<p>Run ID: <code>{}</code></p>", summary.run_id)?;
         writeln!(
             output,
-            "<p>Total URLs Checked: <strong>{}</strong> (Duration: {:.2}s)</p>",
+            "<p>Scan ID: <code>{}</code></p>",
+            html_escape(&summary.run_id)
+        )?;
+        writeln!(
+            output,
+            "<p>Targets processed (including reused results): <strong>{}</strong> (Duration: {:.2}s)</p>",
             summary.total_checked, summary.duration_secs
         )?;
         writeln!(output, "<ul>")?;
@@ -397,6 +420,9 @@ impl ReportExporter {
             summary.needs_review_count
         )?;
         writeln!(output, "</ul>")?;
+        if let Some(counts) = &summary.provenance {
+            writeln!(output, "<h2>Evidence in this report</h2><p>Targets with a fresh probe: <strong>{}</strong>; reuse only: <strong>{}</strong>; no fresh or reused network evidence: <strong>{}</strong>.</p><p>Final observation rows: {} (fresh request flag: {}; reused: {}; no request: {}; unknown: {}). These are final reported evidence counts, not all retry attempts, physical requests or network packets. Original evidence times and source identities are in <code>health-provenance.json</code>.</p>", counts.fresh_probe_targets, counts.reused_only_targets, counts.unprobed_targets, counts.total_observations, counts.fresh_request_observations, counts.reused_observations, counts.no_request_observations, counts.unknown_request_observations)?;
+        }
         writeln!(output, "<h2>Quarantine & Safety Guidelines</h2>")?;
         writeln!(output, "<p>⚠️ Single-run check results CANNOT be used for destructive deletion. Only <code>ConfirmedDead</code> items verified by 3 runs in the latest 24 hours, with independent verifier families or dual-resolver NXDOMAIN agreement, are eligible for quarantine review.</p>")?;
         writeln!(output, "</body></html>")?;
