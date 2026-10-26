@@ -64,6 +64,16 @@ Rule version 12 corrects the success cutoff in that same collector. It parses ev
 
 Success predicates and bookmark/config/rule/completed-run scope are unchanged. Dedicated public-collector tests cover conflicting offset order, missing/empty/malformed/future success times across runs, equal and later failures, and seven unrelated/non-real success controls. Both the engine and explicit summary rebuild use this collector. The patch does not retroactively rewrite stored summaries; the version change makes old-rule results review-only or ineligible under the existing engine/GUI/quarantine policy. This is not a general database snapshot or arbitrary-tampering guarantee.
 
+## Coherent evidence snapshots (rule version 13)
+
+The public historical-evidence read now owns one deferred read transaction when the connection is in autocommit mode. Its success-cutoff and failure queries therefore share one snapshot. An existing caller transaction is reused without a nested BEGIN, commit or rollback; errors release only a transaction owned by this call. Rebuilding already used its own transaction and continues to call the internal helper in that snapshot.
+
+This follows [SQLite's snapshot-isolation contract](https://www.sqlite.org/isolation.html): a WAL reader keeps its read snapshot while another connection can commit. It does not claim to see commits made after that snapshot, serialize later verdict publication with other writers, or make arbitrary cached summaries current. No extra retries or write-locking preset was added.
+
+A deterministic temporary WAL test commits an earlier failure and a later success together from a second connection after the first health SELECT finishes. Both valid pre/post states have no qualifying failure, but the original public API returned the old failure from a mixed read. The regression asserts the writer's actual commit and callback acknowledgement outside the callback (rusqlite catches callback panics), then checks a fresh read and a later positive failure control. Additional tests preserve a caller's rollbackable marker and cover own/caller transaction behavior after a query error. Waits are bounded; no sleeps, live network or private data are involved.
+
+The human-approved SQLite `trace` feature is enabled only as a dev-dependency on the same rusqlite version. It adds no dependency or unsafe application code; non-dev feature inspection excludes it, and the lockfile remains unchanged. No production tracing or test hook is installed. Rule version 13 applies the established old-policy invalidation rather than rewriting history.
+
 ## Test isolation
 
 Ordinary CLI integration tests use child-process-only private profile/configuration roots and a synthetic Safari bookmark file; they never need the caller's real browser data. Child stdin is closed and execution has a ten-second bound. All seven command tests remain enabled; success/failure is asserted explicitly, and macOS analysis must report the one synthetic bookmark. This replaces an older harness that inherited the caller's home and could read real Profiles during `analyze`/`validate`; earlier unisolated test runs are not evidence of a fixture-only session. The commands involved perform read-only local structural analysis, not URL probing. Test isolation does not change the user's environment or any toolchain settings.

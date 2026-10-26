@@ -83,6 +83,8 @@ psl = "2.1.245"
 [dev-dependencies]
 tempfile = "3.27.0"
 proptest = "1.12.0"
+# Deterministic two-connection snapshot tests; no tracing in release dependencies.
+rusqlite = { version = "0.41.0", features = ["trace"] }
 
 [[test]]
 name = "integration_test"

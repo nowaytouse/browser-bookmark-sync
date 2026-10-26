@@ -31,6 +31,8 @@ fn current_evidence_timestamp(at: Option<&str>, now: chrono::DateTime<Utc>) -> b
 
 #[cfg(test)]
 mod evidence_time_tests;
+#[cfg(test)]
+mod snapshot_tests;
 
 impl HealthDatabase {
     /// Open SQLite database connection and run schema migrations
@@ -649,12 +651,25 @@ impl HealthDatabase {
         current_config_hash: Option<&str>,
         current_rule_version: &str,
     ) -> SqlResult<Vec<crate::health::models::QualifyingRunEvidence>> {
-        Self::get_qualifying_run_evidences_from(
-            &self.conn,
+        // An existing caller transaction already owns the snapshot and its outcome.
+        // Do not nest BEGIN or commit/rollback the caller's pending work.
+        if !self.conn.is_autocommit() {
+            return Self::get_qualifying_run_evidences_from(
+                &self.conn,
+                bookmark_id,
+                current_config_hash,
+                current_rule_version,
+            );
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let evidence = Self::get_qualifying_run_evidences_from(
+            &tx,
             bookmark_id,
             current_config_hash,
             current_rule_version,
-        )
+        )?;
+        tx.commit()?;
+        Ok(evidence)
     }
 
     fn get_qualifying_run_evidences_from(

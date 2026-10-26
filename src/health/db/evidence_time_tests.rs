@@ -4,7 +4,7 @@ use super::*;
 use crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION;
 use crate::health::targets::ProbeScope;
 
-fn record_missing_run(db: &HealthDatabase, run_id: &str, backends: &[&str]) {
+pub(super) fn record_missing_run(db: &HealthDatabase, run_id: &str, backends: &[&str]) {
     let context = ProbeContext {
         run_id: run_id.into(),
         check_id: run_id.into(),
@@ -192,7 +192,7 @@ fn invalid_second_dns_timestamp_cannot_manufacture_resolver_agreement() {
     }
 }
 
-fn set_probe_time(
+pub(super) fn set_probe_time(
     db: &HealthDatabase,
     run: &str,
     at: chrono::DateTime<Utc>,
