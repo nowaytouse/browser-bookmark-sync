@@ -19,6 +19,12 @@ async fn cached_dns_runs_do_not_multiply_qualifying_history(
     let db = HealthDatabase::in_memory()?;
     let fresh_context = context("fresh");
     let config_hash = ConfigHashInput::from_probe_context(&fresh_context).stable_hash()?;
+    let expected_source = serde_json::json!({
+        "run_id": fresh_context.run_id.as_str(),
+        "check_id": fresh_context.check_id.as_str(),
+        "config_hash": config_hash.as_str(),
+        "rule_version": CURRENT_HEALTH_RULE_VERSION,
+    });
     db.record_run_start(&fresh_context)?;
 
     let mut fresh_observations = Vec::new();
@@ -31,6 +37,11 @@ async fn cached_dns_runs_do_not_multiply_qualifying_history(
         assert_eq!(observation.actual_request, "yes");
         assert!(!observation.cache_hit);
         assert_eq!(observation.dns_rcode.as_deref(), Some("NXDOMAIN"));
+        assert_eq!(
+            serde_json::to_value(&observation)?.get("source"),
+            Some(&expected_source),
+            "fresh DNS evidence must identify the run, check, configuration and rules that obtained it"
+        );
         fresh_observations.push(observation);
     }
     assert_ne!(
@@ -86,6 +97,11 @@ async fn cached_dns_runs_do_not_multiply_qualifying_history(
             assert_eq!(observation.finished_at, original.finished_at);
             assert_eq!(observation.run_id, reused_context.run_id);
             assert_eq!(observation.check_id, reused_context.check_id);
+            assert_eq!(
+                serde_json::to_value(&observation)?.get("source"),
+                Some(&expected_source),
+                "cache reuse must retain the original evidence source, not the new batch membership"
+            );
             reused_observations.push(observation);
         }
         let reused_verdict = StateMachine::compute_single_run_verdict_for_scope(

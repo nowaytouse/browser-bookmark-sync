@@ -14,7 +14,9 @@ use crate::health::backends::wget::WgetCliBackend;
 use crate::health::backends::ProbeBackend;
 
 use crate::health::db::HealthDatabase;
-use crate::health::models::{BackendObservation, HealthVerdict, ProbeContext, ProbeTarget};
+use crate::health::models::{
+    BackendObservation, HealthVerdict, ObservationSource, ProbeContext, ProbeTarget,
+};
 use crate::health::reporting::{HealthRunSummaryReport, ReportExporter};
 use crate::health::scheduler::{HostScheduler, SchedulerConfig};
 use crate::health::state_machine::{BookmarkHistoryStats, StateMachine};
@@ -23,6 +25,11 @@ use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+
+mod resume;
+
+#[cfg(test)]
+mod resume_provenance_tests;
 
 pub struct HealthEngineOptions {
     pub proxy_url: Option<String>,
@@ -332,100 +339,6 @@ impl HealthEngine {
         self.options.output_dir = output_dir;
         self.options.partial_run = partial_run;
         self
-    }
-
-    fn load_same_day_positive_results(
-        &self,
-        targets: &[ProbeTarget],
-        context: &ProbeContext,
-    ) -> Result<
-        std::collections::HashMap<
-            (String, String),
-            (String, String, HealthVerdict, Vec<BackendObservation>),
-        >,
-        String,
-    > {
-        let Some(db) = self.db.as_ref() else {
-            return Ok(std::collections::HashMap::new());
-        };
-        let requested: std::collections::HashSet<_> = targets
-            .iter()
-            .map(|target| (target.bookmark_id.clone(), target.original_url.clone()))
-            .collect();
-        let config_hash = crate::health::models::ConfigHashInput::from_probe_context(context)
-            .stable_hash()
-            .map_err(|error| format!("Resume config hash failed: {error}"))?;
-        let cutoff = (Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
-        let mut statement = db
-            .conn
-            .prepare(
-                "SELECT c.bookmark_id, c.original_url, c.run_verdict, r.run_id,
-                        r.config_hash, r.rule_version,
-                        COALESCE(r.finished_at, r.started_at)
-                 FROM health_checks c
-                 JOIN health_runs r ON r.run_id = c.run_id
-                 WHERE julianday(COALESCE(r.finished_at, r.started_at)) >= julianday(?1)
-                 ORDER BY julianday(COALESCE(r.finished_at, r.started_at)) DESC, c.rowid DESC",
-            )
-            .map_err(|error| format!("Resume query preparation failed: {error}"))?;
-        let rows = statement
-            .query_map(rusqlite::params![cutoff], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })
-            .map_err(|error| format!("Resume query failed: {error}"))?;
-
-        let mut latest_seen = std::collections::HashSet::new();
-        let mut results = std::collections::HashMap::new();
-        for row in rows {
-            let (bookmark_id, url, verdict_text, run_id, row_config_hash, rule_version, checked_at) =
-                row.map_err(|error| format!("Resume row decode failed: {error}"))?;
-            let key = (bookmark_id.clone(), url.clone());
-            if !requested.contains(&key) || !latest_seen.insert(key.clone()) {
-                continue;
-            }
-            if row_config_hash.as_deref() != Some(config_hash.as_str())
-                || rule_version.as_deref()
-                    != Some(crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION)
-            {
-                continue;
-            }
-            let Some(verdict) = HealthVerdict::from_db_str(&verdict_text) else {
-                continue;
-            };
-            if should_retry(verdict) {
-                continue;
-            }
-
-            // A positive result is safe to reuse even when the enclosing run was interrupted:
-            // it can only preserve a bookmark, never promote one into the deletion set.
-
-            let checked_at = DateTime::parse_from_rfc3339(&checked_at)
-                .map_or_else(|_| Utc::now(), |date| date.with_timezone(&Utc));
-            let observation = BackendObservation {
-                backend: "same_day_resume".to_string(),
-                backend_version: env!("CARGO_PKG_VERSION").to_string(),
-                run_id,
-                route: "history".to_string(),
-                started_at: checked_at,
-                finished_at: checked_at,
-                actual_request: "no".to_string(),
-                cache_hit: true,
-                request_method: "REUSE".to_string(),
-                initial_url: url.clone(),
-                confidence: 1.0,
-                ..Default::default()
-            };
-            results.insert(key, (bookmark_id, url, verdict, vec![observation]));
-        }
-        Ok(results)
     }
 
     /// Execute bounded same-day probes, reusing recent positive results while retrying every
@@ -865,6 +778,13 @@ impl HealthEngine {
                             if item_ctx.slow_mode {
                                 break;
                             }
+                        }
+                    }
+
+                    let source = ObservationSource::from_context(&item_ctx)?;
+                    for observation in &mut observations {
+                        if observation.actual_request == "yes" && !observation.cache_hit {
+                            observation.source = Some(source.clone());
                         }
                     }
 

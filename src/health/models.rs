@@ -126,6 +126,32 @@ mod target_tests {
     }
 }
 
+/// Identity and policy of the operation that originally obtained an observation.
+/// Cache membership can change without changing this source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservationSource {
+    pub run_id: String,
+    pub check_id: String,
+    pub config_hash: String,
+    pub rule_version: String,
+}
+
+impl ObservationSource {
+    pub(crate) fn from_context(context: &ProbeContext) -> Result<Self, String> {
+        if context.run_id.trim().is_empty() || context.check_id.trim().is_empty() {
+            return Err("Observation source requires run and check identities".into());
+        }
+        Ok(Self {
+            run_id: context.run_id.clone(),
+            check_id: context.check_id.clone(),
+            config_hash: ConfigHashInput::from_probe_context(context)
+                .stable_hash()
+                .map_err(|error| format!("Observation source configuration: {error}"))?,
+            rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION.into(),
+        })
+    }
+}
+
 /// Normalized observation output from a single probe backend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendObservation {
@@ -133,6 +159,9 @@ pub struct BackendObservation {
     pub backend_version: String,
     pub run_id: String,
     pub check_id: String,
+    /// None means the original source identity/policy was not recorded.
+    #[serde(default)]
+    pub source: Option<ObservationSource>,
     pub route: String, // "direct", "proxy"
     pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,
@@ -170,6 +199,7 @@ impl Default for BackendObservation {
             backend_version: "0.0.0".to_string(),
             run_id: String::new(),
             check_id: String::new(),
+            source: None,
             route: "direct".to_string(),
             started_at: now,
             finished_at: now,

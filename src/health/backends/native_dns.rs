@@ -5,7 +5,7 @@
 //! treated as proof that a bookmark is dead.
 
 use crate::health::backends::{reject_unsafe_target, ProbeBackend};
-use crate::health::models::{BackendObservation, ProbeContext, ProbeTarget};
+use crate::health::models::{BackendObservation, ObservationSource, ProbeContext, ProbeTarget};
 use async_trait::async_trait;
 use chrono::Utc;
 use hickory_resolver::config::{
@@ -211,6 +211,9 @@ impl ProbeBackend for NativeDnsBackend {
             reused.cache_hit = true;
             return Ok(reused);
         }
+        // Bind fresh evidence before any lookup; cached clones retain this
+        // original source even when their current batch membership changes.
+        observation.source = Some(ObservationSource::from_context(context)?);
         state.cache.remove(&host);
         let interval = Duration::from_millis(if context.slow_mode { 2000 } else { 200 });
         if let Some((last, previous_interval)) = state.last_request {
