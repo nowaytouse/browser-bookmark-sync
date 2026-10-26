@@ -295,6 +295,20 @@ impl HealthEngine {
         })
     }
 
+    /// Continue the same check invocation in a new phase without discarding host
+    /// pacing or server cooldowns. Routing, limits and database ownership stay fixed.
+    pub fn into_stage(
+        mut self,
+        scope: ProbeScope,
+        output_dir: Option<PathBuf>,
+        partial_run: bool,
+    ) -> Self {
+        self.options.probe_scope = scope;
+        self.options.output_dir = output_dir;
+        self.options.partial_run = partial_run;
+        self
+    }
+
     fn load_same_day_positive_results(
         &self,
         targets: &[ProbeTarget],

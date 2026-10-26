@@ -7,10 +7,9 @@ use tracing::{error, info, warn};
 use browser_bookmark_sync::{
     browser_utils, browsers, data_types, expand_path, gui,
     health::{
-        build_probe_plan, models::BackendObservation, reporting::HealthRunSummaryReport,
-        reporting::ReportExporter, BookmarkTargetInput, DnsPolicy, HealthEngine,
-        HealthEngineOptions, HealthVerdict, ProbePlan, ProbeScope, ProbeTarget, SkippedTarget,
-        TrustedSiteSkipList,
+        build_probe_plan, models::BackendObservation, reporting::ReportExporter,
+        BookmarkTargetInput, DnsPolicy, HealthEngine, HealthEngineOptions, HealthVerdict,
+        ProbePlan, ProbeScope, ProbeTarget, SkippedTarget, TrustedSiteSkipList,
     },
     sync::{self, SyncEngine},
     sync_flags::SyncFlags,
@@ -1851,6 +1850,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
             let trusted_list = load_trusted_site_skip_list(trusted_site_skip_list.as_deref())?;
             let dns_policy_config = load_dns_policy(dns_policy.as_deref())?;
             let mut plan = build_probe_plan(&target_inputs, scope);
+            let mut site_preflight_engine = None;
             let site_preflight_plan = if scope == ProbeScope::Content {
                 let mut site_plan = build_probe_plan(&target_inputs, ProbeScope::Site);
                 site_plan.apply_trusted_site_skip(&trusted_list, no_trusted_site_skip);
@@ -1862,7 +1862,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
                         "🌐 先执行站点预检：{} 个站点；仅明确 ConfirmedDead 站点跳过逐 URL 内容探测",
                         site_targets.len()
                     );
-                    let (_site_report, site_results) = run_health_stage(
+                    let (site_engine, site_results) = run_health_stage(
                         site_targets.clone(),
                         ProbeScope::Site,
                         proxy.clone(),
@@ -1876,6 +1876,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
                         status_guard.begin_phase(ProbeScope::Site, site_targets.len()),
                     )
                     .await?;
+                    site_preflight_engine = Some(site_engine);
                     site_results
                         .into_iter()
                         .filter_map(|(bookmark_id, _, verdict, _)| {
@@ -1940,22 +1941,26 @@ async fn run_cli(cli: Cli) -> Result<()> {
                     .as_ref()
                     .map(|s| std::path::PathBuf::from(expand_path(s)));
 
-                let engine = HealthEngine::new(HealthEngineOptions {
-                    proxy_url: proxy.clone(),
-                    timeout_secs: timeout,
-                    concurrency: safe_concurrency,
-                    slow_mode: slow,
-                    allow_private_ips: false,
-                    history_db_path: db_path,
-                    secondary_backends: sec_list,
-                    output_dir: scoped_export_dir.clone(),
-                    partial_run,
-                    max_attempts: 3,
-                    retry_interval_secs: 5,
-                    probe_scope: scope,
-                    dns_policy: dns_policy_config.clone(),
-                })
-                .map_err(anyhow::Error::msg)?;
+                let engine = if let Some(engine) = site_preflight_engine {
+                    engine.into_stage(scope, scoped_export_dir.clone(), partial_run)
+                } else {
+                    HealthEngine::new(HealthEngineOptions {
+                        proxy_url: proxy.clone(),
+                        timeout_secs: timeout,
+                        concurrency: safe_concurrency,
+                        slow_mode: slow,
+                        allow_private_ips: false,
+                        history_db_path: db_path,
+                        secondary_backends: sec_list,
+                        output_dir: scoped_export_dir.clone(),
+                        partial_run,
+                        max_attempts: 3,
+                        retry_interval_secs: 5,
+                        probe_scope: scope,
+                        dns_policy: dns_policy_config.clone(),
+                    })
+                    .map_err(anyhow::Error::msg)?
+                };
 
                 let pb = ProgressBar::new(targets.len() as u64);
                 pb.set_style(
@@ -2735,7 +2740,7 @@ async fn run_health_stage<F>(
     dns_policy: DnsPolicy,
     progress: F,
 ) -> Result<(
-    HealthRunSummaryReport,
+    HealthEngine,
     Vec<(String, String, HealthVerdict, Vec<BackendObservation>)>,
 )>
 where
@@ -2758,10 +2763,11 @@ where
         retry_interval_secs: 5,
     })
     .map_err(anyhow::Error::msg)?;
-    engine
+    let (_, results) = engine
         .run_probes_with_results(targets, progress)
         .await
-        .map_err(anyhow::Error::msg)
+        .map_err(anyhow::Error::msg)?;
+    Ok((engine, results))
 }
 
 fn content_site_key(target: &browser_bookmark_sync::health::SiteTarget) -> String {

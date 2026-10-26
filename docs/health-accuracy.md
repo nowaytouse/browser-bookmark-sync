@@ -74,6 +74,14 @@ A deterministic temporary WAL test commits an earlier failure and a later succes
 
 The human-approved SQLite `trace` feature is enabled only as a dev-dependency on the same rusqlite version. It adds no dependency or unsafe application code; non-dev feature inspection excludes it, and the lockfile remains unchanged. No production tracing or test hook is installed. Rule version 13 applies the established old-policy invalidation rather than rewriting history.
 
+## Network pacing across phases
+
+One CLI content check now carries its existing engine from site preflight into the content phase. Only scope, output directory and deliberate partial-run state change; the scheduler, remaining server cooldowns, route, concurrency, timeout, verifier configuration and database connection are retained. Empty/trusted-skipped preflight still creates the normal content engine. Completed site/content runs and reports remain separate.
+
+The public CLI regression uses one temporary bookmark and a loopback-only HTTP proxy. Its site HEAD returns `429` with `Retry-After: 2`, followed by a healthy content GET. The original code issued that GET about 161 ms after the HEAD; the repaired path waits before continuing and still completes both reports with protected/live classifications. The fixture asserts exactly those two requests and has a bounded child-process timeout. The older signal test also has an explicit reserved loopback proxy so it cannot visit its synthetic public-host URL before termination.
+
+This closes a phase-boundary reset, not every network-frequency issue. Backend-internal redirects, HEAD-to-GET fallback and transport retries need separate per-physical-request acceptance; a scheduler shared within one invocation is not a shared limit across independently started processes or all device traffic. Tests do not establish whether prior runs triggered remote risk controls. Do not raise concurrency or launch live scans to verify this fix.
+
 ## Test isolation
 
 Ordinary CLI integration tests use child-process-only private profile/configuration roots and a synthetic Safari bookmark file; they never need the caller's real browser data. Child stdin is closed and execution has a ten-second bound. All seven command tests remain enabled; success/failure is asserted explicitly, and macOS analysis must report the one synthetic bookmark. This replaces an older harness that inherited the caller's home and could read real Profiles during `analyze`/`validate`; earlier unisolated test runs are not evidence of a fixture-only session. The commands involved perform read-only local structural analysis, not URL probing. Test isolation does not change the user's environment or any toolchain settings.

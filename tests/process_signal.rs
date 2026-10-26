@@ -13,6 +13,10 @@ fn sigterm_marks_check_aborted_and_logs_reason() -> Result<(), Box<dyn std::erro
     let status_path = temp.path().join("check-status.json");
     let log_path = temp.path().join("browser-sync.log");
     let db_path = temp.path().join("bookmark-health.sqlite");
+    // Keep the fixture port reserved without serving a response: the signal test
+    // must never resolve or visit its synthetic target on the public network.
+    let proxy_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let proxy = format!("http://{}", proxy_listener.local_addr()?);
 
     let mut html = String::from("<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><p>\n");
     for index in 0..100 {
@@ -36,11 +40,14 @@ fn sigterm_marks_check_aborted_and_logs_reason() -> Result<(), Box<dyn std::erro
             &temp.path().to_string_lossy(),
             "--scope",
             "content",
+            "--proxy",
+            &proxy,
             "--timeout",
             "10",
             "--concurrency",
             "1",
         ])
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
