@@ -280,8 +280,11 @@ impl ConfigHashInput {
             timeout_secs: context.timeout_secs,
             allow_private_ips: context.allow_private_ips,
             rule_version: crate::health::state_machine::CURRENT_HEALTH_RULE_VERSION.to_string(),
-            dns_resolver_policy: context.dns_policy_hash.clone(),
-            cache_policy: "no_cache".to_string(),
+            dns_resolver_policy: format!(
+                "single_a_bounded_provider_v2:{}",
+                context.dns_policy_hash
+            ),
+            cache_policy: "http_no_cache_dns_ttl_with_provenance_v2".to_string(),
             retry_preset: "single_send_no_protocol_retry".to_string(),
             verifier_family_mapping_version: "1".to_string(),
         }

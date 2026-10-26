@@ -5,7 +5,7 @@ use crate::health::targets::ProbeScope;
 use chrono::{DateTime, Duration, Utc};
 
 /// Current rule version. Increment this when evidence semantics change.
-pub const CURRENT_HEALTH_RULE_VERSION: &str = "14";
+pub const CURRENT_HEALTH_RULE_VERSION: &str = "15";
 
 /// Failure evidence expires after one rolling day. This avoids calendar-timezone
 /// edge cases while ensuring routine health decisions finish in one scan day.

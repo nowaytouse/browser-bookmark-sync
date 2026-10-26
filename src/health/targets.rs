@@ -387,8 +387,14 @@ pub fn build_probe_plan_from_probe_targets(
 
 pub(crate) fn registrable_domain(host: &str) -> Option<String> {
     let normalized = host.trim_end_matches('.').to_ascii_lowercase();
-    if normalized.parse::<IpAddr>().is_ok() {
-        return Some(normalized);
+    // URL host_str retains brackets for IPv6 literals. They are syntax, not a
+    // public suffix; normalize the IP without treating bracketed names as IPs.
+    let literal = normalized
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(&normalized);
+    if let Ok(address) = literal.parse::<IpAddr>() {
+        return Some(address.to_string());
     }
     psl::domain_str(&normalized).map(str::to_ascii_lowercase)
 }
