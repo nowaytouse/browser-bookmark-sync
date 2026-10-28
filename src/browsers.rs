@@ -482,7 +482,7 @@ impl BrowserAdapter for SafariAdapter {
         }
     }
 
-    fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+    fn write_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
             let path = self.detect_bookmark_path()?;
@@ -493,12 +493,12 @@ impl BrowserAdapter for SafariAdapter {
             // replacing only the bookmark nodes managed by this adapter.
             let existing_data = std::fs::read(&path)?;
             let existing: plist::Value = plist::from_bytes(&existing_data)?;
-            let plist_value = bookmarks_to_safari_plist(&existing, bookmarks)?;
+            let plist_value = bookmarks_to_safari_plist(&existing, _bookmarks)?;
             let mut data = Vec::new();
             plist::to_writer_xml(&mut data, &plist_value)?;
             atomic_write_file(&path, &data)?;
 
-            debug!("Wrote {} bookmarks to Safari", bookmarks.len());
+            debug!("Wrote {} bookmarks to Safari", _bookmarks.len());
             Ok(())
         }
 
@@ -555,7 +555,7 @@ impl BrowserAdapter for SafariAdapter {
         }
     }
 
-    fn write_reading_list(&self, items: &[ReadingListItem]) -> Result<()> {
+    fn write_reading_list(&self, _items: &[ReadingListItem]) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
@@ -569,14 +569,14 @@ impl BrowserAdapter for SafariAdapter {
             let mut plist_value: plist::Value = plist::from_bytes(&data)?;
 
             // Update reading list section
-            update_safari_reading_list(&mut plist_value, items)?;
+            update_safari_reading_list(&mut plist_value, _items)?;
 
             // Write back
             let mut data = Vec::new();
             plist::to_writer_xml(&mut data, &plist_value)?;
             atomic_write_file(&path, &data)?;
 
-            info!("Wrote {} reading list items to Safari", items.len());
+            info!("Wrote {} reading list items to Safari", _items.len());
             Ok(())
         }
 
@@ -590,7 +590,7 @@ impl BrowserAdapter for SafariAdapter {
         true
     }
 
-    fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+    fn read_history(&self, _days: Option<i32>) -> Result<Vec<HistoryItem>> {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
@@ -600,7 +600,7 @@ impl BrowserAdapter for SafariAdapter {
                 anyhow::bail!("Safari history database not found");
             }
 
-            read_safari_history(&history_path, days)
+            read_safari_history(&history_path, _days)
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -609,13 +609,13 @@ impl BrowserAdapter for SafariAdapter {
         }
     }
 
-    fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+    fn write_history(&self, _items: &[HistoryItem]) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
             let history_path = PathBuf::from(format!("{home}/Library/Safari/History.db"));
 
-            write_safari_history(&history_path, items)
+            write_safari_history(&history_path, _items)
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -2305,7 +2305,7 @@ fn write_firefox_history(db_path: &Path, items: &[HistoryItem]) -> Result<()> {
     })
 }
 
-#[cfg(target_os = "macos")]
+// Profile snapshots can contain Safari plists on any platform.
 pub(crate) fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem>> {
     fn parse_item(value: &plist::Value) -> Option<ReadingListItem> {
         let dict = value.as_dictionary()?;
