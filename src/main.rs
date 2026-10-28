@@ -87,6 +87,7 @@ fn init_logging(log_path: Option<&std::path::Path>) -> Result<()> {
     }
     tracing_subscriber::fmt()
         .with_env_filter(build_log_filter()?)
+        .with_writer(std::io::stderr)
         .init();
     Ok(())
 }

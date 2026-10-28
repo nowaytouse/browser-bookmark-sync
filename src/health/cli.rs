@@ -25,6 +25,15 @@ pub enum HealthCommands {
         /// SQLite database path
         #[arg(long, default_value = "./bookmark-health.sqlite")]
         db: PathBuf,
+        /// Print stored checks and original evidence metadata as JSON
+        #[arg(long)]
+        json: bool,
+        /// Maximum checks per page (attempts from a check stay together)
+        #[arg(long, default_value = "50", value_parser = clap::value_parser!(u16).range(1..=500))]
+        limit: u16,
+        /// Number of newest stored checks to skip
+        #[arg(long, default_value = "0")]
+        offset: usize,
     },
     /// Audit available external CLI tool backends and versions
     Tools,
@@ -112,19 +121,67 @@ pub enum HealthCommands {
 impl HealthCommands {
     pub async fn execute(self) -> Result<(), String> {
         match self {
-            Self::History { url, db } => {
-                let conn =
-                    HealthDatabase::open(&db).map_err(|e| format!("Failed to open DB: {e}"))?;
+            Self::History {
+                url,
+                db,
+                json,
+                limit,
+                offset,
+            } => {
+                let conn = HealthDatabase::open_read_only(&db)
+                    .map_err(|e| format!("Failed to open existing history DB: {e}"))?;
                 let history = conn
-                    .get_url_history(&url)
+                    .get_url_history_details(&url, usize::from(limit), offset)
                     .map_err(|e| format!("Query failed: {e}"))?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "schema_version": "health-history-v1", "url": url,
+                            "limit": limit, "offset": offset, "checks": history
+                        }))
+                        .map_err(|error| format!("History serialization failed: {error}"))?
+                    );
+                    return Ok(());
+                }
                 println!("🔍 Health Check History for: {url}");
+                println!("Stored results only; cached/incomplete/old-rule records do not prove current deletion eligibility.");
+                println!("Page: up to {limit} checks after skipping {offset}; newest stored checks first.");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 if history.is_empty() {
                     println!("No history found.");
                 } else {
-                    for (run_id, started_at, verdict) in history {
-                        println!("Run: {run_id} | Date: {started_at} | Verdict: {verdict}");
+                    for check in history {
+                        println!(
+                            "Run: {} | Check: {} | Bookmark: {} | Run state: {} | Rule: {} | Stored verdict: {}",
+                            check.run_id,
+                            check.check_id,
+                            check.bookmark_id,
+                            match check.completed {
+                                Some(true) => "completed",
+                                Some(false) => "incomplete",
+                                None => "unknown",
+                            },
+                            check.rule_version.as_deref().unwrap_or("unknown"),
+                            check.verdict
+                        );
+                        for observation in check.observations {
+                            println!("  {} | {} → {} | request={} cache={} | HTTP={:?} DNS={:?} error={:?}",
+                                observation.backend, observation.started_at.as_deref().unwrap_or("unknown"),
+                                observation.finished_at.as_deref().unwrap_or("unknown"), observation.actual_request,
+                                observation.cache_hit, observation.status_code, observation.dns_rcode, observation.error_kind);
+                            if let Some(source) = observation.source {
+                                println!(
+                                    "    Original source: run={} check={} rule={} config={}",
+                                    source.run_id,
+                                    source.check_id,
+                                    source.rule_version,
+                                    source.config_hash
+                                );
+                            } else {
+                                println!("    Original source: unknown (not recorded)");
+                            }
+                        }
                     }
                 }
             }

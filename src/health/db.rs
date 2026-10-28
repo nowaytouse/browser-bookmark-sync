@@ -10,6 +10,9 @@ pub struct HealthDatabase {
     pub(crate) conn: Connection,
 }
 
+mod history;
+pub use history::{HistoricalCheck, HistoricalObservation};
+
 fn read_count(row: &rusqlite::Row<'_>, column: usize) -> SqlResult<usize> {
     let value: i64 = row.get(column)?;
     usize::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
@@ -31,6 +34,8 @@ fn current_evidence_timestamp(at: Option<&str>, now: chrono::DateTime<Utc>) -> b
 
 #[cfg(test)]
 mod evidence_time_tests;
+#[cfg(test)]
+mod history_tests;
 #[cfg(test)]
 mod snapshot_tests;
 
@@ -245,6 +250,18 @@ impl HealthDatabase {
             )?;
         }
 
+        if current_version < 4 {
+            // Older rows have unknown provenance, never backfilled from current policy.
+            tx.execute(
+                "ALTER TABLE health_attempts ADD COLUMN source_json TEXT",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO health_schema_version (version, applied_at) VALUES (4, ?1)",
+                params![Utc::now().to_rfc3339()],
+            )?;
+        }
+
         tx.commit()?;
         Ok(())
     }
@@ -383,6 +400,12 @@ impl HealthDatabase {
         for (idx, obs) in observations.iter().enumerate() {
             let attempt_id = uuid::Uuid::new_v4().to_string();
             let ips_json = serde_json::to_string(&obs.ip_addresses).unwrap_or_default();
+            let source_json = obs
+                .source
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
 
             tx.execute(
                 "INSERT INTO health_attempts (
@@ -390,8 +413,8 @@ impl HealthDatabase {
                     actual_request, cache_hit, method, status_code, error_kind, initial_url,
                     final_url, redirect_count, response_time_ms, content_type, content_length,
                     title, canonical_url, body_hash, ip_addresses_json, tls_summary, confidence,
-                    resolver_id, dns_rcode, started_at, finished_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                    resolver_id, dns_rcode, started_at, finished_at, source_json
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
                 params![
                     attempt_id,
                     check_id,
@@ -420,6 +443,7 @@ impl HealthDatabase {
                     obs.dns_rcode,
                     obs.started_at.to_rfc3339(),
                     obs.finished_at.to_rfc3339(),
+                    source_json,
                 ],
             )?;
         }
