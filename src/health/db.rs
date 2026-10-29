@@ -12,6 +12,8 @@ pub struct HealthDatabase {
 
 mod history;
 pub use history::{HistoricalCheck, HistoricalObservation};
+mod scans;
+pub use scans::HistoricalScanTarget;
 
 fn read_count(row: &rusqlite::Row<'_>, column: usize) -> SqlResult<usize> {
     let value: i64 = row.get(column)?;
@@ -258,6 +260,28 @@ impl HealthDatabase {
             )?;
             tx.execute(
                 "INSERT INTO health_schema_version (version, applied_at) VALUES (4, ?1)",
+                params![Utc::now().to_rfc3339()],
+            )?;
+        }
+
+        if current_version < 5 {
+            tx.execute_batch(
+                "CREATE TABLE health_scans (
+                    scan_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
+                    scope TEXT NOT NULL, partial INTEGER NOT NULL,
+                    planned_targets INTEGER NOT NULL CHECK(planned_targets >= 0),
+                    config_hash TEXT NOT NULL, rule_version TEXT NOT NULL,
+                    completed INTEGER NOT NULL DEFAULT 0
+                 );
+                 CREATE TABLE health_scan_targets (
+                    scan_id TEXT NOT NULL REFERENCES health_scans(scan_id),
+                    bookmark_id TEXT NOT NULL, original_url TEXT NOT NULL, result_json TEXT,
+                    PRIMARY KEY(scan_id, bookmark_id)
+                 );
+                 CREATE INDEX idx_health_scan_target_url ON health_scan_targets(original_url, scan_id);",
+            )?;
+            tx.execute(
+                "INSERT INTO health_schema_version (version, applied_at) VALUES (5, ?1)",
                 params![Utc::now().to_rfc3339()],
             )?;
         }

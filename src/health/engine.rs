@@ -434,6 +434,15 @@ impl HealthEngine {
         };
 
         let total = targets.len();
+        if let Some(db) = &self.db {
+            db.record_scan_start(
+                &scan_id,
+                &backend_context,
+                &targets,
+                self.options.partial_run,
+            )
+            .map_err(|error| format!("DB scan start record failed: {error}"))?;
+        }
         let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         tracing::info!(
             event = "health_scan_started",
@@ -456,6 +465,10 @@ impl HealthEngine {
         for target in targets {
             let key = (target.bookmark_id.clone(), target.original_url.clone());
             if let Some(result) = resumable.remove(&key) {
+                if let Some(db) = &self.db {
+                    db.record_scan_target(&scan_id, &result.0, &result.1, result.2, &result.3)
+                        .map_err(|error| format!("DB reused scan target record failed: {error}"))?;
+                }
                 let current = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 progress(current, total, &target.original_url);
                 if current == total || current.is_multiple_of(10) {
@@ -530,6 +543,10 @@ impl HealthEngine {
 
                     let result = probe_result
                         .unwrap_or_else(|error| internal_probe_failure_result(&target, &error));
+                    if let Some(db) = &self.db {
+                        db.record_scan_target(&scan_id, &result.0, &result.1, result.2, &result.3)
+                            .map_err(|error| format!("DB scan target record failed: {error}"))?;
+                    }
                     let current = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     progress(current, total, &progress_url);
                     if current == total || current.is_multiple_of(10) {
@@ -570,6 +587,10 @@ impl HealthEngine {
             &final_results,
         )
         .map_err(|e| format!("Report generation error: {e}"))?;
+        if let Some(db) = &self.db {
+            db.record_scan_finish(&scan_id)
+                .map_err(|error| format!("DB scan completion record failed: {error}"))?;
+        }
         tracing::info!(
             event = "health_scan_finished",
             scan_id = %scan_id,

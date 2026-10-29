@@ -82,6 +82,7 @@ fn v3_history_is_read_without_migration_or_fabricated_metadata() {
 
     let db = HealthDatabase::open_read_only(&path).unwrap();
     assert_legacy_history(&db.get_url_history_details(URL, 10, 0).unwrap());
+    assert!(db.get_url_scan_history(URL, 10, 0).unwrap().is_none());
     drop(db);
 
     assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -104,12 +105,17 @@ fn normal_open_migrates_v3_once_and_preserves_legacy_rows() {
     legacy_v3(&path);
 
     let db = HealthDatabase::open(&path).unwrap();
-    assert_eq!(schema_version(db.raw_conn_for_test()), 4);
+    assert_eq!(schema_version(db.raw_conn_for_test()), 5);
     assert_legacy_history(&db.get_url_history_details(URL, 10, 0).unwrap());
+    assert!(db
+        .get_url_scan_history(URL, 10, 0)
+        .unwrap()
+        .unwrap()
+        .is_empty());
     drop(db);
 
     let db = HealthDatabase::open(&path).unwrap();
-    assert_eq!(schema_version(db.raw_conn_for_test()), 4);
+    assert_eq!(schema_version(db.raw_conn_for_test()), 5);
     assert_legacy_history(&db.get_url_history_details(URL, 10, 0).unwrap());
     let rows: i64 = db
         .raw_conn_for_test()
@@ -196,4 +202,94 @@ fn malformed_persisted_source_is_a_history_read_error() {
 
     let db = HealthDatabase::open_read_only(&path).unwrap();
     assert!(db.get_url_history_details(URL, 10, 0).is_err());
+}
+
+#[test]
+fn missing_v5_scan_tables_are_damage_not_legacy_unknown() {
+    let db = HealthDatabase::in_memory().unwrap();
+    db.raw_conn_for_test()
+        .execute_batch("DROP TABLE health_scan_targets; DROP TABLE health_scans;")
+        .unwrap();
+    assert!(db.get_url_scan_history(URL, 10, 0).is_err());
+}
+
+#[test]
+fn failed_v5_migration_rolls_back_new_tables_and_preserves_v4_rows() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("inconsistent-v4.sqlite");
+    legacy_v3(&path);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE health_attempts ADD COLUMN source_json TEXT;
+         INSERT INTO health_schema_version VALUES (4, '2026-10-29T00:00:00Z');
+         CREATE TABLE health_scan_targets (marker TEXT);
+         INSERT INTO health_scan_targets VALUES ('preserve');",
+    )
+    .unwrap();
+    drop(conn);
+
+    assert!(HealthDatabase::open(&path).is_err());
+
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(schema_version(&conn), 4);
+    let scan_tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'health_scans'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        scan_tables, 0,
+        "failed migration must not leave a partial scan schema"
+    );
+    let marker: String = conn
+        .query_row("SELECT marker FROM health_scan_targets", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(marker, "preserve");
+    assert_legacy_history(
+        &HealthDatabase::open_read_only(&path)
+            .unwrap()
+            .get_url_history_details(URL, 10, 0)
+            .unwrap(),
+    );
+}
+
+#[test]
+fn corrupted_scan_result_json_or_identity_is_a_history_read_error() {
+    let db = HealthDatabase::in_memory().unwrap();
+    let context = ProbeContext {
+        run_id: "unused-evidence-run".into(),
+        check_id: String::new(),
+        proxy_url: None,
+        timeout_secs: 10,
+        slow_mode: false,
+        probe_scope: ProbeScope::Content,
+        dns_policy_hash: "synthetic".into(),
+        allow_private_ips: false,
+        history_db_path: None,
+        secondary_backends: vec![],
+        artifact_dir: None,
+    };
+    let target = crate::health::models::ProbeTarget::from_url("bookmark", URL).unwrap();
+    db.record_scan_start("scan", &context, &[target], false)
+        .unwrap();
+    db.record_scan_target("scan", "bookmark", URL, HealthVerdict::Live, &[])
+        .unwrap();
+    for damaged in [
+        "{bad json",
+        "null",
+        r#"{"bookmark_id":"wrong","url":"https://legacy.example.test/","verdict":"live","observations":[]}"#,
+        r#"{"bookmark_id":"bookmark","url":"https://other.example.test/","verdict":"live","observations":[]}"#,
+    ] {
+        db.raw_conn_for_test()
+            .execute(
+                "UPDATE health_scan_targets SET result_json = ?1 WHERE scan_id = 'scan'",
+                [damaged],
+            )
+            .unwrap();
+        assert!(db.get_url_scan_history(URL, 10, 0).is_err());
+    }
 }

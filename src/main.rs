@@ -1891,8 +1891,8 @@ async fn run_cli(cli: Cli) -> Result<()> {
                 plan.apply_trusted_site_skip(&trusted_list, no_trusted_site_skip);
                 None
             };
-            let partial_run = limit > 0;
-            if limit > 0 && plan.targets.len() > limit {
+            let partial_run = limit > 0 && plan.targets.len() > limit;
+            if partial_run {
                 info!(
                     "📊 计划目标 {} 个，限制检查前 {} 个",
                     plan.targets.len(),

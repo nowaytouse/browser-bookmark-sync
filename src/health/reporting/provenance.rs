@@ -90,7 +90,7 @@ struct ProvenanceReport<'a> {
 }
 
 #[derive(Serialize)]
-struct TargetEvidence<'a> {
+pub(crate) struct TargetEvidence<'a> {
     bookmark_id: &'a str,
     url: &'a str,
     verdict: &'static str,
@@ -116,6 +116,38 @@ struct ObservationEvidence<'a> {
     resolver_id: Option<&'a str>,
 }
 
+pub(crate) fn target_evidence<'a>(
+    id: &'a str,
+    url: &'a str,
+    verdict: HealthVerdict,
+    observations: &'a [BackendObservation],
+) -> TargetEvidence<'a> {
+    TargetEvidence {
+        bookmark_id: id,
+        url,
+        verdict: verdict.as_str(),
+        observations: observations
+            .iter()
+            .map(|observation| ObservationEvidence {
+                backend: &observation.backend,
+                backend_version: &observation.backend_version,
+                run_id: &observation.run_id,
+                check_id: &observation.check_id,
+                source: &observation.source,
+                started_at: observation.started_at,
+                finished_at: observation.finished_at,
+                actual_request: &observation.actual_request,
+                cache_hit: observation.cache_hit,
+                request_method: &observation.request_method,
+                status_code: observation.status_code,
+                error_kind: observation.error_kind.as_deref(),
+                dns_rcode: observation.dns_rcode.as_deref(),
+                resolver_id: observation.resolver_id.as_deref(),
+            })
+            .collect(),
+    }
+}
+
 pub(super) fn write(
     directory: &Path,
     scan_id: &str,
@@ -133,29 +165,8 @@ pub(super) fn write(
         counts,
         targets: results
             .iter()
-            .map(|(id, url, verdict, observations)| TargetEvidence {
-                bookmark_id: id,
-                url,
-                verdict: verdict.as_str(),
-                observations: observations
-                    .iter()
-                    .map(|observation| ObservationEvidence {
-                        backend: &observation.backend,
-                        backend_version: &observation.backend_version,
-                        run_id: &observation.run_id,
-                        check_id: &observation.check_id,
-                        source: &observation.source,
-                        started_at: observation.started_at,
-                        finished_at: observation.finished_at,
-                        actual_request: &observation.actual_request,
-                        cache_hit: observation.cache_hit,
-                        request_method: &observation.request_method,
-                        status_code: observation.status_code,
-                        error_kind: observation.error_kind.as_deref(),
-                        dns_rcode: observation.dns_rcode.as_deref(),
-                        resolver_id: observation.resolver_id.as_deref(),
-                    })
-                    .collect(),
+            .map(|(id, url, verdict, observations)| {
+                target_evidence(id, url, *verdict, observations)
             })
             .collect(),
     };

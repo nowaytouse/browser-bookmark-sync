@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 mod provenance;
+pub(crate) use provenance::target_evidence;
 pub use provenance::ReportProvenanceCounts;
 
 #[cfg(test)]

@@ -28,7 +28,10 @@ pub enum HealthCommands {
         /// Print stored checks and original evidence metadata as JSON
         #[arg(long)]
         json: bool,
-        /// Maximum checks per page (attempts from a check stay together)
+        /// Inspect scope invocations, including reuse (not independent checks)
+        #[arg(long)]
+        scans: bool,
+        /// Maximum checks or scans per page (related records stay together)
         #[arg(long, default_value = "50", value_parser = clap::value_parser!(u16).range(1..=500))]
         limit: u16,
         /// Number of newest stored checks to skip
@@ -125,11 +128,39 @@ impl HealthCommands {
                 url,
                 db,
                 json,
+                scans,
                 limit,
                 offset,
             } => {
                 let conn = HealthDatabase::open_read_only(&db)
                     .map_err(|e| format!("Failed to open existing history DB: {e}"))?;
+                if scans {
+                    let history = conn
+                        .get_url_scan_history(&url, usize::from(limit), offset)
+                        .map_err(|error| format!("Scan history query failed: {error}"))?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                            "schema_version": "health-scan-history-v1", "url": url,
+                            "limit": limit, "offset": offset, "recording_available": history.is_some(),
+                            "scans": history,
+                        })).map_err(|error| format!("History serialization failed: {error}"))?);
+                    } else {
+                        println!("Scan history for: {url}");
+                        println!("Invocation records are not independent checks or current deletion eligibility. Pending or incomplete does not identify an exit cause.");
+                        match history {
+                            None => println!("This legacy database did not record scan membership; coverage is unknown."),
+                            Some(history) if history.is_empty() => println!("No matching scan records on this page."),
+                            Some(history) => for target in history {
+                                println!("Scan: {} | Scope: {} | Completed: {} | Partial: {} | Planned: {} | Bookmark: {} | Result: {}",
+                                    target.scan_id, target.scope, target.completed, target.partial, target.planned_targets, target.bookmark_id,
+                                    target.result.as_ref().and_then(|result| result["verdict"].as_str()).unwrap_or("pending"));
+                                println!("  Started: {} | Finished: {} | Rule: {} | Config: {}",
+                                    target.started_at, target.finished_at.as_deref().unwrap_or("not recorded"), target.rule_version, target.config_hash);
+                            },
+                        }
+                    }
+                    return Ok(());
+                }
                 let history = conn
                     .get_url_history_details(&url, usize::from(limit), offset)
                     .map_err(|e| format!("Query failed: {e}"))?;
