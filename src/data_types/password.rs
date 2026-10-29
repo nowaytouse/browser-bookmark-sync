@@ -82,22 +82,20 @@ pub fn extract_firefox_passwords(profile_path: &Path) -> Result<Vec<Password>> {
         for login in logins {
             // Firefox passwords are encrypted with NSS - complex to decrypt
             // For now, just note they exist
-            let hostname = match login["hostname"].as_str() {
-                Some(h) => h.to_string(),
-                None => {
-                    tracing::warn!("Firefox logins.json 登录条目中缺失 'hostname' 字段，已跳过");
-                    continue;
-                }
+            let hostname = if let Some(h) = login["hostname"].as_str() {
+                h.to_string()
+            } else {
+                tracing::warn!("Firefox logins.json 登录条目中缺失 'hostname' 字段，已跳过");
+                continue;
             };
-            let created_at = match login["timeCreated"].as_i64() {
-                Some(t) => t / 1000,
-                None => {
-                    tracing::warn!(
-                        "Firefox 登录条目 '{}' 缺失 'timeCreated' 字段，时间戳记为 0",
-                        hostname
-                    );
-                    0
-                }
+            let created_at = if let Some(t) = login["timeCreated"].as_i64() {
+                t / 1000
+            } else {
+                tracing::warn!(
+                    "Firefox 登录条目 '{}' 缺失 'timeCreated' 字段，时间戳记为 0",
+                    hostname
+                );
+                0
             };
             passwords.push(Password {
                 url: hostname,

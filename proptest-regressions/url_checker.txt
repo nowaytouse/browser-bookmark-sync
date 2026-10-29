@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 1a710272f5c6e805aea03d94d54d16c994aeb609d423b5853027ceab94bd68d4 # shrinks to proxy_code = 403, direct_code = 403, latency1 = 0, latency2 = 0
+cc d890de8e2207ab9479ca4b9cfadbf8fb1cd0ef50944f222f90af5f4a83d6ec10 # shrinks to proxy_code = 404, direct_code = 451, latency1 = 0, latency2 = 0

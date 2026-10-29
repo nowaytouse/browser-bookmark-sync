@@ -1,0 +1,7 @@
+{
+  "default_resolvers": ["cloudflare"],
+  "china_resolvers": ["alidns"],
+  "china_suffixes": [".cn", ".中国", ".公司", ".网络"],
+  "domain_overrides": {},
+  "confirmation_resolvers": ["cloudflare", "alidns"]
+}

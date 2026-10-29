@@ -1,8 +1,32 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
+
+use crate::browser_utils::{atomic_write_file, copy_stable_file};
+
+fn backup_file_unique(source: &Path) -> Result<PathBuf> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Invalid source path: {}", source.display()))?;
+    let name = source
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Invalid source path: {}", source.display()))?
+        .to_string_lossy();
+    let backup = parent.join(format!("{name}.backup-{}", uuid::Uuid::new_v4()));
+    if source.extension().and_then(|ext| ext.to_str()) == Some("sqlite") {
+        let db = rusqlite::Connection::open_with_flags(
+            source,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        db.execute("VACUUM main INTO ?1", [backup.to_string_lossy()])?;
+    } else {
+        copy_stable_file(source, &backup)?;
+    }
+    std::fs::File::open(&backup)?.sync_all()?;
+    Ok(backup)
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Bookmark {
@@ -110,6 +134,18 @@ impl BrowserType {
     }
 }
 
+fn single_profile_for_write(browser: BrowserType, profiles: &[PathBuf]) -> Result<&Path> {
+    match profiles {
+        [profile] => Ok(profile.as_path()),
+        [] => anyhow::bail!("No {} profiles found", browser.name()),
+        _ => anyhow::bail!(
+            "Refusing to write {} bookmarks: {} profiles were found but this adapter cannot target one profile exactly",
+            browser.name(),
+            profiles.len()
+        ),
+    }
+}
+
 pub trait BrowserAdapter: Send + Sync {
     fn browser_type(&self) -> BrowserType;
     fn detect_bookmark_path(&self) -> Result<PathBuf>;
@@ -118,6 +154,11 @@ pub trait BrowserAdapter: Send + Sync {
     /// Read bookmarks from all user profiles of this browser
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
         self.read_bookmarks()
+    }
+    /// Read bookmarks from all user profiles with profile names
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
+        let b = self.read_all_bookmarks()?;
+        Ok(vec![("Default".to_string(), b)])
     }
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()>;
     fn backup_bookmarks(&self) -> Result<PathBuf>;
@@ -230,37 +271,31 @@ impl BrowserAdapter for WaterfoxAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         let profiles = self.detect_all_profiles()?;
-        read_all_firefox_bookmarks("Waterfox", &profiles)
+        read_all_firefox_bookmarks_with_profiles("Waterfox", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
-        // Only write to profile with valid database (non-empty places.sqlite)
         let profiles = self.detect_all_profiles()?;
-        let valid_profile = profiles
-            .iter()
-            .find(|p| p.exists() && p.metadata().is_ok_and(|m| m.len() > 0))
-            .ok_or_else(|| anyhow::anyhow!("No valid Waterfox profile found"))?;
+        let profile = single_profile_for_write(self.browser_type(), &profiles)?;
+        anyhow::ensure!(
+            profile.exists() && profile.metadata().is_ok_and(|m| m.len() > 0),
+            "No valid Waterfox profile found"
+        );
 
-        match write_firefox_bookmarks(valid_profile, bookmarks) {
-            Ok(()) => {
-                info!(
-                    "✅ Wrote {} bookmarks to Waterfox (Default)",
-                    bookmarks.len()
-                );
-            }
-            Err(e) => {
-                warn!("⚠️  Failed to write to Waterfox: {}", e);
-            }
-        }
+        write_firefox_bookmarks(profile, bookmarks)?;
+        info!("✅ Wrote {} bookmarks to Waterfox", bookmarks.len());
         Ok(())
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
         let source = self.detect_bookmark_path()?;
-        let backup_path = source.with_extension("sqlite.backup");
-        std::fs::copy(&source, &backup_path)?;
-        Ok(backup_path)
+        backup_file_unique(&source)
     }
 
     fn validate_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<bool> {
@@ -447,20 +482,23 @@ impl BrowserAdapter for SafariAdapter {
         }
     }
 
-    fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
+    fn write_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
             let path = self.detect_bookmark_path()?;
             // Backup first
             self.backup_bookmarks()?;
 
-            // Convert to Safari plist format
-            let plist_value = bookmarks_to_safari_plist(bookmarks)?;
+            // Preserve Safari-owned data such as Reading List and History while
+            // replacing only the bookmark nodes managed by this adapter.
+            let existing_data = std::fs::read(&path)?;
+            let existing: plist::Value = plist::from_bytes(&existing_data)?;
+            let plist_value = bookmarks_to_safari_plist(&existing, _bookmarks)?;
             let mut data = Vec::new();
             plist::to_writer_xml(&mut data, &plist_value)?;
-            std::fs::write(&path, data)?;
+            atomic_write_file(&path, &data)?;
 
-            debug!("Wrote {} bookmarks to Safari", bookmarks.len());
+            debug!("Wrote {} bookmarks to Safari", _bookmarks.len());
             Ok(())
         }
 
@@ -472,9 +510,7 @@ impl BrowserAdapter for SafariAdapter {
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
         let source = self.detect_bookmark_path()?;
-        let backup_path = source.with_extension("plist.backup");
-        std::fs::copy(&source, &backup_path)?;
-        Ok(backup_path)
+        backup_file_unique(&source)
     }
 
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool> {
@@ -519,7 +555,7 @@ impl BrowserAdapter for SafariAdapter {
         }
     }
 
-    fn write_reading_list(&self, items: &[ReadingListItem]) -> Result<()> {
+    fn write_reading_list(&self, _items: &[ReadingListItem]) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
@@ -533,14 +569,14 @@ impl BrowserAdapter for SafariAdapter {
             let mut plist_value: plist::Value = plist::from_bytes(&data)?;
 
             // Update reading list section
-            update_safari_reading_list(&mut plist_value, items)?;
+            update_safari_reading_list(&mut plist_value, _items)?;
 
             // Write back
             let mut data = Vec::new();
             plist::to_writer_xml(&mut data, &plist_value)?;
-            std::fs::write(&path, data)?;
+            atomic_write_file(&path, &data)?;
 
-            info!("Wrote {} reading list items to Safari", items.len());
+            info!("Wrote {} reading list items to Safari", _items.len());
             Ok(())
         }
 
@@ -554,7 +590,7 @@ impl BrowserAdapter for SafariAdapter {
         true
     }
 
-    fn read_history(&self, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+    fn read_history(&self, _days: Option<i32>) -> Result<Vec<HistoryItem>> {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
@@ -564,7 +600,7 @@ impl BrowserAdapter for SafariAdapter {
                 anyhow::bail!("Safari history database not found");
             }
 
-            read_safari_history(&history_path, days)
+            read_safari_history(&history_path, _days)
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -573,13 +609,13 @@ impl BrowserAdapter for SafariAdapter {
         }
     }
 
-    fn write_history(&self, items: &[HistoryItem]) -> Result<()> {
+    fn write_history(&self, _items: &[HistoryItem]) -> Result<()> {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var("HOME")?;
             let history_path = PathBuf::from(format!("{home}/Library/Safari/History.db"));
 
-            write_safari_history(&history_path, items)
+            write_safari_history(&history_path, _items)
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -590,6 +626,21 @@ impl BrowserAdapter for SafariAdapter {
 }
 
 // Helper function to detect all Chromium profiles
+fn discover_chromium_profile_paths(base_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut profiles = Vec::new();
+    for entry in std::fs::read_dir(base_dir)? {
+        let path = entry?.path();
+        if path.is_dir() && path.join("Bookmarks").is_file() {
+            profiles.push(path);
+        }
+    }
+    profiles.sort_by_key(|path| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        (name != "Default", name.to_string())
+    });
+    Ok(profiles)
+}
+
 fn detect_chromium_profiles(browser_dir: &str) -> Result<Vec<PathBuf>> {
     let home = std::env::var("HOME")?;
     let base_dir = PathBuf::from(format!("{home}/Library/Application Support/{browser_dir}"));
@@ -598,24 +649,7 @@ fn detect_chromium_profiles(browser_dir: &str) -> Result<Vec<PathBuf>> {
         anyhow::bail!("{browser_dir} directory not found");
     }
 
-    let mut profiles = Vec::new();
-
-    // Check Default profile
-    let default_profile = base_dir.join("Default");
-    if default_profile.exists() && default_profile.is_dir() {
-        profiles.push(default_profile);
-    }
-
-    // Check Profile N directories
-    for entry in std::fs::read_dir(&base_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-        if path.is_dir() && (name.starts_with("Profile ") || name == "Guest Profile") {
-            profiles.push(path);
-        }
-    }
+    let profiles = discover_chromium_profile_paths(&base_dir)?;
 
     if profiles.is_empty() {
         anyhow::bail!("No {browser_dir} profiles found");
@@ -670,33 +704,33 @@ impl BrowserAdapter for BraveAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         let profiles = self.detect_all_profiles()?;
-        read_all_chromium_bookmarks("Brave", &profiles)
+        read_all_chromium_bookmarks_with_profiles("Brave", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
-        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        let default_profile = profiles
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No Brave profiles found"))?;
+        let profile = single_profile_for_write(self.browser_type(), &profiles)?;
 
         let json = bookmarks_to_chromium_json(bookmarks)?;
         let data = serde_json::to_string_pretty(&json)?;
 
-        let bookmarks_path = default_profile.join("Bookmarks");
-        std::fs::write(&bookmarks_path, &data)?;
+        let bookmarks_path = profile.join("Bookmarks");
+        atomic_write_file(&bookmarks_path, data.as_bytes())?;
 
         let total = count_bookmarks(bookmarks);
-        info!("✅ Wrote {} bookmarks to Brave (Default)", total);
+        info!("✅ Wrote {} bookmarks to Brave", total);
         Ok(())
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
         let source = self.detect_bookmark_path()?;
-        let backup_path = source.with_extension("json.backup");
-        std::fs::copy(&source, &backup_path)?;
-        Ok(backup_path)
+        backup_file_unique(&source)
     }
 
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool> {
@@ -841,33 +875,33 @@ impl BrowserAdapter for BraveNightlyAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         let profiles = self.detect_all_profiles()?;
-        read_all_chromium_bookmarks("Brave Nightly", &profiles)
+        read_all_chromium_bookmarks_with_profiles("Brave Nightly", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
-        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        let default_profile = profiles
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No Brave Nightly profiles found"))?;
+        let profile = single_profile_for_write(self.browser_type(), &profiles)?;
 
         let json = bookmarks_to_chromium_json(bookmarks)?;
         let data = serde_json::to_string_pretty(&json)?;
 
-        let bookmarks_path = default_profile.join("Bookmarks");
-        std::fs::write(&bookmarks_path, &data)?;
+        let bookmarks_path = profile.join("Bookmarks");
+        atomic_write_file(&bookmarks_path, data.as_bytes())?;
 
         let total = count_bookmarks(bookmarks);
-        info!("✅ Wrote {} bookmarks to Brave Nightly (Default)", total);
+        info!("✅ Wrote {} bookmarks to Brave Nightly", total);
         Ok(())
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
         let source = self.detect_bookmark_path()?;
-        let backup_path = source.with_extension("json.backup");
-        std::fs::copy(&source, &backup_path)?;
-        Ok(backup_path)
+        backup_file_unique(&source)
     }
 
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool> {
@@ -1021,33 +1055,33 @@ impl BrowserAdapter for ChromeAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         let profiles = self.detect_all_profiles()?;
-        read_all_chromium_bookmarks("Chrome", &profiles)
+        read_all_chromium_bookmarks_with_profiles("Chrome", &profiles)
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
-        // Only write to Default profile
         let profiles = self.detect_all_profiles()?;
-        let default_profile = profiles
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No Chrome profiles found"))?;
+        let profile = single_profile_for_write(self.browser_type(), &profiles)?;
 
         let json = bookmarks_to_chromium_json(bookmarks)?;
         let data = serde_json::to_string_pretty(&json)?;
 
-        let bookmarks_path = default_profile.join("Bookmarks");
-        std::fs::write(&bookmarks_path, &data)?;
+        let bookmarks_path = profile.join("Bookmarks");
+        atomic_write_file(&bookmarks_path, data.as_bytes())?;
 
         let total = count_bookmarks(bookmarks);
-        info!("✅ Wrote {} bookmarks to Chrome (Default)", total);
+        info!("✅ Wrote {} bookmarks to Chrome", total);
         Ok(())
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
         let source = self.detect_bookmark_path()?;
-        let backup_path = source.with_extension("json.backup");
-        std::fs::copy(&source, &backup_path)?;
-        Ok(backup_path)
+        backup_file_unique(&source)
     }
 
     fn validate_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<bool> {
@@ -1246,25 +1280,29 @@ impl BrowserAdapter for FirefoxNightlyAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         if let Ok(profiles) = self.detect_all_profiles() {
-            read_all_firefox_bookmarks("Firefox Nightly", &profiles)
+            read_all_firefox_bookmarks_with_profiles("Firefox Nightly", &profiles)
         } else if let Ok(path) = self.detect_bookmark_path() {
-            read_all_firefox_bookmarks("Firefox Nightly", &[path])
+            read_all_firefox_bookmarks_with_profiles("Firefox Nightly", &[path])
         } else {
             Ok(Vec::new())
         }
     }
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
-        let path = self.detect_bookmark_path()?;
+        let profiles = self.detect_all_profiles()?;
+        let path = single_profile_for_write(self.browser_type(), &profiles)?;
         write_firefox_bookmarks(&path, bookmarks)
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
         let source = self.detect_bookmark_path()?;
-        let backup_path = source.with_extension("sqlite.backup");
-        std::fs::copy(&source, &backup_path)?;
-        Ok(backup_path)
+        backup_file_unique(&source)
     }
 
     fn validate_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<bool> {
@@ -1350,10 +1388,15 @@ impl BrowserAdapter for LibreWolfAdapter {
     }
 
     fn read_all_bookmarks(&self) -> Result<Vec<Bookmark>> {
+        let profiles = self.read_all_bookmarks_with_profiles()?;
+        Ok(profiles.into_iter().flat_map(|(_, b)| b).collect())
+    }
+
+    fn read_all_bookmarks_with_profiles(&self) -> Result<Vec<(String, Vec<Bookmark>)>> {
         if let Ok(profiles) = self.detect_all_profiles() {
-            read_all_firefox_bookmarks("LibreWolf", &profiles)
+            read_all_firefox_bookmarks_with_profiles("LibreWolf", &profiles)
         } else if let Ok(path) = self.detect_bookmark_path() {
-            read_all_firefox_bookmarks("LibreWolf", &[path])
+            read_all_firefox_bookmarks_with_profiles("LibreWolf", &[path])
         } else {
             Ok(Vec::new())
         }
@@ -1361,23 +1404,20 @@ impl BrowserAdapter for LibreWolfAdapter {
 
     fn write_bookmarks(&self, bookmarks: &[Bookmark]) -> Result<()> {
         let profiles = self.detect_all_profiles()?;
-        let valid_profile = profiles
-            .iter()
-            .find(|p| p.exists() && p.metadata().is_ok_and(|m| m.len() > 0))
-            .ok_or_else(|| anyhow::anyhow!("No valid LibreWolf profile found"))?;
+        let profile = single_profile_for_write(self.browser_type(), &profiles)?;
+        anyhow::ensure!(
+            profile.exists() && profile.metadata().is_ok_and(|m| m.len() > 0),
+            "No valid LibreWolf profile found"
+        );
 
-        match write_firefox_bookmarks(valid_profile, bookmarks) {
-            Ok(()) => info!("✅ Wrote {} bookmarks to LibreWolf", bookmarks.len()),
-            Err(e) => warn!("⚠️  Failed to write to LibreWolf: {}", e),
-        }
+        write_firefox_bookmarks(profile, bookmarks)?;
+        info!("✅ Wrote {} bookmarks to LibreWolf", bookmarks.len());
         Ok(())
     }
 
     fn backup_bookmarks(&self) -> Result<PathBuf> {
         let source = self.detect_bookmark_path()?;
-        let backup_path = source.with_extension("sqlite.backup");
-        std::fs::copy(&source, &backup_path)?;
-        Ok(backup_path)
+        backup_file_unique(&source)
     }
 
     fn validate_bookmarks(&self, _bookmarks: &[Bookmark]) -> Result<bool> {
@@ -1425,8 +1465,11 @@ impl LibreWolfAdapter {
     }
 }
 
-fn read_all_chromium_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
-    let mut all_bookmarks = Vec::new();
+fn read_all_chromium_bookmarks_with_profiles(
+    browser_name: &str,
+    profiles: &[PathBuf],
+) -> Result<Vec<(String, Vec<Bookmark>)>> {
+    let mut results = Vec::new();
     for profile_path in profiles {
         let bookmarks_path = profile_path.join("Bookmarks");
         if !bookmarks_path.exists() {
@@ -1437,44 +1480,60 @@ fn read_all_chromium_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Resu
             .and_then(|n| n.to_str())
             .unwrap_or("Profile");
 
-        if let Ok(data) = std::fs::read_to_string(&bookmarks_path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                if let Ok(bookmarks) = parse_chromium_bookmarks(&json) {
-                    if !bookmarks.is_empty() {
-                        let count = count_bookmarks(&bookmarks);
-                        info!(
-                            "✅ {} ({}): {} bookmarks",
-                            browser_name, profile_name, count
-                        );
-                        all_bookmarks.extend(bookmarks);
-                    }
-                }
-            }
+        let data = std::fs::read_to_string(&bookmarks_path)
+            .with_context(|| format!("Failed to read {browser_name} profile {profile_name}"))?;
+        let json = serde_json::from_str::<serde_json::Value>(&data).with_context(|| {
+            format!("Invalid bookmark JSON in {browser_name} profile {profile_name}")
+        })?;
+        let bookmarks = parse_chromium_bookmarks(&json)
+            .with_context(|| format!("Failed to parse {browser_name} profile {profile_name}"))?;
+        if !bookmarks.is_empty() {
+            let count = count_bookmarks(&bookmarks);
+            info!(
+                "✅ {} ({}): {} bookmarks",
+                browser_name, profile_name, count
+            );
+            results.push((profile_name.to_string(), bookmarks));
         }
     }
-    Ok(all_bookmarks)
+    Ok(results)
 }
 
-fn read_all_firefox_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
-    let mut all_bookmarks = Vec::new();
+#[allow(dead_code)]
+fn read_all_chromium_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
+    let results = read_all_chromium_bookmarks_with_profiles(browser_name, profiles)?;
+    Ok(results.into_iter().flat_map(|(_, b)| b).collect())
+}
+
+fn read_all_firefox_bookmarks_with_profiles(
+    browser_name: &str,
+    profiles: &[PathBuf],
+) -> Result<Vec<(String, Vec<Bookmark>)>> {
+    let mut results = Vec::new();
     for profile_path in profiles {
-        if let Ok(bookmarks) = read_firefox_bookmarks(profile_path) {
-            if !bookmarks.is_empty() {
-                let profile_name = profile_path
-                    .parent()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Profile");
-                let count = count_bookmarks(&bookmarks);
-                info!(
-                    "✅ {} ({}): {} bookmarks",
-                    browser_name, profile_name, count
-                );
-                all_bookmarks.extend(bookmarks);
-            }
+        let profile_name = profile_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("Profile");
+        let bookmarks = read_firefox_bookmarks(profile_path)
+            .with_context(|| format!("Failed to read {browser_name} profile {profile_name}"))?;
+        if !bookmarks.is_empty() {
+            let count = count_bookmarks(&bookmarks);
+            info!(
+                "✅ {} ({}): {} bookmarks",
+                browser_name, profile_name, count
+            );
+            results.push((profile_name.to_string(), bookmarks));
         }
     }
-    Ok(all_bookmarks)
+    Ok(results)
+}
+
+#[allow(dead_code)]
+fn read_all_firefox_bookmarks(browser_name: &str, profiles: &[PathBuf]) -> Result<Vec<Bookmark>> {
+    let results = read_all_firefox_bookmarks_with_profiles(browser_name, profiles)?;
+    Ok(results.into_iter().flat_map(|(_, b)| b).collect())
 }
 
 // Helper functions for Safari plist parsing
@@ -1570,14 +1629,20 @@ fn parse_safari_bookmark_node(node: &plist::Value) -> Option<Bookmark> {
 }
 
 #[cfg(target_os = "macos")]
-fn bookmarks_to_safari_plist(bookmarks: &[Bookmark]) -> Result<plist::Value> {
+fn bookmarks_to_safari_plist(
+    existing: &plist::Value,
+    bookmarks: &[Bookmark],
+) -> Result<plist::Value> {
     use plist::{Dictionary, Value};
 
     fn bookmark_to_safari_node(bookmark: &Bookmark) -> Value {
         let mut dict = Dictionary::new();
 
-        // Generate UUID
-        let uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
+        let uuid = if bookmark.id.is_empty() {
+            uuid::Uuid::new_v4().to_string().to_uppercase()
+        } else {
+            bookmark.id.clone()
+        };
         dict.insert("WebBookmarkUUID".to_string(), Value::String(uuid));
 
         if bookmark.folder {
@@ -1615,78 +1680,71 @@ fn bookmarks_to_safari_plist(bookmarks: &[Bookmark]) -> Result<plist::Value> {
         Value::Dictionary(dict)
     }
 
-    // Create root structure
-    let mut root = Dictionary::new();
-    root.insert(
-        "WebBookmarkFileVersion".to_string(),
-        Value::Integer(1.into()),
-    );
-    root.insert(
-        "WebBookmarkType".to_string(),
-        Value::String("WebBookmarkTypeList".to_string()),
-    );
-    root.insert("Title".to_string(), Value::String(String::new()));
-    root.insert(
-        "WebBookmarkUUID".to_string(),
-        Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()),
-    );
-
-    // Create BookmarksBar folder
-    let mut bookmarks_bar = Dictionary::new();
-    bookmarks_bar.insert(
-        "WebBookmarkType".to_string(),
-        Value::String("WebBookmarkTypeList".to_string()),
-    );
-    bookmarks_bar.insert(
-        "Title".to_string(),
-        Value::String("BookmarksBar".to_string()),
-    );
-    bookmarks_bar.insert(
-        "WebBookmarkUUID".to_string(),
-        Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()),
-    );
-
-    // Convert bookmarks to Safari format
-    let children: Vec<Value> = bookmarks.iter().map(bookmark_to_safari_node).collect();
-    bookmarks_bar.insert("Children".to_string(), Value::Array(children));
-
-    // Create BookmarksMenu folder (empty)
-    let mut bookmarks_menu = Dictionary::new();
-    bookmarks_menu.insert(
-        "WebBookmarkType".to_string(),
-        Value::String("WebBookmarkTypeList".to_string()),
-    );
-    bookmarks_menu.insert(
-        "Title".to_string(),
-        Value::String("BookmarksMenu".to_string()),
-    );
-    bookmarks_menu.insert(
-        "WebBookmarkUUID".to_string(),
-        Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()),
-    );
-    bookmarks_menu.insert("Children".to_string(), Value::Array(vec![]));
-
-    // Add to root Children
-    root.insert(
-        "Children".to_string(),
-        Value::Array(vec![
-            Value::Dictionary(bookmarks_bar),
-            Value::Dictionary(bookmarks_menu),
-        ]),
-    );
-
+    let mut root = existing
+        .as_dictionary()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Safari bookmark plist root is not a dictionary"))?;
+    let preserved = root
+        .get("Children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|node| {
+            let Some(dict) = node.as_dictionary() else {
+                return true;
+            };
+            let title = dict.get("Title").and_then(Value::as_string).unwrap_or("");
+            let kind = dict
+                .get("WebBookmarkType")
+                .and_then(Value::as_string)
+                .unwrap_or("");
+            matches!(title, "com.apple.ReadingList" | "History")
+                || !matches!(kind, "WebBookmarkTypeList" | "WebBookmarkTypeLeaf")
+        })
+        .cloned();
+    let children = bookmarks
+        .iter()
+        .map(bookmark_to_safari_node)
+        .chain(preserved)
+        .collect();
+    root.insert("Children".to_string(), Value::Array(children));
     Ok(Value::Dictionary(root))
 }
 
 // Helper functions for Chromium JSON parsing
+const CHROMIUM_ROOT_PREFIX: &str = "__bsync_chromium_root:";
+const FIREFOX_ROOT_PREFIX: &str = "__bsync_firefox_root:";
+
 fn parse_chromium_bookmarks(json: &serde_json::Value) -> Result<Vec<Bookmark>> {
     let mut bookmarks = Vec::new();
 
     if let Some(roots) = json.get("roots") {
         if let Some(roots_map) = roots.as_object() {
-            // Parse all root folders
-            for (_key, root) in roots_map {
-                parse_chromium_node_recursive(root, &mut bookmarks)?;
+            let mut root_keys: Vec<_> = roots_map.keys().collect();
+            root_keys.sort_unstable();
+            for key in root_keys {
+                let root = &roots_map[key];
+                let mut children = Vec::new();
+                parse_chromium_node_recursive(root, &mut children)?;
+                bookmarks.push(Bookmark {
+                    id: format!("{CHROMIUM_ROOT_PREFIX}{key}"),
+                    title: root
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(key)
+                        .to_string(),
+                    url: None,
+                    folder: true,
+                    children,
+                    date_added: root
+                        .get("date_added")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|value| value.parse().ok()),
+                    date_modified: root
+                        .get("date_modified")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|value| value.parse().ok()),
+                });
             }
         } else {
             tracing::warn!("Chromium 书签 JSON 中的 'roots' 字段不是一个合法 JSON 对象");
@@ -1806,81 +1864,96 @@ fn bookmarks_to_chromium_json(bookmarks: &[Bookmark]) -> Result<serde_json::Valu
         }
     }
 
-    // Convert all bookmarks preserving structure
-    let children: Vec<serde_json::Value> = bookmarks
-        .iter()
-        .map(|b| convert_bookmark_recursive(b, &mut id_counter))
-        .collect();
+    fn root_metadata(key: &str) -> (&'static str, &'static str, &'static str) {
+        match key {
+            "bookmark_bar" => ("1", "00000000-0000-4000-a000-000000000002", "Bookmarks Bar"),
+            "other" => (
+                "2",
+                "00000000-0000-4000-a000-000000000003",
+                "Other Bookmarks",
+            ),
+            "synced" => (
+                "3",
+                "00000000-0000-4000-a000-000000000004",
+                "Mobile Bookmarks",
+            ),
+            _ => ("0", "00000000-0000-4000-a000-000000000000", "Bookmarks"),
+        }
+    }
+
+    fn make_root(
+        key: &str,
+        marker: Option<&Bookmark>,
+        children: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        let (id, guid, default_name) = root_metadata(key);
+        serde_json::json!({
+            "children": children,
+            "date_added": marker.and_then(|b| b.date_added).unwrap_or(0).to_string(),
+            "date_last_used": "0",
+            "date_modified": marker.and_then(|b| b.date_modified).unwrap_or(0).to_string(),
+            "guid": guid,
+            "id": id,
+            "name": marker.map_or(default_name, |b| b.title.as_str()),
+            "type": "folder"
+        })
+    }
+
+    let mut roots = serde_json::Map::new();
+    let mut unassigned = Vec::new();
+    for bookmark in bookmarks {
+        if let Some(key) = bookmark.id.strip_prefix(CHROMIUM_ROOT_PREFIX) {
+            let children = bookmark
+                .children
+                .iter()
+                .map(|child| convert_bookmark_recursive(child, &mut id_counter))
+                .collect();
+            roots.insert(key.to_string(), make_root(key, Some(bookmark), children));
+        } else {
+            unassigned.push(convert_bookmark_recursive(bookmark, &mut id_counter));
+        }
+    }
+
+    for key in ["bookmark_bar", "other", "synced"] {
+        roots
+            .entry(key.to_string())
+            .or_insert_with(|| make_root(key, None, Vec::new()));
+    }
+    if !unassigned.is_empty() {
+        let children = roots
+            .get_mut("bookmark_bar")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|root| root.get_mut("children"))
+            .and_then(serde_json::Value::as_array_mut)
+            .context("Internal Chromium bookmark_bar root has no children array")?;
+        children.extend(unassigned);
+    }
 
     Ok(serde_json::json!({
         "checksum": "",
-        "roots": {
-            "bookmark_bar": {
-                "children": children,
-                "date_added": "0",
-                "date_last_used": "0",
-                "date_modified": "0",
-                "guid": "00000000-0000-4000-a000-000000000002",
-                "id": "1",
-                "name": "Bookmarks Bar",
-                "type": "folder"
-            },
-            "other": {
-                "children": [],
-                "date_added": "0",
-                "date_last_used": "0",
-                "date_modified": "0",
-                "guid": "00000000-0000-4000-a000-000000000003",
-                "id": "2",
-                "name": "Other Bookmarks",
-                "type": "folder"
-            },
-            "synced": {
-                "children": [],
-                "date_added": "0",
-                "date_last_used": "0",
-                "date_modified": "0",
-                "guid": "00000000-0000-4000-a000-000000000004",
-                "id": "3",
-                "name": "Mobile Bookmarks",
-                "type": "folder"
-            }
-        },
+        "roots": roots,
         "version": 1
     }))
 }
 
 // Firefox SQLite helper functions
-pub fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>> {
+pub fn read_firefox_bookmarks(db_path: &Path) -> Result<Vec<Bookmark>> {
     use rusqlite::{Connection, OpenFlags};
     use std::collections::HashMap;
 
-    // Use read-only mode to avoid locking issues; fallback to temp WAL snapshot if busy
-    let conn = match Connection::open_with_flags(
+    // SQLite itself presents a consistent view of the main database and WAL. If an
+    // exclusive browser lock prevents that, fail instead of stitching together files
+    // copied at different moments.
+    let conn = Connection::open_with_flags(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("⚠️ 运行中的 Firefox/Waterfox 数据库被独占锁阻塞 ({})，自动建立临时 WAL 快照读取...", e);
-            let temp_dir = std::env::temp_dir().join(format!("bsync_ff_{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&temp_dir)?;
-            let temp_db = temp_dir.join("places.sqlite");
-            std::fs::copy(db_path, &temp_db)?;
-            let wal_path = db_path.with_file_name("places.sqlite-wal");
-            let shm_path = db_path.with_file_name("places.sqlite-shm");
-            if wal_path.exists() {
-                let _ = std::fs::copy(&wal_path, temp_dir.join("places.sqlite-wal"));
-            }
-            if shm_path.exists() {
-                let _ = std::fs::copy(&shm_path, temp_dir.join("places.sqlite-shm"));
-            }
-            Connection::open_with_flags(
-                &temp_db,
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )?
-        }
-    };
+    )
+    .with_context(|| {
+        format!(
+            "Firefox profile database {} is locked; close the browser and retry",
+            db_path.display()
+        )
+    })?;
 
     // Read all bookmarks with parent info
     // type=1: bookmark, type=2: folder
@@ -1906,12 +1979,11 @@ pub fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>
             id,
             Bookmark {
                 id: id.to_string(),
-                title: match row.get::<_, Option<String>>(1)? {
-                    Some(t) => t,
-                    None => {
-                        tracing::debug!("Safari 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
-                        String::new()
-                    }
+                title: if let Some(t) = row.get::<_, Option<String>>(1)? {
+                    t
+                } else {
+                    tracing::debug!("Firefox 书签 ID={} 标题为 NULL，记录为空字符串占位", id);
+                    String::new()
                 },
                 url: row.get::<_, Option<String>>(2)?,
                 folder: bookmark_type == 2,
@@ -1950,34 +2022,32 @@ pub fn read_firefox_bookmarks(db_path: &std::path::Path) -> Result<Vec<Bookmark>
         Some(bookmark)
     }
 
-    // Build from root folders (2=menu, 3=toolbar, 5=unfiled)
+    // Keep Firefox's root assignment in-band so cleanup/sync round-trips do not
+    // silently move Menu, Other, or Mobile bookmarks into the toolbar.
     let mut bookmarks = Vec::new();
-
-    // Get items from toolbar (parent=3) - most important
-    if let Some(toolbar_children) = children_map.get(&3) {
-        for child_id in toolbar_children.clone() {
-            if let Some(bookmark) = build_tree(child_id, &mut all_items, &children_map) {
-                bookmarks.push(bookmark);
+    for (root_id, title) in [
+        (2, "Bookmarks Menu"),
+        (3, "Bookmarks Toolbar"),
+        (5, "Other Bookmarks"),
+        (6, "Mobile Bookmarks"),
+    ] {
+        let mut children = Vec::new();
+        if let Some(child_ids) = children_map.get(&root_id) {
+            for child_id in child_ids {
+                if let Some(bookmark) = build_tree(*child_id, &mut all_items, &children_map) {
+                    children.push(bookmark);
+                }
             }
         }
-    }
-
-    // Get items from menu (parent=2)
-    if let Some(menu_children) = children_map.get(&2) {
-        for child_id in menu_children.clone() {
-            if let Some(bookmark) = build_tree(child_id, &mut all_items, &children_map) {
-                bookmarks.push(bookmark);
-            }
-        }
-    }
-
-    // Get items from unfiled (parent=5)
-    if let Some(unfiled_children) = children_map.get(&5) {
-        for child_id in unfiled_children.clone() {
-            if let Some(bookmark) = build_tree(child_id, &mut all_items, &children_map) {
-                bookmarks.push(bookmark);
-            }
-        }
+        bookmarks.push(Bookmark {
+            id: format!("{FIREFOX_ROOT_PREFIX}{root_id}"),
+            title: title.to_string(),
+            url: None,
+            folder: true,
+            children,
+            date_added: None,
+            date_modified: None,
+        });
     }
 
     let total_count = count_bookmarks(&bookmarks);
@@ -2000,16 +2070,23 @@ fn count_bookmarks(bookmarks: &[Bookmark]) -> usize {
     count
 }
 
-fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) -> Result<()> {
+fn write_firefox_bookmarks(db_path: &Path, bookmarks: &[Bookmark]) -> Result<()> {
     // 使用安全事务包装器防止数据库损坏
     crate::db_safety::safe_write_transaction(db_path, |conn| {
-        // Start transaction
-        conn.execute("BEGIN TRANSACTION", [])?;
+        // Delete only descendants of bookmark roots. The tags root (4) and its
+        // children are separate Firefox data and must not be erased by cleanup.
+        conn.execute(
+            "WITH RECURSIVE user_nodes(id) AS (
+                 SELECT id FROM moz_bookmarks WHERE parent IN (2, 3, 5, 6)
+                 UNION ALL
+                 SELECT child.id FROM moz_bookmarks child
+                 JOIN user_nodes parent ON child.parent = parent.id
+             )
+             DELETE FROM moz_bookmarks WHERE id IN (SELECT id FROM user_nodes)",
+            [],
+        )?;
 
-        // Clear existing user bookmarks (keep system folders: 1=root, 2=menu, 3=toolbar, 4=tags, 5=unfiled, 6=mobile)
-        conn.execute("DELETE FROM moz_bookmarks WHERE id > 6 AND parent >= 2", [])?;
-
-        let mut position_counter = 0i32;
+        let mut root_positions = [0i32; 4];
         let now = chrono::Utc::now().timestamp_micros();
 
         // Recursive function to insert bookmarks with folder structure
@@ -2024,17 +2101,6 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
             *position += 1;
 
             if bookmark.folder {
-                // 🔧 FIX: Skip empty folders and folders with "/" name
-                if bookmark.children.is_empty() {
-                    debug!("Skipping empty folder: {}", bookmark.title);
-                    return Ok(());
-                }
-
-                if bookmark.title == "/" || bookmark.title.is_empty() {
-                    debug!("Skipping invalid folder name: '{}'", bookmark.title);
-                    return Ok(());
-                }
-
                 // Generate a unique GUID for the folder
                 let guid = format!(
                     "folder_{}",
@@ -2103,13 +2169,42 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
             Ok(())
         }
 
-        // Insert all bookmarks into toolbar (parent=3)
-        for bookmark in bookmarks {
-            insert_bookmark_recursive(conn, bookmark, 3, &mut position_counter, now)?;
+        fn root_slot(root_id: i64) -> Option<usize> {
+            match root_id {
+                2 => Some(0),
+                3 => Some(1),
+                5 => Some(2),
+                6 => Some(3),
+                _ => None,
+            }
         }
 
-        // Commit transaction
-        conn.execute("COMMIT", [])?;
+        for bookmark in bookmarks {
+            if let Some(root_id) = bookmark.id.strip_prefix(FIREFOX_ROOT_PREFIX) {
+                let root_id: i64 = root_id
+                    .parse()
+                    .with_context(|| format!("Invalid Firefox root marker: {}", bookmark.id))?;
+                let slot = root_slot(root_id).with_context(|| {
+                    format!(
+                        "Refusing to write unknown Firefox root marker: {}",
+                        bookmark.id
+                    )
+                })?;
+                for child in &bookmark.children {
+                    insert_bookmark_recursive(
+                        conn,
+                        child,
+                        root_id,
+                        &mut root_positions[slot],
+                        now,
+                    )?;
+                }
+            } else {
+                // Imported data without an internal root marker uses the toolbar,
+                // matching the historical behavior without disturbing marked roots.
+                insert_bookmark_recursive(conn, bookmark, 3, &mut root_positions[1], now)?;
+            }
+        }
 
         let total = count_bookmarks(bookmarks);
         info!(
@@ -2121,7 +2216,7 @@ fn write_firefox_bookmarks(db_path: &std::path::Path, bookmarks: &[Bookmark]) ->
 }
 
 // Firefox history helper functions
-fn read_firefox_history(db_path: &std::path::Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+fn read_firefox_history(db_path: &Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
     use rusqlite::{Connection, OpenFlags};
 
     let conn = Connection::open_with_flags(
@@ -2176,12 +2271,9 @@ fn read_firefox_history(db_path: &std::path::Path, days: Option<i32>) -> Result<
     Ok(history)
 }
 
-fn write_firefox_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Result<()> {
+fn write_firefox_history(db_path: &Path, items: &[HistoryItem]) -> Result<()> {
     // 使用安全事务包装器
     crate::db_safety::safe_write_transaction(db_path, |conn| {
-        // Start transaction
-        conn.execute("BEGIN TRANSACTION", [])?;
-
         // Insert history items
         for item in items {
             // First, ensure the URL exists in moz_places
@@ -2208,55 +2300,64 @@ fn write_firefox_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Re
             }
         }
 
-        // Commit transaction
-        conn.execute("COMMIT", [])?;
-
         debug!("Wrote {} history items to Firefox database", items.len());
         Ok(())
     })
 }
 
-#[cfg(target_os = "macos")]
+// Profile snapshots can contain Safari plists on any platform.
 pub(crate) fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<ReadingListItem>> {
+    fn parse_item(value: &plist::Value) -> Option<ReadingListItem> {
+        let dict = value.as_dictionary()?;
+        dict.get("ReadingList")?;
+        let url = dict.get("URLString")?.as_string()?;
+        let title = dict
+            .get("URIDictionary")
+            .and_then(plist::Value::as_dictionary)
+            .and_then(|uri| uri.get("title"))
+            .and_then(plist::Value::as_string)
+            .unwrap_or(url)
+            .to_string();
+        let date_added = dict
+            .get("ReadingListDateAdded")
+            .and_then(plist::Value::as_date)
+            .and_then(|date| {
+                date.to_xml_format()
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .ok()
+            })
+            .map(|date| date.timestamp());
+
+        Some(ReadingListItem {
+            url: url.to_string(),
+            title,
+            date_added,
+        })
+    }
+
     let mut items = Vec::new();
-
-    if let Some(dict) = value.as_dictionary() {
-        if let Some(children) = dict.get("Children").and_then(|v| v.as_array()) {
-            for child in children {
-                if let Some(child_dict) = child.as_dictionary() {
-                    // Check if this is a reading list item
-                    if let Some(_reading_list) = child_dict.get("ReadingList") {
-                        if let Some(url_string) =
-                            child_dict.get("URLString").and_then(|v| v.as_string())
-                        {
-                            let title = child_dict
-                                .get("URIDictionary")
-                                .and_then(|v| v.as_dictionary())
-                                .and_then(|d| d.get("title"))
-                                .and_then(|v| v.as_string())
-                                .unwrap_or(url_string)
-                                .to_string();
-
-                            let date_added = child_dict
-                                .get("ReadingListDateAdded")
-                                .and_then(plist::Value::as_date)
-                                .map(|d| {
-                                    // Convert plist::Date to timestamp using chrono
-                                    use chrono::{DateTime, Utc};
-                                    let dt: DateTime<Utc> =
-                                        d.to_xml_format().parse().unwrap_or_else(|_| Utc::now());
-                                    dt.timestamp()
-                                });
-
-                            items.push(ReadingListItem {
-                                url: url_string.to_string(),
-                                title,
-                                date_added,
-                            });
-                        }
-                    }
-                }
+    let children = value
+        .as_dictionary()
+        .and_then(|dict| dict.get("Children"))
+        .and_then(plist::Value::as_array)
+        .into_iter()
+        .flatten();
+    for child in children {
+        let child_dict = match child.as_dictionary() {
+            Some(dict) => dict,
+            None => continue,
+        };
+        if child_dict.get("Title").and_then(plist::Value::as_string)
+            == Some("com.apple.ReadingList")
+        {
+            if let Some(reading_children) =
+                child_dict.get("Children").and_then(plist::Value::as_array)
+            {
+                items.extend(reading_children.iter().filter_map(parse_item));
             }
+        } else if let Some(item) = parse_item(child) {
+            // Older Safari files may store ReadingList leaves at the top level.
+            items.push(item);
         }
     }
 
@@ -2265,13 +2366,57 @@ pub(crate) fn parse_safari_reading_list(value: &plist::Value) -> Result<Vec<Read
 
 #[cfg(target_os = "macos")]
 pub(crate) fn update_safari_reading_list(
-    _plist: &mut plist::Value,
-    _items: &[ReadingListItem],
+    plist: &mut plist::Value,
+    items: &[ReadingListItem],
 ) -> Result<()> {
-    // This is a simplified implementation
-    // In reality, we need to preserve the existing structure and only update the reading list section
-    // For now, we'll just log that this needs implementation
-    warn!("Safari reading list write not fully implemented yet");
+    use plist::{Dictionary, Value};
+
+    let children = plist
+        .as_dictionary_mut()
+        .and_then(|root| root.get_mut("Children"))
+        .and_then(Value::as_array_mut)
+        .context("Safari Bookmarks.plist has no Children array")?;
+    let reading_list = children
+        .iter_mut()
+        .find(|child| {
+            child
+                .as_dictionary()
+                .and_then(|dict| dict.get("Title"))
+                .and_then(Value::as_string)
+                == Some("com.apple.ReadingList")
+        })
+        .and_then(Value::as_dictionary_mut)
+        .context("Safari Bookmarks.plist has no com.apple.ReadingList folder")?;
+
+    let values = items
+        .iter()
+        .map(|item| {
+            let mut uri = Dictionary::new();
+            uri.insert("title".into(), Value::String(item.title.clone()));
+
+            let mut value = Dictionary::new();
+            value.insert("ReadingList".into(), Value::Dictionary(Dictionary::new()));
+            value.insert("URLString".into(), Value::String(item.url.clone()));
+            value.insert("URIDictionary".into(), Value::Dictionary(uri));
+            value.insert(
+                "WebBookmarkType".into(),
+                Value::String("WebBookmarkTypeLeaf".into()),
+            );
+            value.insert(
+                "WebBookmarkUUID".into(),
+                Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()),
+            );
+            if let Some(date) = item
+                .date_added
+                .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+                .and_then(|date| plist::Date::from_xml_format(&date.to_rfc3339()).ok())
+            {
+                value.insert("ReadingListDateAdded".into(), Value::Date(date));
+            }
+            Value::Dictionary(value)
+        })
+        .collect();
+    reading_list.insert("Children".into(), Value::Array(values));
     Ok(())
 }
 
@@ -2279,25 +2424,29 @@ pub(crate) fn update_safari_reading_list(
 fn chromium_epoch() -> chrono::DateTime<chrono::Utc> {
     chrono::NaiveDate::from_ymd_opt(1601, 1, 1)
         .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|dt| dt.and_utc())
-        .unwrap_or_else(|| {
-            warn!("无法构造 Chromium 纪元时间 (1601-01-01)，显式回退至 UNIX_EPOCH");
-            chrono::DateTime::UNIX_EPOCH
-        })
+        .map_or_else(
+            || {
+                warn!("无法构造 Chromium 纪元时间 (1601-01-01)，显式回退至 UNIX_EPOCH");
+                chrono::DateTime::UNIX_EPOCH
+            },
+            |dt| dt.and_utc(),
+        )
 }
 
 fn safari_epoch() -> chrono::DateTime<chrono::Utc> {
     chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
         .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|dt| dt.and_utc())
-        .unwrap_or_else(|| {
-            warn!("无法构造 Safari 纪元时间 (2001-01-01)，显式回退至 UNIX_EPOCH");
-            chrono::DateTime::UNIX_EPOCH
-        })
+        .map_or_else(
+            || {
+                warn!("无法构造 Safari 纪元时间 (2001-01-01)，显式回退至 UNIX_EPOCH");
+                chrono::DateTime::UNIX_EPOCH
+            },
+            |dt| dt.and_utc(),
+        )
 }
 
 // Chromium history helper functions
-fn read_chromium_history(db_path: &std::path::Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+fn read_chromium_history(db_path: &Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
     use rusqlite::{Connection, OpenFlags};
 
     let conn = Connection::open_with_flags(
@@ -2354,7 +2503,7 @@ fn read_chromium_history(db_path: &std::path::Path, days: Option<i32>) -> Result
     Ok(history)
 }
 
-fn write_chromium_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Result<()> {
+fn write_chromium_history(db_path: &Path, items: &[HistoryItem]) -> Result<()> {
     use rusqlite::Connection;
 
     let conn = Connection::open(db_path)?;
@@ -2399,7 +2548,7 @@ fn write_chromium_history(db_path: &std::path::Path, items: &[HistoryItem]) -> R
 }
 
 // Safari history helper functions
-fn read_safari_history(db_path: &std::path::Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
+fn read_safari_history(db_path: &Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
     use rusqlite::{Connection, OpenFlags};
 
     let conn = Connection::open_with_flags(
@@ -2462,7 +2611,7 @@ fn read_safari_history(db_path: &std::path::Path, days: Option<i32>) -> Result<V
     Ok(history)
 }
 
-fn write_safari_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Result<()> {
+fn write_safari_history(db_path: &Path, items: &[HistoryItem]) -> Result<()> {
     use rusqlite::Connection;
 
     let conn = Connection::open(db_path)?;
@@ -2508,7 +2657,7 @@ fn write_safari_history(db_path: &std::path::Path, items: &[HistoryItem]) -> Res
 }
 
 // Firefox/Waterfox cookies helper functions (reserved for future)
-pub(crate) fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
+pub(crate) fn read_firefox_cookies(db_path: &Path) -> Result<Vec<Cookie>> {
     use rusqlite::{Connection, OpenFlags};
 
     let conn = Connection::open_with_flags(
@@ -2544,11 +2693,9 @@ pub(crate) fn read_firefox_cookies(db_path: &std::path::Path) -> Result<Vec<Cook
     Ok(cookies)
 }
 
-pub(crate) fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
+pub(crate) fn write_firefox_cookies(db_path: &Path, cookies: &[Cookie]) -> Result<()> {
     // 使用安全事务包装器
     crate::db_safety::safe_write_transaction(db_path, |conn| {
-        conn.execute("BEGIN TRANSACTION", [])?;
-
         let now = chrono::Utc::now().timestamp_micros();
 
         for cookie in cookies {
@@ -2569,15 +2716,13 @@ pub(crate) fn write_firefox_cookies(db_path: &std::path::Path, cookies: &[Cookie
             )?;
         }
 
-        conn.execute("COMMIT", [])?;
-
         debug!("Wrote {} cookies to Firefox database", cookies.len());
         Ok(())
     })
 }
 
 // Chromium cookies helper functions (reserved for future)
-pub(crate) fn read_chromium_cookies(db_path: &std::path::Path) -> Result<Vec<Cookie>> {
+pub(crate) fn read_chromium_cookies(db_path: &Path) -> Result<Vec<Cookie>> {
     use rusqlite::{Connection, OpenFlags};
 
     let conn = Connection::open_with_flags(
@@ -2613,7 +2758,7 @@ pub(crate) fn read_chromium_cookies(db_path: &std::path::Path) -> Result<Vec<Coo
     Ok(cookies)
 }
 
-pub(crate) fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cookie]) -> Result<()> {
+pub(crate) fn write_chromium_cookies(db_path: &Path, cookies: &[Cookie]) -> Result<()> {
     use rusqlite::Connection;
 
     let conn = Connection::open(db_path)?;
@@ -2649,7 +2794,7 @@ pub(crate) fn write_chromium_cookies(db_path: &std::path::Path, cookies: &[Cooki
 
 /// ⚠️ Read passwords from Chromium Login Data database
 /// WARNING: Passwords are ENCRYPTED and cannot be decrypted without OS keychain access
-pub(crate) fn read_chromium_passwords(db_path: &std::path::Path) -> Result<Vec<SavedPassword>> {
+pub(crate) fn read_chromium_passwords(db_path: &Path) -> Result<Vec<SavedPassword>> {
     use rusqlite::{Connection, OpenFlags};
 
     // Copy database to temp location to avoid locking issues
@@ -2700,9 +2845,7 @@ pub(crate) fn read_chromium_passwords(db_path: &std::path::Path) -> Result<Vec<S
 
 /// ⚠️ Read extension metadata from Chromium Extensions directory
 /// WARNING: Only metadata is exported, not the actual extension files or settings
-pub(crate) fn read_chromium_extensions(
-    extensions_path: &std::path::Path,
-) -> Result<Vec<BrowserExtension>> {
+pub(crate) fn read_chromium_extensions(extensions_path: &Path) -> Result<Vec<BrowserExtension>> {
     let mut extensions = Vec::new();
 
     if !extensions_path.exists() {
@@ -2804,6 +2947,275 @@ pub(crate) fn read_chromium_extensions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bookmark_writes_require_exactly_one_profile() {
+        let first = PathBuf::from("Profile 1");
+        let second = PathBuf::from("Profile 2");
+
+        assert_eq!(
+            single_profile_for_write(BrowserType::Chrome, std::slice::from_ref(&first)).unwrap(),
+            first.as_path()
+        );
+        assert!(single_profile_for_write(BrowserType::Chrome, &[]).is_err());
+        let error = single_profile_for_write(BrowserType::Chrome, &[first, second]).unwrap_err();
+        assert!(error.to_string().contains("2 profiles"));
+    }
+
+    #[test]
+    fn bookmark_file_write_is_atomic_and_backups_are_unique() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Bookmarks");
+        std::fs::write(&path, b"before").unwrap();
+
+        let first_backup = backup_file_unique(&path).unwrap();
+        let second_backup = backup_file_unique(&path).unwrap();
+        assert_ne!(first_backup, second_backup);
+        assert_eq!(std::fs::read(&first_backup).unwrap(), b"before");
+
+        atomic_write_file(&path, b"after").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"after");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn safari_bookmark_replacement_preserves_reading_list() {
+        use plist::{Dictionary, Value};
+
+        let node = |title: &str| {
+            let mut value = Dictionary::new();
+            value.insert("Title".into(), Value::String(title.into()));
+            value.insert(
+                "WebBookmarkType".into(),
+                Value::String("WebBookmarkTypeList".into()),
+            );
+            Value::Dictionary(value)
+        };
+        let mut root = Dictionary::new();
+        root.insert("Marker".into(), Value::String("keep".into()));
+        root.insert(
+            "Children".into(),
+            Value::Array(vec![node("BookmarksBar"), node("com.apple.ReadingList")]),
+        );
+
+        let merged = bookmarks_to_safari_plist(&Value::Dictionary(root), &[]).unwrap();
+        let root = merged.as_dictionary().unwrap();
+        assert_eq!(root.get("Marker").and_then(Value::as_string), Some("keep"));
+        let children = root.get("Children").and_then(Value::as_array).unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(
+            children[0]
+                .as_dictionary()
+                .and_then(|value| value.get("Title"))
+                .and_then(Value::as_string),
+            Some("com.apple.ReadingList")
+        );
+    }
+
+    #[test]
+    fn chromium_bookmark_round_trip_preserves_root_assignment() {
+        let root = |id: &str, name: &str, url: &str| {
+            serde_json::json!({
+                "children": [{
+                    "id": format!("item-{id}"),
+                    "name": name,
+                    "type": "url",
+                    "url": url
+                }],
+                "id": id,
+                "name": name,
+                "type": "folder"
+            })
+        };
+        let input = serde_json::json!({
+            "roots": {
+                "bookmark_bar": root("1", "Bar", "https://bar.example"),
+                "other": root("2", "Other", "https://other.example"),
+                "synced": root("3", "Mobile", "https://mobile.example")
+            },
+            "version": 1
+        });
+
+        let parsed = parse_chromium_bookmarks(&input).unwrap();
+        let output = bookmarks_to_chromium_json(&parsed).unwrap();
+        for (key, expected) in [
+            ("bookmark_bar", "https://bar.example"),
+            ("other", "https://other.example"),
+            ("synced", "https://mobile.example"),
+        ] {
+            assert_eq!(
+                output["roots"][key]["children"][0]["url"].as_str(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn firefox_bookmark_round_trip_preserves_roots_tags_and_empty_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("places.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE moz_places (
+                 id INTEGER PRIMARY KEY,
+                 url TEXT UNIQUE,
+                 title TEXT,
+                 rev_host TEXT,
+                 hidden INTEGER,
+                 typed INTEGER,
+                 frecency INTEGER,
+                 guid TEXT
+             );
+             CREATE TABLE moz_bookmarks (
+                 id INTEGER PRIMARY KEY,
+                 type INTEGER,
+                 fk INTEGER,
+                 parent INTEGER,
+                 position INTEGER,
+                 title TEXT,
+                 dateAdded INTEGER,
+                 lastModified INTEGER,
+                 guid TEXT
+             );
+             INSERT INTO moz_bookmarks VALUES
+                 (1, 2, NULL, 0, 0, 'root', 0, 0, 'root________'),
+                 (2, 2, NULL, 1, 0, 'menu', 0, 0, 'menu________'),
+                 (3, 2, NULL, 1, 1, 'toolbar', 0, 0, 'toolbar_____'),
+                 (4, 2, NULL, 1, 2, 'tags', 0, 0, 'tags________'),
+                 (5, 2, NULL, 1, 3, 'unfiled', 0, 0, 'unfiled____'),
+                 (6, 2, NULL, 1, 4, 'mobile', 0, 0, 'mobile______');
+             INSERT INTO moz_places VALUES
+                 (1, 'https://toolbar.example', 'Toolbar', '', 0, 0, -1, 'place_toolbar'),
+                 (2, 'https://menu.example', 'Menu', '', 0, 0, -1, 'place_menu___'),
+                 (3, 'https://tagged.example', 'Tagged', '', 0, 0, -1, 'place_tagged_');
+             INSERT INTO moz_bookmarks VALUES
+                 (7, 1, 1, 3, 0, 'Toolbar', 1, 1, 'bookmark_tb_'),
+                 (8, 1, 2, 2, 0, 'Menu', 1, 1, 'bookmark_mn_'),
+                 (9, 2, NULL, 4, 0, 'KeepTag', 1, 1, 'tag_folder__'),
+                 (10, 1, 3, 9, 0, 'Tagged', 1, 1, 'tag_item____'),
+                 (11, 2, NULL, 6, 0, 'Empty Mobile Folder', 1, 1, 'empty_mobile');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let bookmarks = read_firefox_bookmarks(&db).unwrap();
+        write_firefox_bookmarks(&db, &bookmarks).unwrap();
+
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for (url, parent) in [("https://toolbar.example", 3), ("https://menu.example", 2)] {
+            let actual: i64 = conn
+                .query_row(
+                    "SELECT b.parent FROM moz_bookmarks b JOIN moz_places p ON p.id = b.fk WHERE p.url = ?1 AND b.parent != 9",
+                    [url],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(actual, parent);
+        }
+        let tag_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM moz_bookmarks WHERE id IN (9, 10)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag_count, 2);
+        let mobile_folder_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM moz_bookmarks WHERE parent = 6 AND type = 2 AND title = 'Empty Mobile Folder'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mobile_folder_count, 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn safari_reading_list_round_trip_updates_nested_folder_only() {
+        use plist::{Dictionary, Value};
+
+        let reading_item = |url: &str, title: &str| {
+            let mut uri = Dictionary::new();
+            uri.insert("title".into(), Value::String(title.into()));
+            let mut item = Dictionary::new();
+            item.insert("ReadingList".into(), Value::Dictionary(Dictionary::new()));
+            item.insert("URLString".into(), Value::String(url.into()));
+            item.insert("URIDictionary".into(), Value::Dictionary(uri));
+            Value::Dictionary(item)
+        };
+        let mut folder = Dictionary::new();
+        folder.insert(
+            "Title".into(),
+            Value::String("com.apple.ReadingList".into()),
+        );
+        folder.insert(
+            "Children".into(),
+            Value::Array(vec![reading_item("https://old.example", "Old")]),
+        );
+        let mut other = Dictionary::new();
+        other.insert("Title".into(), Value::String("BookmarksMenu".into()));
+        let mut root = Dictionary::new();
+        root.insert("Marker".into(), Value::String("keep".into()));
+        root.insert(
+            "Children".into(),
+            Value::Array(vec![Value::Dictionary(other), Value::Dictionary(folder)]),
+        );
+        let mut plist = Value::Dictionary(root);
+
+        assert_eq!(parse_safari_reading_list(&plist).unwrap().len(), 1);
+        update_safari_reading_list(
+            &mut plist,
+            &[ReadingListItem {
+                url: "https://new.example".into(),
+                title: "New".into(),
+                date_added: Some(1_700_000_000),
+            }],
+        )
+        .unwrap();
+
+        let parsed = parse_safari_reading_list(&plist).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].url, "https://new.example");
+        assert_eq!(parsed[0].title, "New");
+        assert_eq!(parsed[0].date_added, Some(1_700_000_000));
+        assert_eq!(
+            plist
+                .as_dictionary()
+                .and_then(|root| root.get("Marker"))
+                .and_then(Value::as_string),
+            Some("keep")
+        );
+    }
+
+    #[test]
+    fn chromium_profile_discovery_accepts_custom_names() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["Default", "Work Account", "Person 7"] {
+            let profile = temp.path().join(name);
+            std::fs::create_dir(&profile).unwrap();
+            std::fs::write(profile.join("Bookmarks"), b"{}").unwrap();
+        }
+        std::fs::create_dir(temp.path().join("System Profile")).unwrap();
+
+        let profiles = discover_chromium_profile_paths(temp.path()).unwrap();
+        let names: Vec<_> = profiles
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, ["Default", "Person 7", "Work Account"]);
+    }
+
+    #[test]
+    fn corrupt_chromium_profile_is_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join("Broken");
+        std::fs::create_dir(&profile).unwrap();
+        std::fs::write(profile.join("Bookmarks"), b"not json").unwrap();
+
+        let error = read_all_chromium_bookmarks_with_profiles("Test", &[profile]).unwrap_err();
+        assert!(error.to_string().contains("Invalid bookmark JSON"));
+    }
 
     #[test]
     fn test_browser_type_name() {
