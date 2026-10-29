@@ -30,6 +30,8 @@ pub mod health;
 #[cfg(feature = "native-gui")]
 pub mod native_groups;
 #[cfg(feature = "native-gui")]
+pub mod native_history;
+#[cfg(feature = "native-gui")]
 pub mod native_preferences;
 #[cfg(feature = "native-gui")]
 pub mod native_review;

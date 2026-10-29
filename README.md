@@ -116,6 +116,8 @@ Direct checks offer automatic DNS evidence routing (AliDNS for Chinese domains, 
 
 Health results are historical evidence, not a live guarantee; results older than 24 hours are flagged. Manual removal of uncertain entries is your explicit choice, not automatic confirmation that they are dead. Source-coverage gaps remain visible even when all supplied URLs have been checked. The native toolkit supports desktop platforms, but platform acceptance must be tested separately; browser-source discovery is currently macOS-oriented. The legacy server GUI stays disabled.
 
+The inspector's **Check history** is a compact, newest-first list for the exact selected URL in the attached database. Each saved scan is one expandable row with its date, plain-language result and new-check/reuse label; verifier outputs are nested details, not additional checks. Same-URL bookmark occurrences stay in the same record. Older databases without scan membership show explicitly labeled independent-check history instead of invented batches. Pages contain up to 12 records, with Newer/Older navigation. Refresh reads local records only, never a website, and cannot change a keep/remove decision. Loading is isolated from the main workspace; switching bookmarks discards late results, and a failed refresh keeps the last successful page visible with a warning. Missing, malformed and future times stay marked rather than being replaced with the current time. Raw identifiers and JSON are available only in developer details. The inspector uses the existing native themes and font preferences, and floats rather than squeezing the bookmark list in a narrow window.
+
 ## Safety boundaries
 
 - No browser-profile write-back or cloud sync.

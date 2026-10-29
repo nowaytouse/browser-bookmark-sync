@@ -17,6 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
+mod records;
+
 fn tr(zh: bool, chinese: &'static str, english: &'static str) -> &'static str {
     if zh {
         chinese
@@ -73,11 +75,15 @@ fn app_mark(ui: &mut egui::Ui, size: f32) {
 }
 
 enum Event {
-    Loaded(anyhow::Result<ReviewDocument>, bool, Option<ScanHandle>),
+    Loaded(
+        anyhow::Result<ReviewDocument>,
+        Option<PathBuf>,
+        Option<ScanHandle>,
+    ),
     Imported(anyhow::Result<BrowserImport>),
     ScanStarted(anyhow::Result<ScanHandle>),
     ProxyChecked(NetworkSettings, Result<(), String>),
-    EvidenceLoaded(anyhow::Result<(ReviewDocument, bool)>),
+    EvidenceLoaded(anyhow::Result<(ReviewDocument, bool, PathBuf)>),
     Exported(anyhow::Result<(PathBuf, usize, usize)>),
 }
 
@@ -329,6 +335,8 @@ struct ReviewApp {
     saved_decisions: BTreeMap<usize, Decision>,
     duplicates: BTreeSet<usize>,
     active_db: bool,
+    document_db: Option<PathBuf>,
+    records: records::RecordsPanel,
     selected: BTreeSet<usize>,
     focused: Option<usize>,
     history: Vec<Vec<(usize, Option<Decision>)>>,
@@ -382,6 +390,8 @@ impl Default for ReviewApp {
             saved_decisions: BTreeMap::new(),
             duplicates: BTreeSet::new(),
             active_db: false,
+            document_db: None,
+            records: records::RecordsPanel::default(),
             selected: BTreeSet::new(),
             focused: None,
             history: Vec::new(),
@@ -473,7 +483,7 @@ impl ReviewApp {
         self.message = tr(self.zh(), "正在读取书签…", "Reading bookmarks…").into();
         self.spawn_worker(move || {
             let result = ReviewDocument::load(&path, db.as_deref(), source.as_deref());
-            Event::Loaded(result, db.is_some(), scan)
+            Event::Loaded(result, db, scan)
         });
     }
 
@@ -556,11 +566,13 @@ impl ReviewApp {
     }
 
     fn set_document(&mut self, doc: ReviewDocument) {
+        self.records.invalidate();
         self.verdict_counts = count_verdicts(&doc);
         self.doc = Some(Arc::new(doc));
     }
 
     fn accept_document(&mut self, doc: ReviewDocument, active_db: bool) {
+        self.document_db = None;
         self.message_is_error = false;
         self.source_details_open = None;
         self.scan = None;
@@ -658,7 +670,7 @@ impl ReviewApp {
                     )
                 }
                 Event::ProxyChecked(_, _) => unreachable!("proxy results were handled above"),
-                Event::EvidenceLoaded(Ok((mut doc, verified))) => {
+                Event::EvidenceLoaded(Ok((mut doc, verified, db))) => {
                     if self
                         .doc
                         .as_ref()
@@ -666,6 +678,7 @@ impl ReviewApp {
                     {
                         doc.coverage = self.doc.as_ref().and_then(|old| old.coverage.clone());
                         self.set_document(doc);
+                        self.document_db = Some(db);
                         self.active_db = true;
                         self.scan_verified = verified;
                         self.filter_dirty = true;
@@ -684,8 +697,9 @@ impl ReviewApp {
                     self.scan_verified = false;
                     self.message = format!("{error:#}");
                 }
-                Event::Loaded(Ok(doc), active_db, scan) => {
-                    self.accept_document(doc, active_db);
+                Event::Loaded(Ok(doc), db, scan) => {
+                    self.accept_document(doc, db.is_some());
+                    self.document_db = db;
                     self.import_directory = None;
                     self.scan = scan;
                     self.refresh_scan();
@@ -928,8 +942,9 @@ impl ReviewApp {
         };
         self.busy = true;
         self.spawn_worker(move || {
-            let result = ReviewDocument::load(&doc.input_path, Some(&handle.db()), None)
-                .map(|doc| (doc, handle.verify_complete().is_ok()));
+            let db = handle.db();
+            let result = ReviewDocument::load(&doc.input_path, Some(&db), None)
+                .map(|doc| (doc, handle.verify_complete().is_ok(), db));
             Event::EvidenceLoaded(result)
         });
     }
@@ -1087,13 +1102,19 @@ impl eframe::App for ReviewApp {
                 egui::Panel::right("inspector")
                     .exact_size(
                         (ui.available_width() * self.preferences.layout.inspector_fraction())
-                            .clamp(260.0, 460.0),
+                            .clamp(300.0, 460.0),
                     )
-                    .min_size(260.0)
+                    .min_size(300.0)
                     .max_size(460.0)
                     .resizable(false)
                     .frame(egui::Frame::default().inner_margin(18))
                     .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(tr(self.zh(), "书签详情", "Bookmark details"));
+                            if ui.small_button(tr(self.zh(), "收起", "Hide")).clicked() {
+                                self.focused = None;
+                            }
+                        });
                         ui.add_enabled_ui(!self.busy, |ui| self.details(ui));
                     });
             }
@@ -1109,11 +1130,12 @@ impl eframe::App for ReviewApp {
         }
         if narrow && self.preferences.show_details && self.focused.is_some() {
             let mut open = true;
-            egui::Window::new(tr(self.zh(), "详情与证据", "Details & evidence"))
+            egui::Window::new(tr(self.zh(), "书签详情", "Bookmark details"))
                 .id(egui::Id::unique("compact-inspector"))
                 .open(&mut open)
                 .default_width(390.0)
-                .default_height(380.0)
+                .default_height(460.0)
+                .default_pos(egui::pos2((ui.max_rect().right() - 420.0).max(8.0), 72.0))
                 .show(&ctx, |ui| {
                     ui.add_enabled_ui(!self.busy, |ui| self.details(ui));
                 });
@@ -2095,41 +2117,41 @@ impl ReviewApp {
         let Some(item) = self.focused.and_then(|id| doc.items.get(id)) else {
             return;
         };
-        ui.horizontal(|ui| {
-            ui.strong(tr(zh, "详情与证据", "Details & evidence"));
-            if ui.small_button(tr(zh, "收起", "Hide")).clicked() {
-                self.focused = None;
-            }
-        });
-        egui::ScrollArea::vertical().id_salt("evidence").show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt(("evidence", &doc.input_hash, item.id)).show(ui, |ui| {
             ui.add_space(8.0);
-            ui.label(RichText::new(&item.title).size(18.0).strong());
-            ui.label(RichText::new(&item.url).small());
-            ui.weak(item.path.join(" / "));
-            ui.label(verdict_label(zh, &item.verdict));
-            ui.horizontal(|ui| {
+            let title = if item.title.is_empty() { tr(zh, "无标题", "Untitled") } else { &item.title };
+            ui.add(egui::Label::new(RichText::new(title).size(18.0).strong()).truncate()).on_hover_text(title);
+            ui.add(egui::Label::new(RichText::new(&item.url).small().weak()).truncate()).on_hover_text(&item.url);
+            if !item.path.is_empty() {
+                let path = item.path.join(" / ");
+                ui.add(egui::Label::new(RichText::new(&path).small().weak()).truncate()).on_hover_text(path);
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new(verdict_label(zh, &item.verdict)).strong());
+            ui.horizontal_wrapped(|ui| {
                 if ui.button(tr(zh, "保留", "Keep")).clicked() { self.decide(vec![item.id], Some(Decision::Keep)); }
-                if ui.button(tr(zh, "移除", "Remove")).clicked() { self.decide(vec![item.id], Some(Decision::Remove)); }
+                if ui.button(RichText::new(tr(zh, "移除", "Remove")).color(ui.visuals().error_fg_color))
+                    .on_hover_text(tr(zh, "只从待导出的 HTML 副本中移除，可以撤销。", "Remove only from the exported HTML copy. You can undo this."))
+                    .clicked() { self.decide(vec![item.id], Some(Decision::Remove)); }
                 if ui.small_button(tr(zh, "重置", "Reset")).clicked() { self.decide(vec![item.id], None); }
             });
-            if (item.url.starts_with("https://") || item.url.starts_with("http://")) && ui.button(tr(zh, "在浏览器中打开", "Open in browser")).clicked() {
-                if let Err(error) = open::that(&item.url) { self.message = error.to_string(); }
-            }
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button(tr(zh, "复制网址", "Copy URL")).clicked() { ui.ctx().copy_text(item.url.clone()); }
+                if (item.url.starts_with("https://") || item.url.starts_with("http://")) && ui.small_button(tr(zh, "在浏览器中打开", "Open in browser")).clicked() {
+                    if let Err(error) = open::that(&item.url) { self.message = error.to_string(); }
+                }
+            });
             ui.separator();
             if let Some(when) = &item.last_checked_at {
-                ui.small(when);
                 if DateTime::parse_from_rfc3339(when).map(|t| !StateMachine::is_current_evidence(t.with_timezone(&Utc), Utc::now())).unwrap_or(true) {
                     ui.colored_label(ui.visuals().warn_fg_color, tr(zh, "证据已超过 24 小时、时间在未来或时间无效，请在移除前重新核对。", "Evidence is older than 24 hours or has a future or invalid timestamp. Recheck before removal."));
                 }
             }
             if item.evidence.is_empty() { ui.label(tr(zh, "暂无检测证据；这不代表链接失效。", "No check evidence is available. This does not mean the link is dead.")); }
-            for evidence in &item.evidence {
-                ui.group(|ui| {
-                    ui.strong(&evidence.backend);
-                    if let Some(code) = evidence.status_code { ui.label(format!("HTTP {code}")); }
-                    if let Some(error) = &evidence.error_kind { ui.label(error); }
-                    if let Some(when) = &evidence.finished_at { ui.small(when); }
-                });
+            self.records.show(ui, self.document_db.clone(), &item.url, zh, self.preferences.developer_mode);
+            if !item.evidence.is_empty() {
+                ui.add_space(12.0);
+                records::latest_evidence(ui, &item.evidence, zh);
             }
         });
     }
@@ -2625,11 +2647,12 @@ fn verdict_label(zh: bool, verdict: &str) -> &str {
         "untested" => tr(zh, "未检查", "Untested"),
         "live" => tr(zh, "可访问", "Reachable"),
         "recovered" => tr(zh, "已恢复", "Recovered"),
-        "protected" => tr(zh, "访问受保护", "Protected"),
-        "needs_review" => tr(zh, "待复核", "Needs review"),
-        "temporary_failure" => tr(zh, "暂时失败", "Temporary failure"),
-        "confirmed_dead" => tr(zh, "死亡候选", "Dead candidate"),
-        _ => verdict,
+        "protected" => tr(zh, "访问受限", "Access restricted"),
+        "needs_review" => tr(zh, "需要核对", "Needs review"),
+        "temporary_failure" => tr(zh, "稍后再试", "Try again later"),
+        "probable_dead" => tr(zh, "疑似失效，需要复查", "Possibly unavailable"),
+        "confirmed_dead" => tr(zh, "失效候选", "Confirmed dead candidate"),
+        _ => tr(zh, "状态未识别", "Unknown check status"),
     }
 }
 
@@ -2811,7 +2834,7 @@ mod tests {
         app.accept_document(fixture(), false);
         app.busy = true;
         app.spawn_worker(|| {
-            Event::Loaded(Err(anyhow::anyhow!("synthetic read error")), false, None)
+            Event::Loaded(Err(anyhow::anyhow!("synthetic read error")), None, None)
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while !app.worker.as_ref().unwrap().is_finished() {
@@ -2969,7 +2992,7 @@ mod tests {
             app.busy = true;
             app.spawn_worker(move || {
                 assert!(!panic, "synthetic wake-up panic");
-                Event::Loaded(Err(anyhow::anyhow!("synthetic result")), false, None)
+                Event::Loaded(Err(anyhow::anyhow!("synthetic result")), None, None)
             });
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while !app.worker.as_ref().unwrap().is_finished() {
@@ -3065,7 +3088,11 @@ mod tests {
         app.accept_document(doc, false);
         let decisions = app.decisions.clone();
         app.sender
-            .send(Event::EvidenceLoaded(Ok((fixture(), false))))
+            .send(Event::EvidenceLoaded(Ok((
+                fixture(),
+                false,
+                PathBuf::from("synthetic.sqlite"),
+            ))))
             .unwrap();
         app.poll();
         assert_eq!(app.decisions, decisions);
@@ -3077,6 +3104,47 @@ mod tests {
     }
 
     #[test]
+    fn history_database_tracks_the_loaded_document_not_a_later_setting() {
+        let mut app = ReviewApp::default();
+        let original = PathBuf::from("original-synthetic.sqlite");
+        app.sender
+            .send(Event::Loaded(Ok(fixture()), Some(original.clone()), None))
+            .unwrap();
+        app.poll();
+        let decisions = app.decisions.clone();
+        app.db = Some(PathBuf::from("later-settings.sqlite"));
+        assert_eq!(app.document_db.as_ref(), Some(&original));
+
+        let mut stale = fixture();
+        stale.input_hash = "another-document".into();
+        app.sender
+            .send(Event::EvidenceLoaded(Ok((
+                stale,
+                false,
+                PathBuf::from("stale.sqlite"),
+            ))))
+            .unwrap();
+        app.poll();
+        assert_eq!(app.document_db.as_ref(), Some(&original));
+        assert_eq!(app.decisions, decisions);
+
+        let reloaded = PathBuf::from("reloaded-synthetic.sqlite");
+        app.sender
+            .send(Event::EvidenceLoaded(Ok((
+                fixture(),
+                false,
+                reloaded.clone(),
+            ))))
+            .unwrap();
+        app.poll();
+        assert_eq!(app.document_db.as_ref(), Some(&reloaded));
+        assert_eq!(app.decisions, decisions);
+
+        app.accept_document(fixture(), false);
+        assert!(app.document_db.is_none());
+    }
+
+    #[test]
     fn document_counts_refresh_on_evidence_reload_and_replacement_not_review_decisions() {
         let mut app = ReviewApp::default();
         app.accept_document(fixture(), false);
@@ -3085,7 +3153,11 @@ mod tests {
         checked.items[0].verdict = "confirmed_dead".into();
         checked.items[1].verdict = "protected".into();
         app.sender
-            .send(Event::EvidenceLoaded(Ok((checked, true))))
+            .send(Event::EvidenceLoaded(Ok((
+                checked,
+                true,
+                PathBuf::from("synthetic.sqlite"),
+            ))))
             .unwrap();
         app.poll();
         assert_eq!(
