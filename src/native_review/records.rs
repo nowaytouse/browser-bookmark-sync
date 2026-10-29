@@ -117,6 +117,13 @@ impl RecordsPanel {
         zh: bool,
         developer: bool,
     ) {
+        if let Some(db) = db {
+            self.request(db, url);
+            self.poll();
+        } else {
+            self.invalidate();
+        }
+        let attached = self.desired.is_some();
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.label(
@@ -124,32 +131,42 @@ impl RecordsPanel {
                     .size(16.0)
                     .strong(),
             );
-            if ui
-                .add(egui::Button::new(tr(zh, "刷新", "Refresh")).min_size(egui::vec2(24.0, 24.0)))
-                .on_hover_text(tr(
-                    zh,
-                    "只重新读取已保存的记录，不会请求网站。",
-                    "Reload saved records only. No website requests.",
-                ))
-                .clicked()
+            if attached
+                && ui
+                    .add(
+                        egui::Button::new(if self.error.is_some() {
+                            tr(zh, "重试", "Retry")
+                        } else {
+                            tr(zh, "刷新", "Refresh")
+                        })
+                        .min_size(egui::vec2(24.0, 24.0)),
+                    )
+                    .on_hover_text(tr(
+                        zh,
+                        "只重新读取已保存的记录，不会请求网站。",
+                        "Reload saved records only. No website requests.",
+                    ))
+                    .clicked()
             {
                 self.generation = self.generation.wrapping_add(1);
                 if let Some(request) = &mut self.desired {
                     request.generation = self.generation;
                 }
+                self.poll();
             }
         });
-        ui.label(
-            RichText::new(tr(
-                zh,
-                "记录反映检测时的情况，不代表网址现在的状态。",
-                "Results reflect the time of each check, not the current state.",
-            ))
-            .small()
-            .weak(),
-        );
-        let Some(db) = db else {
-            self.invalidate();
+        if attached {
+            ui.label(
+                RichText::new(tr(
+                    zh,
+                    "记录反映检测时的情况，不代表网址现在的状态。",
+                    "Results reflect the time of each check, not the current state.",
+                ))
+                .small()
+                .weak(),
+            );
+        }
+        if !attached {
             ui.add_space(8.0);
             ui.label(tr(
                 zh,
@@ -157,9 +174,7 @@ impl RecordsPanel {
                 "No saved checks are attached. Load check results to see their history here.",
             ));
             return;
-        };
-        self.request(db, url);
-        self.poll();
+        }
         let loading = self.loaded != self.desired;
         if loading {
             ui.horizontal(|ui| {
@@ -174,8 +189,8 @@ impl RecordsPanel {
                 ui.visuals().warn_fg_color,
                 tr(
                     zh,
-                    "记录未能刷新。当前书签和清理决定没有改变。",
-                    "Could not refresh history. Bookmarks and review decisions are unchanged.",
+                    "记录暂时无法读取。请重试；书签和清理决定没有改变。",
+                    "Could not read history. Retry to read it again. Bookmarks and review decisions are unchanged.",
                 ),
             );
             if self.page.is_some() {
@@ -199,6 +214,7 @@ impl RecordsPanel {
                     .clicked()
             {
                 self.change_page(offset.saturating_sub(PAGE_SIZE));
+                ui.ctx().request_repaint();
             }
             return;
         };
@@ -206,20 +222,40 @@ impl RecordsPanel {
             ui.add_space(6.0);
             ui.weak(tr(zh, "未找到批次分组，按独立检查展示。每条记录内可能有多种检测方式。", "No batch groups were found. Showing saved checks, each of which may use several verifiers."));
         }
+        let offset = self.desired.as_ref().map_or(0, |request| request.offset);
         if page.records.is_empty() {
             ui.add_space(8.0);
-            ui.label(tr(
-                zh,
-                "这个网址还没有已保存的记录。不代表链接失效。",
-                "No saved records for this URL. This does not mean it is dead.",
-            ));
+            ui.label(if offset > 0 {
+                tr(
+                    zh,
+                    "没有更早的记录，可返回查看较新记录。",
+                    "No earlier records. Go back to newer records.",
+                )
+            } else {
+                tr(
+                    zh,
+                    "这个网址还没有已保存的记录。不代表链接失效。",
+                    "No saved records for this URL. This does not mean it is dead.",
+                )
+            });
         }
+        let mut previous_day = None;
         for record in &page.records {
+            let day = record_day(record.recorded_at.as_deref());
+            if day != previous_day {
+                if let Some(day) = &day {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(day).small().strong());
+                }
+                previous_day = day;
+            }
             ui.add_space(8.0);
             ui.push_id(url, |ui| show_record(ui, record, zh, developer));
             ui.separator();
         }
-        let offset = self.desired.as_ref().map_or(0, |request| request.offset);
+        if offset == 0 && !page.has_more {
+            return;
+        }
         let mut page_offset = None;
         ui.horizontal(|ui| {
             if ui
@@ -248,18 +284,26 @@ impl RecordsPanel {
         });
         if let Some(offset) = page_offset {
             self.change_page(offset);
+            ui.ctx().request_repaint();
         }
     }
 }
 
 fn time_label(value: Option<&str>, zh: bool) -> String {
+    formatted_time_label(value, zh, "%Y/%m/%d  %H:%M")
+}
+
+fn record_day(value: Option<&str>) -> Option<String> {
+    value
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|time| time.with_timezone(&Local).format("%Y/%m/%d").to_string())
+}
+
+fn formatted_time_label(value: Option<&str>, zh: bool, format: &str) -> String {
     match value {
         Some(value) => DateTime::parse_from_rfc3339(value)
             .map(|time| {
-                let mut label = time
-                    .with_timezone(&Local)
-                    .format("%Y/%m/%d  %H:%M")
-                    .to_string();
+                let mut label = time.with_timezone(&Local).format(format).to_string();
                 if time.with_timezone(&chrono::Utc) > chrono::Utc::now() {
                     label.push_str(tr(zh, "（时间需核对）", " (check time)"));
                 }
@@ -341,7 +385,7 @@ fn show_record(
     zh: bool,
     developer: bool,
 ) -> egui::Response {
-    let mut date = time_label(record.recorded_at.as_deref(), zh);
+    let mut date = formatted_time_label(record.recorded_at.as_deref(), zh, "%H:%M");
     if record.scope.as_deref() == Some("site") {
         date.push_str(tr(zh, "  站点预检", "  Site preflight"));
     }
@@ -549,6 +593,148 @@ mod tests {
             raw: vec![serde_json::json!({"scan_id": "internal-record-should-stay-hidden"})],
             conflicting: false,
         }
+    }
+
+    fn panel_with_records(records: Vec<HistoryRecord>, offset: usize) -> RecordsPanel {
+        let request = Request {
+            db: PathBuf::from("synthetic-not-opened.sqlite"),
+            url: "https://synthetic.example.test".into(),
+            offset,
+            generation: 1,
+        };
+        RecordsPanel {
+            desired: Some(request.clone()),
+            loaded: Some(request),
+            page: Some(HistoryPage {
+                records,
+                legacy: false,
+                has_more: false,
+            }),
+            generation: 1,
+            ..Default::default()
+        }
+    }
+
+    fn panel_text(panel: &mut RecordsPanel, attached: bool, zh: bool, dark: bool) -> Vec<String> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        ctx.set_visuals(if dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        });
+        let db = attached.then(|| panel.desired.as_ref().unwrap().db.clone());
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| panel.show(ui, db.clone(), "https://synthetic.example.test", zh, false),
+        );
+        output.textures_delta.clear();
+        output
+            .platform_output
+            .accesskit_update
+            .unwrap()
+            .nodes
+            .into_iter()
+            .flat_map(|(_, node)| {
+                [
+                    node.value().map(str::to_owned),
+                    node.label().map(str::to_owned),
+                ]
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn single_page_and_unattached_history_hide_unusable_controls() {
+        for zh in [false, true] {
+            for dark in [false, true] {
+                let mut panel = panel_with_records(vec![record()], 0);
+                let text = panel_text(&mut panel, true, zh, dark);
+                assert!(
+                    !text.iter().any(|value| value == tr(zh, "较新记录", "Newer")
+                        || value == tr(zh, "更早记录", "Older")),
+                    "{text:?}"
+                );
+                let text = panel_text(&mut panel, false, zh, dark);
+                assert!(
+                    !text.iter().any(|value| value == tr(zh, "刷新", "Refresh")),
+                    "{text:?}"
+                );
+                assert!(text.iter().any(|value| value.contains(tr(
+                    zh,
+                    "还没有关联",
+                    "No saved checks are attached"
+                ))));
+            }
+        }
+    }
+
+    #[test]
+    fn empty_later_page_is_not_presented_as_no_history_for_the_url() {
+        let mut panel = panel_with_records(vec![], PAGE_SIZE);
+        let text = panel_text(&mut panel, true, false, false);
+        assert!(
+            text.iter()
+                .any(|value| value.contains("No earlier records")),
+            "{text:?}"
+        );
+        assert!(text.iter().any(|value| value == "Newer"));
+        assert!(!text
+            .iter()
+            .any(|value| value.contains("No saved records for this URL")));
+    }
+
+    #[test]
+    fn failed_history_read_offers_retry_without_exposing_raw_error_or_losing_records() {
+        for keep_page in [false, true] {
+            let mut panel = panel_with_records(vec![record()], 0);
+            if !keep_page {
+                panel.page = None;
+            }
+            panel.error = Some("private-internal-database-error".into());
+            let text = panel_text(&mut panel, true, false, true);
+            assert!(text.iter().any(|value| value == "Retry"), "{text:?}");
+            assert!(text
+                .iter()
+                .any(|value| value.contains("Could not read history")));
+            assert!(!text.iter().any(|value| value.contains("private-internal")));
+            assert_eq!(
+                text.iter()
+                    .any(|value| value.contains("last successfully loaded")),
+                keep_page
+            );
+        }
+    }
+
+    #[test]
+    fn history_groups_same_local_day_without_discarding_record_rows() {
+        let first = record();
+        let mut second = record();
+        second.id = "another-synthetic-record".into();
+        second.recorded_at = Some("2026-10-28T20:12:00-04:00".into());
+        let mut panel = panel_with_records(vec![first, second], 0);
+        let text = panel_text(&mut panel, true, false, false);
+        assert_eq!(
+            text.iter()
+                .filter(|value| value.starts_with("2026/") && !value.contains('\n'))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            1,
+            "{text:?}"
+        );
+        assert_eq!(
+            text.iter()
+                .filter(|value| value.contains("Reused result"))
+                .count(),
+            2
+        );
     }
 
     #[test]

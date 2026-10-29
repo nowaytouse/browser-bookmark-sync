@@ -118,6 +118,8 @@ Health results are historical evidence, not a live guarantee; results older than
 
 The inspector's **Check history** is a compact, newest-first list for the exact selected URL in the attached database. Each saved scan is one expandable row with its date, plain-language result and new-check/reuse label; verifier outputs are nested details, not additional checks. Same-URL bookmark occurrences stay in the same record. Older databases without scan membership show explicitly labeled independent-check history instead of invented batches. Pages contain up to 12 records, with Newer/Older navigation. Refresh reads local records only, never a website, and cannot change a keep/remove decision. Loading is isolated from the main workspace; switching bookmarks discards late results, and a failed refresh keeps the last successful page visible with a warning. Missing, malformed and future times stay marked rather than being replaced with the current time. Raw identifiers and JSON are available only in developer details. The inspector uses the existing native themes and font preferences, and floats rather than squeezing the bookmark list in a narrow window.
 
+History is grouped by local calendar date, with the recorded time on each row. A single first page has no inactive navigation bar, and an unattached database has no nonfunctional Refresh button. Empty later pages say there are no earlier records rather than claiming the URL has no history. Read failures offer Retry and preserve the last successful page when available; retry and page changes explicitly keep the native view repainting until the requested read settles.
+
 ## Safety boundaries
 
 - No browser-profile write-back or cloud sync.
