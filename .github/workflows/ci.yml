@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, codex/bookmark-health-hardening]
   pull_request:
-    branches: [master, main]
+    branches: [master, main, codex/bookmark-health-hardening]
 
 env:
   CARGO_TERM_COLOR: always
