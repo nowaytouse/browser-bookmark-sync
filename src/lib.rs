@@ -28,6 +28,8 @@ pub mod gui;
 pub mod hackbrowserdata;
 pub mod health;
 #[cfg(feature = "native-gui")]
+pub(crate) mod native_brand;
+#[cfg(feature = "native-gui")]
 pub mod native_groups;
 #[cfg(feature = "native-gui")]
 pub mod native_history;

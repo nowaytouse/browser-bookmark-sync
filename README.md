@@ -94,6 +94,10 @@ Automatic AI organization is not part of the current product. If a future releas
 
 ## Native desktop review GUI
 
+On macOS, run `bash packaging/macos/build-app.sh` from the repository to build and maintain **`./Bookmark Cleaner.app`**. This is the single delivery location; later builds replace that app after validation, and refuse replacement while it is running. Build intermediates and temporary packaging files stay under `target/`; no copy is installed into Downloads or Applications. The script uses the already-selected Rust toolchain and locked dependencies, and does not install or upgrade tools. The bundle is locally ad-hoc signed, not notarized.
+
+The workspace uses aligned, vertically scrolling rows for title, health, cleanup decision, URL, folder and last check. A visible horizontal scrollbar keeps columns readable in smaller windows. Health lights also have text labels: green for current reachable evidence, red for current confirmed-dead evidence, amber for uncertainty or evidence requiring a recheck, and gray for untested links. A health light is not a cleanup decision: unchosen entries remain kept, and explicit Keep/Remove changes remain undoable. The supplied Bookmark Bsync 3D logo is embedded locally and reused in the toolbar, welcome screen, About page and macOS app icon.
+
 ```bash
 cargo run --features native-gui --bin bookmark-review -- \
   --input ./bookmarks-cleaned.html \

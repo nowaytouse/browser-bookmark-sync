@@ -1,5 +1,6 @@
 # Rust
 /target/
+/Bookmark Cleaner.app/
 **/*.rs.bk
 rustc-ice-*.txt
 *.pdb

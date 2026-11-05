@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
 mod records;
+mod table;
 
 fn tr(zh: bool, chinese: &'static str, english: &'static str) -> &'static str {
     if zh {
@@ -48,30 +49,7 @@ fn count_verdicts(doc: &ReviewDocument) -> BTreeMap<String, usize> {
 }
 
 fn app_mark(ui: &mut egui::Ui, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let ink = ui.visuals().hyperlink_color;
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius::same(12),
-        ui.visuals().selection.bg_fill,
-    );
-    let at = |x: f32, y: f32| egui::pos2(rect.left() + x * size, rect.top() + y * size);
-    for polygon in [
-        vec![
-            at(0.30, 0.22),
-            at(0.70, 0.22),
-            at(0.70, 0.62),
-            at(0.30, 0.62),
-        ],
-        vec![at(0.30, 0.62), at(0.50, 0.62), at(0.30, 0.78)],
-        vec![at(0.50, 0.62), at(0.70, 0.62), at(0.70, 0.78)],
-    ] {
-        ui.painter().add(egui::epaint::PathShape::convex_polygon(
-            polygon,
-            ink,
-            egui::Stroke::NONE,
-        ));
-    }
+    let _ = crate::native_brand::app_mark(ui, size);
 }
 
 enum Event {
@@ -100,10 +78,12 @@ pub fn start(
     db: Option<PathBuf>,
     source_review: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    let icon = crate::native_brand::window_icon().map_err(anyhow::Error::msg)?;
     eframe::run_native(
         "Bookmark Cleaner",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
+                .with_icon(icon)
                 .with_inner_size([1180.0, 780.0])
                 .with_min_inner_size([800.0, 580.0]),
             ..Default::default()
@@ -327,6 +307,7 @@ struct ReviewApp {
     context: egui::Context,
     doc: Option<Arc<ReviewDocument>>,
     verdict_counts: BTreeMap<String, usize>,
+    confirmed_dead_candidates: Vec<usize>,
     db: Option<PathBuf>,
     source_review: Option<PathBuf>,
     import_directory: Option<tempfile::TempDir>,
@@ -382,6 +363,7 @@ impl Default for ReviewApp {
             context: egui::Context::default(),
             doc: None,
             verdict_counts: BTreeMap::new(),
+            confirmed_dead_candidates: Vec::new(),
             db: None,
             source_review: None,
             import_directory: None,
@@ -568,7 +550,23 @@ impl ReviewApp {
     fn set_document(&mut self, doc: ReviewDocument) {
         self.records.invalidate();
         self.verdict_counts = count_verdicts(&doc);
+        self.confirmed_dead_candidates = doc
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| (item.verdict == "confirmed_dead").then_some(index))
+            .collect();
         self.doc = Some(Arc::new(doc));
+    }
+
+    fn current_dead_count(&self, now: DateTime<Utc>) -> usize {
+        let Some(doc) = &self.doc else {
+            return 0;
+        };
+        self.confirmed_dead_candidates
+            .iter()
+            .filter(|&&index| table::is_current_dead(&doc.items[index], now))
+            .count()
     }
 
     fn accept_document(&mut self, doc: ReviewDocument, active_db: bool) {
@@ -1121,9 +1119,7 @@ impl eframe::App for ReviewApp {
             egui::CentralPanel::default()
                 .frame(egui::Frame::default().inner_margin(16))
                 .show(ui, |ui| {
-                    centered_content(ui, 1040.0 / self.preferences.text_scale, true, |ui| {
-                        ui.add_enabled_ui(!self.busy, |ui| self.list(ui));
-                    });
+                    ui.add_enabled_ui(!self.busy, |ui| self.list(ui));
                 });
         } else {
             egui::CentralPanel::default().show(ui, |ui| self.welcome(ui));
@@ -1153,7 +1149,7 @@ impl ReviewApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let zh = self.zh();
         ui.horizontal(|ui| {
-            app_mark(ui, 20.0);
+            app_mark(ui, 36.0);
             ui.label(
                 RichText::new(tr(zh, "书签清理", "Bookmark Cleaner"))
                     .size(18.0)
@@ -1244,7 +1240,7 @@ impl ReviewApp {
                 ui.vertical_centered(|ui| {
                     ui.set_max_width(760.0);
                     ui.add_space((ui.available_height() * 0.12).clamp(20.0, 64.0));
-                    app_mark(ui, 44.0);
+                app_mark(ui, 64.0);
                     ui.add_space(14.0);
                     ui.label(
                         RichText::new(tr(zh, "给收藏夹留一点空间。", "Make room for the links that matter."))
@@ -1387,11 +1383,7 @@ impl ReviewApp {
             return;
         };
         let untested = self.verdict_counts.get("untested").copied().unwrap_or(0);
-        let dead = self
-            .verdict_counts
-            .get("confirmed_dead")
-            .copied()
-            .unwrap_or(0);
+        let dead = self.current_dead_count(Utc::now());
         let removed = self.removed();
         let retained = doc.items.len().saturating_sub(removed);
         egui::Frame::default()
@@ -1399,15 +1391,25 @@ impl ReviewApp {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
-                    for (label, value, primary) in [
-                        (tr(zh, "导出将保留", "To retain"), retained, true),
-                        (tr(zh, "已导入", "Imported"), doc.items.len(), false),
+                    for (label, value, primary, description) in [
+                        (tr(zh, "导出将保留", "To retain"), retained, true, ""),
+                        (tr(zh, "已导入", "Imported"), doc.items.len(), false, ""),
                         (
                             tr(zh, "精确重复", "Exact duplicates"),
                             self.duplicates.len(),
                             false,
+                            "",
                         ),
-                        (tr(zh, "确认失效", "Confirmed dead"), dead, false),
+                        (
+                            tr(zh, "失效候选", "Dead candidates"),
+                            dead,
+                            false,
+                            tr(
+                                zh,
+                                "仅统计 24 小时内有效证据对应的失效候选，与表格红色标记一致；这不是移除数量，不会自动移除书签。",
+                                "Counts only dead candidates with valid evidence from the last 24 hours, matching red table marks; this is not a removal count and does not automatically remove bookmarks.",
+                            ),
+                        ),
                     ] {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
@@ -1421,7 +1423,11 @@ impl ReviewApp {
                                         ui.visuals().text_color()
                                     }),
                             )
-                            .on_hover_text(format!("{label}: {value}"));
+                            .on_hover_text(if description.is_empty() {
+                                format!("{label}: {value}")
+                            } else {
+                                format!("{label}: {value}\n{description}")
+                            });
                             if primary {
                                 ui.label(label);
                             } else {
@@ -1837,19 +1843,28 @@ impl ReviewApp {
         let row_height = if self.preferences.developer_mode {
             68.0
         } else if self.preferences.density == DisplayDensity::Compact {
-            36.0
-        } else {
             40.0
+        } else {
+            44.0
         };
         let mut action = None;
         let mut collapse_changed = false;
-        // Virtual rows must fit their children, including the second URL line.
+        // Only visible rows are rendered; the header shares their horizontal offset.
         ui.spacing_mut().interact_size.y = 20.0;
         ui.spacing_mut().button_padding.y = 0.0;
-        egui::ScrollArea::vertical()
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        let content_width = table::WIDTH.max(ui.available_width());
+        let now = Utc::now();
+        let (_, header_rect) = ui.allocate_space(egui::vec2(ui.available_width(), 32.0));
+        ui.separator();
+        let mut content_left = header_rect.left();
+        let body = egui::ScrollArea::both()
             .id_salt("bookmarks")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .auto_shrink([false, false])
             .show_rows(ui, row_height, self.group_rows.len(), |ui, range| {
+                content_left = ui.max_rect().left();
+                ui.set_min_width(content_width);
                 for row in range {
                     let id = match self.group_rows[row] {
                         GroupRow::Bookmark(id) => id,
@@ -1884,222 +1899,185 @@ impl ReviewApp {
                                             egui::vec2(ui.available_width(), row_height),
                                             egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
-                                            let group_selection = ui
-                                                .add_sized(
-                                                    [24.0, 24.0],
-                                                    egui::Checkbox::new(&mut all, "")
-                                                    .indeterminate(partial),
-                                                )
-                                                .accessible_name(format!(
-                                                    "{}: {label}",
-                                                    tr(zh, "选择分组", "Select group")
-                                                ));
-                                            if group_selection.changed() {
-                                                native_groups::select_group(
-                                                    &mut self.selected,
-                                                    &group.ids,
-                                                    all,
-                                                );
-                                            }
-                                            let collapsed =
-                                                self.collapsed_groups.contains(&group.key);
-                                            let toggle = tr(
-                                                zh,
-                                                if collapsed { "展开" } else { "收起" },
-                                                if collapsed { "Expand" } else { "Collapse" },
-                                            );
-                                            let collapse_clicked = {
-                                                let response = ui.add_sized(
-                                                    [24.0, 24.0],
-                                                    egui::Button::new("").frame(false),
-                                                );
-                                                let center = response.rect.center();
-                                                let points = if collapsed {
-                                                    [
-                                                        center + egui::vec2(-2.0, -5.0),
-                                                        center + egui::vec2(3.0, 0.0),
-                                                        center + egui::vec2(-2.0, 5.0),
-                                                    ]
-                                                } else {
-                                                    [
-                                                        center + egui::vec2(-5.0, -2.0),
-                                                        center + egui::vec2(0.0, 3.0),
-                                                        center + egui::vec2(5.0, -2.0),
-                                                    ]
-                                                };
-                                                let stroke = egui::Stroke::new(
-                                                    1.5,
-                                                    ui.style().interact(&response).fg_stroke.color,
-                                                );
-                                                ui.painter().line_segment([points[0], points[1]], stroke);
-                                                ui.painter().line_segment([points[1], points[2]], stroke);
-                                                response
-                                                    .accessible_name(format!("{toggle}: {label}"))
-                                                    .on_hover_text(toggle)
-                                                    .clicked()
-                                            };
-                                            if collapse_clicked {
-                                                collapse_changed = true;
-                                                if collapsed {
-                                                    self.collapsed_groups.remove(&group.key);
-                                                } else {
-                                                    self.collapsed_groups.insert(group.key.clone());
+                                                let group_selection = ui
+                                                    .add_sized(
+                                                        [24.0, 24.0],
+                                                        egui::Checkbox::new(&mut all, "")
+                                                            .indeterminate(partial),
+                                                    )
+                                                    .accessible_name(format!(
+                                                        "{}: {label}",
+                                                        tr(zh, "选择分组", "Select group")
+                                                    ));
+                                                if group_selection.changed() {
+                                                    native_groups::select_group(
+                                                        &mut self.selected,
+                                                        &group.ids,
+                                                        all,
+                                                    );
                                                 }
-                                            }
-                                            ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(label).strong().size(13.0),
-                                                )
-                                                .truncate(),
-                                            );
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    ui.weak(if count == 0 {
-                                                        format!("{} {}", group.ids.len(), tr(zh, "项", "items"))
+                                                let collapsed =
+                                                    self.collapsed_groups.contains(&group.key);
+                                                let toggle = tr(
+                                                    zh,
+                                                    if collapsed { "展开" } else { "收起" },
+                                                    if collapsed { "Expand" } else { "Collapse" },
+                                                );
+                                                let collapse_clicked = {
+                                                    let response = ui.add_sized(
+                                                        [24.0, 24.0],
+                                                        egui::Button::new("").frame(false),
+                                                    );
+                                                    let center = response.rect.center();
+                                                    let points = if collapsed {
+                                                        [
+                                                            center + egui::vec2(-2.0, -5.0),
+                                                            center + egui::vec2(3.0, 0.0),
+                                                            center + egui::vec2(-2.0, 5.0),
+                                                        ]
                                                     } else {
-                                                        format!("{} {} · {} {}", group.ids.len(), tr(zh, "项", "items"), tr(zh, "已选", "selected"), count)
-                                                    });
-                                                },
-                                            );
-                                        });
+                                                        [
+                                                            center + egui::vec2(-5.0, -2.0),
+                                                            center + egui::vec2(0.0, 3.0),
+                                                            center + egui::vec2(5.0, -2.0),
+                                                        ]
+                                                    };
+                                                    let stroke = egui::Stroke::new(
+                                                        1.5,
+                                                        ui.style()
+                                                            .interact(&response)
+                                                            .fg_stroke
+                                                            .color,
+                                                    );
+                                                    ui.painter().line_segment(
+                                                        [points[0], points[1]],
+                                                        stroke,
+                                                    );
+                                                    ui.painter().line_segment(
+                                                        [points[1], points[2]],
+                                                        stroke,
+                                                    );
+                                                    response
+                                                        .accessible_name(format!(
+                                                            "{toggle}: {label}"
+                                                        ))
+                                                        .on_hover_text(toggle)
+                                                        .clicked()
+                                                };
+                                                if collapse_clicked {
+                                                    collapse_changed = true;
+                                                    if collapsed {
+                                                        self.collapsed_groups.remove(&group.key);
+                                                    } else {
+                                                        self.collapsed_groups
+                                                            .insert(group.key.clone());
+                                                    }
+                                                }
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(label).strong().size(13.0),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.weak(if count == 0 {
+                                                            format!(
+                                                                "{} {}",
+                                                                group.ids.len(),
+                                                                tr(zh, "项", "items")
+                                                            )
+                                                        } else {
+                                                            format!(
+                                                                "{} {} · {} {}",
+                                                                group.ids.len(),
+                                                                tr(zh, "项", "items"),
+                                                                tr(zh, "已选", "selected"),
+                                                                count
+                                                            )
+                                                        });
+                                                    },
+                                                );
+                                            },
+                                        );
                                     });
                                 });
                             continue;
                         }
                     };
                     let item = &doc.items[id];
-                    ui.push_id(id, |ui| {
-                        let highlighted = self.focused == Some(id) || self.selected.contains(&id);
-                        egui::Frame::default()
-                            .fill(if highlighted {
-                                ui.visuals().selection.bg_fill
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            })
-                            .corner_radius(egui::CornerRadius::same(5))
-                            .inner_margin(egui::Margin::symmetric(8, 0))
-                            .show(ui, |ui| {
-                                    ui.set_min_height(row_height);
-                                ui.horizontal(|ui| {
-                                    let title = if item.title.is_empty() {
-                                        tr(zh, "无标题", "Untitled")
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(content_width, row_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_height(row_height);
+                            ui.push_id(id, |ui| {
+                                let was_selected = self.selected.contains(&id);
+                                let mut selected = was_selected;
+                                let before = self.decisions.get(&id).copied();
+                                let mut decision = before;
+                                let response = table::row(
+                                    ui,
+                                    item,
+                                    &mut selected,
+                                    &mut decision,
+                                    self.focused == Some(id),
+                                    self.duplicates.contains(&id),
+                                    zh,
+                                    self.preferences.developer_mode,
+                                    if self.preferences.developer_mode {
+                                        40.0
                                     } else {
-                                        &item.title
-                                    };
-                                    let mut selected = self.selected.contains(&id);
-                                    let selection_response = ui
-                                        .add_sized([24.0, 24.0], egui::Checkbox::new(&mut selected, ""))
-                                        .on_hover_text(tr(zh, "选择此书签", "Select this bookmark"))
-                                        .accessible_name(format!(
-                                            "{}: {title}",
-                                            tr(zh, "选择书签", "Select bookmark")
-                                        ));
-                                    if selection_response.changed() {
-                                        if selected {
-                                            self.selected.insert(id);
-                                        } else {
-                                            self.selected.remove(&id);
-                                        }
+                                        row_height
+                                    },
+                                    now,
+                                );
+                                if response.clicked() {
+                                    self.focused = Some(id);
+                                }
+                                if selected != was_selected {
+                                    if selected {
+                                        self.selected.insert(id);
+                                    } else {
+                                        self.selected.remove(&id);
                                     }
-                                    if self.grouping != GroupChoice::None {
-                                        ui.add_space(32.0);
-                                    }
-                                    let status_width = 120.0;
-                                    let text_width = (ui.available_width()
-                                        - status_width
-                                        - ui.spacing().item_spacing.x)
-                                        .max(40.0);
-                                    let response = ui.allocate_ui_with_layout(
-                                        egui::vec2(text_width, if self.preferences.developer_mode { 44.0 } else { row_height }),
-                                        egui::Layout::top_down(egui::Align::Min),
-                                        |ui| {
-                                            ui.spacing_mut().item_spacing.y = 2.0;
-                                        let response = ui.add_sized(
-                                            [text_width, 20.0],
-                                            egui::Button::new("")
-                                                .left_text(title)
-                                                .selected(self.focused == Some(id))
-                                                .frame(false)
-                                                .truncate(),
-                                        )
-                                        .on_hover_text(title);
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(&item.url).small().weak(),
-                                            )
-                                            .halign(egui::Align::Min)
-                                            .truncate(),
-                                        )
-                                        .on_hover_text(&item.url);
-                                        response
-                                    });
-                                    if response.inner.clicked() {
-                                        self.focused = Some(id);
-                                    }
-                                    response.inner.context_menu(|ui| {
-                                        for (label, decision) in [
-                                            (tr(zh, "保留", "Keep"), Some(Decision::Keep)),
-                                            (tr(zh, "移除", "Remove"), Some(Decision::Remove)),
-                                            (tr(zh, "重置", "Reset"), None),
-                                        ] {
-                                            let button = ui.button(label);
-                                            let button =
-                                                if matches!(decision, Some(Decision::Remove)) {
-                                                    button.on_hover_text(tr(
-                                                        zh,
-                                                        "只标记为不导出，可撤销；原 HTML 不会改变。",
-                                                        "Marks the item out of the export and can be undone; the original HTML is unchanged.",
-                                                    ))
-                                                } else {
-                                                    button
-                                                };
-                                            if button.clicked() {
-                                                action = Some((id, decision));
-                                                ui.close();
-                                            }
-                                        }
-                                    });
-                                    let (status, color) = match self.decisions.get(&id) {
-                                        Some(Decision::Remove) => (
-                                            tr(zh, "待移除", "Remove"),
-                                            ui.visuals().error_fg_color,
-                                        ),
-                                        Some(Decision::Keep) => (
-                                            tr(zh, "保留", "Keep"),
-                                            ui.visuals().hyperlink_color,
-                                        ),
-                                        None => {
-                                            let color = match item.verdict.as_str() {
-                                                "confirmed_dead" => ui.visuals().error_fg_color,
-                                                "needs_review" | "temporary_failure" => {
-                                                    ui.visuals().warn_fg_color
-                                                }
-                                                "live" | "recovered" => ui.visuals().hyperlink_color,
-                                                _ => ui.visuals().weak_text_color(),
-                                            };
-                                            (verdict_label(zh, &item.verdict), color)
-                                        }
-                                    };
-                                    ui.add_sized(
-                                        [status_width, 20.0],
-                                        egui::Label::new(RichText::new(status).small().strong().color(color))
-                                            .halign(egui::Align::Max)
-                                            .truncate(),
-                                    )
-                                    .on_hover_text(status);
-                                });
+                                }
+                                if decision != before {
+                                    action = Some((id, decision));
+                                }
                                 if self.preferences.developer_mode {
-                                    ui.monospace(format!(
+                                    let flags = format!(
                                         "[id={id}; verdict={}; decision={:?}]",
                                         item.verdict,
                                         self.decisions.get(&id)
-                                    ));
+                                    );
+                                    ui.add(
+                                        egui::Label::new(RichText::new(&flags).monospace())
+                                            .truncate(),
+                                    )
+                                    .on_hover_text(flags);
                                 }
                             });
-                    });
+                        },
+                    );
                 }
             });
+        let mut header_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("bookmark-column-header")
+                .max_rect(egui::Rect::from_min_size(
+                    egui::pos2(content_left, header_rect.top()),
+                    egui::vec2(content_width, header_rect.height()),
+                )),
+        );
+        header_ui.set_clip_rect(ui.clip_rect().intersect(egui::Rect::from_min_max(
+            header_rect.min,
+            egui::pos2(body.inner_rect.right(), header_rect.bottom()),
+        )));
+        table::header(&mut header_ui, zh);
         if collapse_changed {
             self.group_rows =
                 native_groups::rows(&self.groups, &self.collapsed_groups, self.grouping);
@@ -3176,6 +3154,54 @@ mod tests {
     }
 
     #[test]
+    fn current_dead_count_excludes_stale_future_and_invalid_evidence_without_changing_filters() {
+        let now = DateTime::parse_from_rfc3339("2026-11-05T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut doc = fixture();
+        let timestamps = [
+            Some((now - chrono::Duration::hours(1)).to_rfc3339()),
+            Some((now - chrono::Duration::hours(25)).to_rfc3339()),
+            Some((now + chrono::Duration::hours(1)).to_rfc3339()),
+            Some("invalid-time".into()),
+            None,
+        ];
+        assert_eq!(doc.items.len(), timestamps.len());
+        for (item, timestamp) in doc.items.iter_mut().zip(timestamps) {
+            item.verdict = "confirmed_dead".into();
+            item.last_checked_at = timestamp;
+        }
+        let mut app = ReviewApp::default();
+        app.accept_document(doc, false);
+        assert_eq!(app.verdict_counts.get("confirmed_dead"), Some(&5));
+        assert_eq!(app.confirmed_dead_candidates, [0, 1, 2, 3, 4]);
+        assert_eq!(app.current_dead_count(now), 1);
+        assert_eq!(app.current_dead_count(now + chrono::Duration::hours(1)), 2);
+        assert_eq!(app.current_dead_count(now + chrono::Duration::hours(23)), 2);
+        assert_eq!(
+            app.current_dead_count(
+                now + chrono::Duration::hours(23) + chrono::Duration::nanoseconds(1)
+            ),
+            1
+        );
+        assert_eq!(app.current_dead_count(now + chrono::Duration::hours(26)), 0);
+        app.verdict_filter = "confirmed_dead".into();
+        app.filter_dirty = true;
+        app.rebuild_filter();
+        assert_eq!(app.filtered, [0, 1, 2, 3, 4]);
+        app.decide(vec![0], Some(Decision::Keep));
+        app.undo();
+        assert_eq!(app.current_dead_count(now), 1);
+        assert!(app
+            .doc
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.verdict == "confirmed_dead"));
+    }
+
+    #[test]
     fn synthetic_large_document_counter_benchmark() {
         let mut doc = fixture();
         let item = doc.items[0].clone();
@@ -3241,11 +3267,13 @@ mod tests {
 
     #[test]
     fn virtual_bookmark_rows_match_the_scroll_stride() {
-        for (density, developer_mode, row_height) in [
-            (DisplayDensity::Compact, false, 36.0),
-            (DisplayDensity::Comfortable, false, 40.0),
-            (DisplayDensity::Compact, true, 68.0),
-            (DisplayDensity::Comfortable, true, 68.0),
+        for (density, developer_mode, row_height, long_verdict) in [
+            (DisplayDensity::Compact, false, 40.0, false),
+            (DisplayDensity::Comfortable, false, 44.0, false),
+            (DisplayDensity::Compact, true, 68.0, false),
+            (DisplayDensity::Comfortable, true, 68.0, false),
+            (DisplayDensity::Compact, true, 68.0, true),
+            (DisplayDensity::Comfortable, true, 68.0, true),
         ] {
             let ctx = egui::Context::default();
             ctx.enable_accesskit();
@@ -3256,6 +3284,12 @@ mod tests {
             app.preferences.language = LanguageChoice::English;
             app.preferences.grouping = GroupChoice::None;
             app.load_demo().unwrap();
+            if long_verdict {
+                let doc = Arc::get_mut(app.doc.as_mut().unwrap()).unwrap();
+                for item in &mut doc.items {
+                    item.verdict = "unrecognized-stored-verdict-".repeat(64);
+                }
+            }
             app.rebuild_filter();
             apply_style(&ctx, app.preferences);
             let mut output = ctx.run_ui(
