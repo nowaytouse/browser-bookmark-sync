@@ -2433,6 +2433,7 @@ fn chromium_epoch() -> chrono::DateTime<chrono::Utc> {
         )
 }
 
+#[cfg(target_os = "macos")]
 fn safari_epoch() -> chrono::DateTime<chrono::Utc> {
     chrono::NaiveDate::from_ymd_opt(2001, 1, 1)
         .and_then(|d| d.and_hms_opt(0, 0, 0))
@@ -2548,6 +2549,7 @@ fn write_chromium_history(db_path: &Path, items: &[HistoryItem]) -> Result<()> {
 }
 
 // Safari history helper functions
+#[cfg(target_os = "macos")]
 fn read_safari_history(db_path: &Path, days: Option<i32>) -> Result<Vec<HistoryItem>> {
     use rusqlite::{Connection, OpenFlags};
 
@@ -2611,6 +2613,7 @@ fn read_safari_history(db_path: &Path, days: Option<i32>) -> Result<Vec<HistoryI
     Ok(history)
 }
 
+#[cfg(target_os = "macos")]
 fn write_safari_history(db_path: &Path, items: &[HistoryItem]) -> Result<()> {
     use rusqlite::Connection;
 
