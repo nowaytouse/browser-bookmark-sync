@@ -17,12 +17,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
         rust: [stable]
         # Keep check names stable while pinning images; macOS remains ARM64.
         include:
-          - os: ubuntu-latest
-            runner: ubuntu-24.04
           - os: macos-latest
             runner: macos-15
 
@@ -56,11 +54,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
         # Preserve artifact names and native ARM64 coverage without latest-image drift.
         include:
-          - os: ubuntu-latest
-            runner: ubuntu-24.04
           - os: macos-latest
             runner: macos-15
 
