@@ -135,6 +135,7 @@ async fn api_export(
         wrap_folder: Some("📁镜像文件夹".to_string()),
         no_wrap: false,
         all_profiles: req.all_profiles,
+        exclude_onion: true,
     };
 
     match crate::sync::SyncEngine::new() {

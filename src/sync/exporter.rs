@@ -1,10 +1,10 @@
 //! Netscape HTML & Sidecar Audit Report Exporter
 
+use crate::browser_utils::atomic_write_file;
 use crate::data_types::canonical::{CanonicalBookmark, DuplicateCsvRecord, DuplicateGroupReport};
 use crate::data_types::manifest::{InventoryReport, RunManifest};
 use crate::data_types::models::{BookmarkNode, BookmarkTree};
 use anyhow::Result;
-use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
@@ -13,23 +13,22 @@ pub struct ReportExporter;
 impl ReportExporter {
     /// Export high-fidelity original HTML preserving complete tree hierarchy
     pub fn export_original_html(tree: &BookmarkTree, output_path: &Path) -> Result<()> {
-        let mut file = File::create(output_path)?;
-        writeln!(file, "<!DOCTYPE NETSCAPE-Bookmark-file-1>")?;
+        let mut output = Vec::new();
+        writeln!(output, "<!DOCTYPE NETSCAPE-Bookmark-file-1>")?;
         writeln!(
-            file,
+            output,
             "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">"
         )?;
-        writeln!(file, "<TITLE>Original Bookmarks Backup</TITLE>")?;
-        writeln!(file, "<H1>Bookmarks Backup (Original Preserved)</H1>")?;
-        writeln!(file, "<DL><p>")?;
+        writeln!(output, "<TITLE>Original Bookmarks Backup</TITLE>")?;
+        writeln!(output, "<H1>Bookmarks Backup (Original Preserved)</H1>")?;
+        writeln!(output, "<DL><p>")?;
 
         for root in &tree.roots {
-            Self::write_node_html(&mut file, root, 1)?;
+            Self::write_node_html(&mut output, root, 1)?;
         }
 
-        writeln!(file, "</DL><p>")?;
-        file.flush()?;
-        Ok(())
+        writeln!(output, "</DL><p>")?;
+        atomic_write_file(output_path, &output)
     }
 
     /// Export deduplicated Netscape HTML with canonical primary bookmarks
@@ -37,29 +36,28 @@ impl ReportExporter {
         canonicals: &[CanonicalBookmark],
         output_path: &Path,
     ) -> Result<()> {
-        let mut file = File::create(output_path)?;
-        writeln!(file, "<!DOCTYPE NETSCAPE-Bookmark-file-1>")?;
+        let mut output = Vec::new();
+        writeln!(output, "<!DOCTYPE NETSCAPE-Bookmark-file-1>")?;
         writeln!(
-            file,
+            output,
             "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">"
         )?;
-        writeln!(file, "<TITLE>Deduplicated Bookmarks</TITLE>")?;
-        writeln!(file, "<H1>Bookmarks (Exact URL Deduplicated)</H1>")?;
-        writeln!(file, "<DL><p>")?;
+        writeln!(output, "<TITLE>Deduplicated Bookmarks</TITLE>")?;
+        writeln!(output, "<H1>Bookmarks (Exact URL Deduplicated)</H1>")?;
+        writeln!(output, "<DL><p>")?;
 
         for canonical in canonicals {
             let primary = &canonical.primary;
             writeln!(
-                file,
+                output,
                 "    <DT><A HREF=\"{}\">{}</A>",
                 Self::html_escape(&primary.raw_url),
                 Self::html_escape(&primary.title)
             )?;
         }
 
-        writeln!(file, "</DL><p>")?;
-        file.flush()?;
-        Ok(())
+        writeln!(output, "</DL><p>")?;
+        atomic_write_file(output_path, &output)
     }
 
     /// Write all sidecar JSON/CSV audit reports
@@ -75,50 +73,50 @@ impl ReportExporter {
         // 1. inventory.json
         let inv_path = output_dir.join("inventory.json");
         let inv_json = serde_json::to_string_pretty(inventory)?;
-        std::fs::write(inv_path, inv_json)?;
+        atomic_write_file(&inv_path, inv_json.as_bytes())?;
 
         // 2. duplicates.json
         let dup_json_path = output_dir.join("duplicates.json");
         let dup_json = serde_json::to_string_pretty(reports)?;
-        std::fs::write(dup_json_path, dup_json)?;
+        atomic_write_file(&dup_json_path, dup_json.as_bytes())?;
 
         // 3. duplicates.csv
         let dup_csv_path = output_dir.join("duplicates.csv");
-        let mut csv_file = File::create(dup_csv_path)?;
+        let mut csv_output = Vec::new();
         writeln!(
-            csv_file,
+            csv_output,
             "group_id,exact_url,action,browser,profile,root,folder_path,title,date_added,date_modified,original_position,selection_reason"
         )?;
 
         for r in csv_records {
             writeln!(
-                csv_file,
-                "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},\"{}\"",
-                r.group_id,
+                csv_output,
+                "{},{},{},{},{},{},{},{},{},{},{},{}",
+                Self::csv_escape(&r.group_id),
                 Self::csv_escape(&r.exact_url),
-                r.action,
-                r.browser,
-                r.profile,
-                r.root,
+                Self::csv_escape(&r.action),
+                Self::csv_escape(&r.browser),
+                Self::csv_escape(&r.profile),
+                Self::csv_escape(&r.root),
                 Self::csv_escape(&r.folder_path),
                 Self::csv_escape(&r.title),
-                r.date_added,
-                r.date_modified,
-                r.original_position,
-                r.selection_reason
+                Self::csv_escape(&r.date_added),
+                Self::csv_escape(&r.date_modified),
+                Self::csv_escape(&r.original_position.to_string()),
+                Self::csv_escape(&r.selection_reason)
             )?;
         }
-        csv_file.flush()?;
+        atomic_write_file(&dup_csv_path, &csv_output)?;
 
         // 4. run-manifest.json
         let manifest_path = output_dir.join("run-manifest.json");
         let manifest_json = serde_json::to_string_pretty(manifest)?;
-        std::fs::write(manifest_path, manifest_json)?;
+        atomic_write_file(&manifest_path, manifest_json.as_bytes())?;
 
         // 5. SUMMARY-REPORT.md (Comprehensive natural English report)
         let summary_md_path = output_dir.join("SUMMARY-REPORT.md");
         let summary_content = Self::generate_english_summary_markdown(inventory, manifest);
-        std::fs::write(summary_md_path, summary_content)?;
+        atomic_write_file(&summary_md_path, summary_content.as_bytes())?;
 
         Ok(())
     }
@@ -197,7 +195,7 @@ impl ReportExporter {
 
         report.push_str("\n## 3. Deduplication Policy & Tie-Breaking Rules\n\n");
         report.push_str(
-            "The deduplication engine performed **exact URL matching** (`raw_url.trim()`).\n",
+            "The deduplication engine performed **byte-exact URL matching** (`raw_url`).\n",
         );
         report.push_str("For each set of duplicate bookmark occurrences pointing to the exact same URL, a single **Primary Canonical Bookmark** was selected based on the following deterministic tie-breaking priority:\n\n");
         report.push_str("1. **Preferred Browser Source**: User-configured or default browser authority priority.\n");
@@ -232,7 +230,7 @@ impl ReportExporter {
         report
     }
 
-    fn write_node_html(file: &mut File, node: &BookmarkNode, indent: usize) -> Result<()> {
+    fn write_node_html<W: Write>(file: &mut W, node: &BookmarkNode, indent: usize) -> Result<()> {
         let indent_str = "    ".repeat(indent);
         match node {
             BookmarkNode::Folder(f) => {
@@ -272,6 +270,19 @@ impl ReportExporter {
     }
 
     fn csv_escape(s: &str) -> String {
-        s.replace('"', "\"\"")
+        format!("\"{}\"", s.replace('"', "\"\""))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReportExporter;
+
+    #[test]
+    fn csv_escape_quotes_special_fields() {
+        assert_eq!(
+            ReportExporter::csv_escape("profile, \"work\"\n"),
+            "\"profile, \"\"work\"\"\n\""
+        );
     }
 }

@@ -22,6 +22,9 @@ pub struct InventoryReport {
 pub struct BrowserInstallationSummary {
     pub installation: BrowserInstallation,
     pub profiles: Vec<BrowserProfileSummary>,
+    /// Error encountered while enumerating this installation, if any.
+    #[serde(default)]
+    pub discovery_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +33,12 @@ pub struct BrowserProfileSummary {
     pub bookmark_count: usize,
     pub folder_count: usize,
     pub snapshot_path: Option<PathBuf>,
+    /// Whether the profile was snapshotted and parsed successfully.
+    #[serde(default)]
+    pub read_success: bool,
+    /// A reportable reason when the profile could not be read.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Execution manifest capturing parameters, hashes, output paths, and invariants

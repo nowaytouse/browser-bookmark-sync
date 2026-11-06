@@ -110,7 +110,7 @@ impl FirefoxSyncAPIClient {
                         "读取 Firefox Sync 端点错误响应内容失败: {}，将记录占位状态",
                         e
                     );
-                    format!("[无法读取响应内容: {}]", e)
+                    format!("[无法读取响应内容: {e}]")
                 }
             };
             bail!("Failed to get sync endpoint: {status} - {body}");
@@ -263,7 +263,7 @@ impl FirefoxSyncAPIClient {
                             "读取 Firefox Sync 上传错误响应内容失败: {}，将记录占位状态",
                             e
                         );
-                        format!("[无法读取响应内容: {}]", e)
+                        format!("[无法读取响应内容: {e}]")
                     }
                 };
                 bail!("Failed to upload bookmarks: {status} - {body}");

@@ -6,7 +6,7 @@
 //!
 //! Key is derived from Keychain password using PBKDF2-HMAC-SHA1
 
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
 use anyhow::{anyhow, Result};
 use std::process::Command;
 
@@ -97,9 +97,9 @@ pub fn decrypt_chromium_data(key: &[u8], encrypted: &[u8]) -> Result<String> {
     let mut buf = ciphertext.to_vec();
 
     // Try AES-128-CBC decryption
-    match Aes128CbcDec::new(key.into(), &CHROMIUM_MAC_IV.into())
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
-    {
+    let decryptor = Aes128CbcDec::new_from_slices(key, &CHROMIUM_MAC_IV)
+        .map_err(|_| anyhow!("Invalid AES-128 key length: {}", key.len()))?;
+    match decryptor.decrypt_padded::<Pkcs7>(&mut buf) {
         Ok(decrypted) => {
             // Filter out non-printable characters that might be padding artifacts
             let clean: Vec<u8> = decrypted
@@ -144,5 +144,29 @@ mod tests {
     fn test_derive_key() {
         let key = derive_chromium_key("test_password").unwrap();
         assert_eq!(key.len(), 16);
+    }
+
+    #[test]
+    fn decrypts_known_chromium_cbc_ciphertext() {
+        let mut encrypted = b"v10".to_vec();
+        encrypted.extend_from_slice(&[
+            0x90, 0x47, 0x3c, 0xe3, 0xa1, 0xc9, 0x43, 0x7c, 0x5f, 0x7b, 0xb5, 0xf2, 0x7d, 0xb0,
+            0xdf, 0xea, 0x5f, 0xe6, 0x08, 0x9d, 0xfb, 0xee, 0x01, 0xe9, 0x53, 0x4a, 0x38, 0xa9,
+            0xef, 0x72, 0xad, 0xac,
+        ]);
+
+        assert_eq!(
+            decrypt_chromium_data(&[0x42; 16], &encrypted).unwrap(),
+            "chromium compatibility test"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_aes_key_lengths_without_panicking() {
+        let encrypted = [b"v10".as_slice(), &[0u8; 16]].concat();
+        for length in [0, 15, 17, 32] {
+            let error = decrypt_chromium_data(&vec![0; length], &encrypted).unwrap_err();
+            assert!(error.to_string().contains("Invalid AES-128 key length"));
+        }
     }
 }

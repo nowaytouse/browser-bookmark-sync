@@ -1,0 +1,23 @@
+{
+  "version": "1",
+  "domains": [
+    "youtube.com",
+    "google.com",
+    "github.com",
+    "bing.com",
+    "baidu.com",
+    "wikipedia.org",
+    "apple.com",
+    "microsoft.com",
+    "amazon.com",
+    "reddit.com",
+    "x.com",
+    "twitter.com",
+    "facebook.com",
+    "instagram.com",
+    "tiktok.com",
+    "bilibili.com",
+    "weibo.com",
+    "zhihu.com"
+  ]
+}

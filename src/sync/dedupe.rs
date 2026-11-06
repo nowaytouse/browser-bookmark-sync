@@ -27,10 +27,10 @@ impl DedupeEngine {
 
         let total_raw = occurrences.len();
 
-        // Group occurrences strictly by raw_url.trim()
+        // Exact means byte-for-byte equality; do not silently normalize user data.
         let mut url_groups: HashMap<String, Vec<BookmarkOccurrence>> = HashMap::new();
         for occ in occurrences {
-            let key = occ.raw_url.trim().to_string();
+            let key = occ.raw_url.clone();
             url_groups.entry(key).or_default().push(occ);
         }
 
@@ -203,12 +203,19 @@ impl DedupeEngine {
                     .iter()
                     .position(|s| current_best.source.browser.to_string().contains(s));
 
-                if let (Some(cp), Some(bp)) = (cand_p, best_p) {
-                    if cp < bp {
+                match (cand_p, best_p) {
+                    (Some(cp), Some(bp)) if cp < bp => {
                         best_idx = i;
                         reasons = vec![SelectionReason::PreferredSource];
                         continue;
                     }
+                    (Some(_), None) => {
+                        best_idx = i;
+                        reasons = vec![SelectionReason::PreferredSource];
+                        continue;
+                    }
+                    (None, Some(_)) => continue,
+                    _ => {}
                 }
             }
 
@@ -246,6 +253,22 @@ impl DedupeEngine {
                     reasons = vec![SelectionReason::EarliestDateAdded];
                     continue;
                 }
+            }
+
+            // Stable final tie-breaker independent of input traversal order.
+            let stable_key = |item: &BookmarkOccurrence| {
+                (
+                    item.source.browser.to_string(),
+                    item.source.browser_channel.clone(),
+                    item.source.profile_id.clone(),
+                    item.folder_path.clone(),
+                    item.original_position,
+                    item.id.clone(),
+                )
+            };
+            if stable_key(candidate) < stable_key(current_best) {
+                best_idx = i;
+                reasons = vec![SelectionReason::DeterministicFallback];
             }
         }
 
@@ -317,5 +340,46 @@ mod tests {
             "Chromium(Chrome)"
         );
         assert_eq!(example_canonical.duplicates.len(), 1);
+    }
+
+    #[test]
+    fn primary_selection_honors_priority_and_is_order_independent() {
+        let mut brave = make_sample_occurrence("https://example.com", "Same", "Brave");
+        let mut chrome = make_sample_occurrence("https://example.com", "Same", "Chrome");
+        brave.id = "b".into();
+        chrome.id = "a".into();
+        chrome.date_added = brave.date_added;
+        chrome.date_modified = brave.date_modified;
+
+        let forward = vec![brave.clone(), chrome.clone()];
+        let reverse = vec![chrome.clone(), brave.clone()];
+        let (preferred, _) = DedupeEngine::select_primary_index(&forward, &["Chrome".into()]);
+        assert_eq!(forward[preferred].id, "a");
+
+        let (forward_index, _) = DedupeEngine::select_primary_index(&forward, &[]);
+        let (reverse_index, _) = DedupeEngine::select_primary_index(&reverse, &[]);
+        assert_eq!(forward[forward_index].id, reverse[reverse_index].id);
+    }
+
+    #[test]
+    fn exact_dedupe_does_not_merge_whitespace_distinct_urls() {
+        let tree = BookmarkTree {
+            sources: vec![],
+            roots: vec![
+                BookmarkNode::Bookmark(make_sample_occurrence(
+                    "https://example.com",
+                    "plain",
+                    "Chrome",
+                )),
+                BookmarkNode::Bookmark(make_sample_occurrence(
+                    " https://example.com",
+                    "leading-space",
+                    "Chrome",
+                )),
+            ],
+            harvested_at: Utc::now(),
+        };
+        let (canonicals, _, _, raw, duplicates) = DedupeEngine::deduplicate_tree(&tree, &[]);
+        assert_eq!((raw, canonicals.len(), duplicates), (2, 2, 0));
     }
 }

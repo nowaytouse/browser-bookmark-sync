@@ -1,57 +1,296 @@
 //!
 //! 通过代理和直连双网络验证收藏夹URL的有效性。
 //! 判断逻辑：任一网络成功即有效，双网络都失败才判定为无效。
+//! DNS 解析策略：中国域名 → 阿里云 DoH，国际域名 → Cloudflare 1.1.1.1 `DoH`
+//!
+//! 死链判断五维度：
+//!   1. DNS无法解析（域名不存在）→ Dead
+//!   2. 真实无法访问（ECONNREFUSED 服务器主动拒绝）→ Dead
+//!   3. 明确错误码（404 Not Found / 410 Gone）→ Dead
+//!   4. 本地网络/代理IO错误（超时/本地故障）→ Uncertain（本地原因，不判死链）
+//!   5. 服务器暂时维护（5xx / 503）→ Uncertain（存疑保留）
 
+use crate::health::security::{is_ip_allowed, validate_url_security, SecurityCheckResult};
 use anyhow::Result;
+use hickory_resolver::{
+    config::{NameServerConfig, ResolverConfig, ResolverOpts, CLOUDFLARE},
+    net::runtime::TokioRuntimeProvider,
+    TokioResolver,
+};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 use tracing::{debug, info};
 
+// ─────────────────────────────────────────────────────────────
+// 智能 DoH DNS 路由解析器
+// CN 域名 → 阿里云 DoH (dns.alidns.com / 223.5.5.5)
+// 国际域名 → Cloudflare DoH (1.1.1.1 / 1.0.0.1)
+// ─────────────────────────────────────────────────────────────
+
+/// 中国大陆 TLD 与常用域名后缀
+const CN_TLDS: &[&str] = &[
+    ".cn", ".com.cn", ".net.cn", ".org.cn", ".gov.cn", ".edu.cn", ".mil.cn", ".ac.cn", ".ah.cn",
+    ".bj.cn", ".cq.cn", ".fj.cn", ".gd.cn", ".gs.cn", ".gz.cn", ".gx.cn", ".ha.cn", ".hb.cn",
+    ".he.cn", ".hi.cn", ".hk.cn", ".hl.cn", ".hn.cn", ".jl.cn", ".js.cn", ".jx.cn", ".ln.cn",
+    ".mo.cn", ".nm.cn", ".nx.cn", ".qh.cn", ".sc.cn", ".sd.cn", ".sh.cn", ".sn.cn", ".sx.cn",
+    ".tj.cn", ".tw.cn", ".xj.cn", ".xz.cn", ".yn.cn", ".zj.cn",
+];
+
+/// 中国大陆主要互联网服务商的主域名（二级域名归属）
+const CN_APEX_DOMAINS: &[&str] = &[
+    "baidu.com",
+    "qq.com",
+    "taobao.com",
+    "tmall.com",
+    "jd.com",
+    "weibo.com",
+    "sina.com",
+    "163.com",
+    "126.com",
+    "sohu.com",
+    "youku.com",
+    "iqiyi.com",
+    "bilibili.com",
+    "zhihu.com",
+    "douban.com",
+    "toutiao.com",
+    "bytedance.com",
+    "aliyun.com",
+    "alibaba.com",
+    "aliexpress.com",
+    "alipay.com",
+    "wechat.com",
+    "weixin.qq.com",
+    "csdn.net",
+    "cnblogs.com",
+    "jianshu.com",
+    "douyin.com",
+    "kuaishou.com",
+    "pinduoduo.com",
+    "meituan.com",
+    "dianping.com",
+    "58.com",
+    "anjuke.com",
+    "ganji.com",
+    "360.cn",
+    "qihu.com",
+    "sogou.com",
+    "so.com",
+    "soso.com",
+    "huawei.com",
+    "xiaomi.com",
+    "oppo.com",
+    "vivo.com",
+    "lenovo.com",
+    "haier.com",
+    "mi.com",
+    "netease.com",
+    "tencent.com",
+    "ifeng.com",
+    "xinhuanet.com",
+    "people.com.cn",
+    "cctv.com",
+    "chinadaily.com.cn",
+    "pku.edu.cn",
+    "tsinghua.edu.cn",
+    "gov.cn",
+];
+
+/// 判断 hostname 是否属于中国大陆域名
+fn is_cn_domain(host: &str) -> bool {
+    let host = host.to_lowercase();
+    // 检查 CN TLD
+    for tld in CN_TLDS {
+        if host.ends_with(tld) || host == tld.trim_start_matches('.') {
+            return true;
+        }
+    }
+    // 检查中国大陆主流顶级域名
+    for apex in CN_APEX_DOMAINS {
+        if host == *apex || host.ends_with(&format!(".{apex}")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 智能 `DoH` DNS 解析器
+/// - CN 域名 → 阿里云 `DoH` (dns.alidns.com / 223.5.5.5)
+/// - 国际域名 → Cloudflare `DoH` (1.1.1.1 / 1.0.0.1)
+#[derive(Clone)]
+struct SmartDohResolver {
+    cn_resolver: Arc<TokioResolver>,
+    global_resolver: Arc<TokioResolver>,
+}
+
+fn validate_resolved_ips(ips: &[IpAddr], allow_private: bool) -> Result<(), String> {
+    for ip in ips {
+        is_ip_allowed(*ip, allow_private)?;
+    }
+    Ok(())
+}
+
+impl SmartDohResolver {
+    fn build() -> Result<Self> {
+        // 阿里云 DoH: https://dns.alidns.com/dns-query
+        let cn_resolver = {
+            let ali_ns1 = NameServerConfig::https(
+                "223.5.5.5".parse::<IpAddr>()?,
+                Arc::from("dns.alidns.com"),
+                None,
+            );
+            let ali_ns2 = NameServerConfig::https(
+                "223.6.6.6".parse::<IpAddr>()?,
+                Arc::from("dns.alidns.com"),
+                None,
+            );
+            let cfg = ResolverConfig::from_parts(None, vec![], vec![ali_ns1, ali_ns2]);
+            let mut opts = ResolverOpts::default();
+            opts.timeout = Duration::from_secs(5);
+            opts.attempts = 2;
+            Arc::new(
+                TokioResolver::builder_with_config(cfg, TokioRuntimeProvider::default())
+                    .with_options(opts)
+                    .build()?,
+            )
+        };
+
+        // Cloudflare DoH: https://1.1.1.1/dns-query (使用内置 CLOUDFLARE 常量)
+        let global_resolver = {
+            let mut opts = ResolverOpts::default();
+            opts.timeout = Duration::from_secs(5);
+            opts.attempts = 2;
+            Arc::new(
+                TokioResolver::builder_with_config(
+                    ResolverConfig::https(&CLOUDFLARE),
+                    TokioRuntimeProvider::default(),
+                )
+                .with_options(opts)
+                .build()?,
+            )
+        };
+
+        Ok(Self {
+            cn_resolver,
+            global_resolver,
+        })
+    }
+}
+
+impl Resolve for SmartDohResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().trim_end_matches('.').to_string();
+        let cn_res = Arc::clone(&self.cn_resolver);
+        let global_res = Arc::clone(&self.global_resolver);
+        Box::pin(async move {
+            let resolver = if is_cn_domain(&host) {
+                debug!("[DNS] CN 域名 → 阿里云 DoH: {}", host);
+                cn_res
+            } else {
+                debug!("[DNS] 国际域名 → Cloudflare DoH: {}", host);
+                global_res
+            };
+            let lookup = resolver
+                .lookup_ip(host.as_str())
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+            let ips: Vec<IpAddr> = lookup.iter().collect();
+            if let Err(reason) = validate_resolved_ips(&ips, false) {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("DNS resolved to a blocked address: {reason}"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let addrs: Addrs = Box::new(
+                ips.into_iter()
+                    .map(|ip| SocketAddr::new(ip, 0))
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            );
+            Ok(addrs)
+        })
+    }
+}
+
 /// URL检查结果状态
+///
+/// 五维度死链判断分类：
+///   维度1 DNS无法解析          → `DnsResolutionFailed`  → 确认死链
+///   维度2 服务器主动拒绝连接    → `ConnectionRefused`    → 确认死链
+///   维度3 明确错误码(404/410)  → `NotFound` / Gone      → 确认死链
+///   维度4 本地网络/代理IO错误   → `LocalNetworkError`    → 存疑保留（本地原因）
+///   维度5 服务器暂时维护/拦截   → `ServerError等`        → 存疑保留
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ValidationStatus {
-    /// 有效 - 任一网络返回成功(HTTP 2xx)
+    /// 有效 - HTTP 2xx
     Valid,
-    /// 重定向 - HTTP 3xx
+    /// 重定向 - HTTP 3xx（跟随重定向后成功算 Valid）
     Redirected,
-    /// 需身份验证 - HTTP 401
-    AuthenticationRequired,
-    /// 防火墙/Bot拦截 - HTTP 403 / Cloudflare
-    ForbiddenOrBotBlocked,
-    /// 触发限流 - HTTP 429
-    RateLimited,
-    /// 资源未找到 - HTTP 404
+    /// 【确认死链-维度1】DNS 无法解析域名 - 域名不存在或已被注销
+    DnsResolutionFailed,
+    /// 【确认死链-维度2】服务器主动拒绝连接 (ECONNREFUSED) - 端口未监听或服务已停止
+    ConnectionRefused,
+    /// 【确认死链-维度3】资源明确不存在 - HTTP 404 Not Found
     NotFound,
-    /// 资源已被永久删除 - HTTP 410
+    /// 【确认死链-维度3】资源已永久删除 - HTTP 410 Gone
     Gone,
-    /// 服务器内部错误 - HTTP 5xx
-    ServerError,
-    /// DNS解析失败
-    DnsError,
-    /// TLS/SSL握手错误
-    TlsError,
-    /// 请求超时
+    /// 【存疑保留-维度4】本地网络/代理 IO 错误 - 超时/本地故障，非服务器问题
+    LocalNetworkError,
+    /// 【存疑保留-维度4】请求超时 - 可能是网络慢或服务器慢，非确认死链
     Timeout,
-    /// TCP连接错误
-    ConnectionError,
+    /// 【存疑保留-维度5】服务器暂时维护 - HTTP 502/503/504
+    ServiceUnavailable,
+    /// 【存疑保留-维度5】服务器内部错误 - HTTP 500/5xx
+    ServerError,
+    /// 【存疑保留】防火墙/Bot拦截 - HTTP 403 / Cloudflare WAF
+    ForbiddenOrBotBlocked,
+    /// 【存疑保留】触发限流 - HTTP 429
+    RateLimited,
+    /// 【存疑保留】需身份验证 - HTTP 401
+    AuthenticationRequired,
+    /// 【存疑保留】TLS/SSL握手错误 - 证书问题或协议不兼容
+    TlsError,
     /// 不支持的协议 Scheme
     UnsupportedScheme,
-    /// 不确定 - 单网络模式失败或超时
+    /// 不确定 - 其他无法分类的情况
     Uncertain,
-    /// 简单无效（保留兼容）
+    /// 简单无效（保留兼容旧代码）
     Invalid,
     /// 跳过 - 本地文件、javascript:等非HTTP URL
     Skipped,
 }
 
 impl ValidationStatus {
-    /// 绝不误删判断：仅确定性资源不存在 (Invalid/NotFound/Gone) 允许自动清除建议
+    /// 确认死链判断：
+    ///   - `DnsResolutionFailed`: DNS 无法解析，域名不存在 (维度1)
+    ///   - `ConnectionRefused`:   服务器主动拒绝，服务已停止 (维度2)
+    ///   - `NotFound`:            HTTP 404，资源不存在 (维度3)
+    ///   - Gone:                HTTP 410，资源已永久删除 (维度3)
+    ///   - Invalid:             双路确认失败（兼容旧逻辑）
+    ///
+    /// 以下不会删除：
+    ///   - Timeout / `LocalNetworkError`: 本地网络问题，不是服务器问题 (维度4)
+    ///   - `ServiceUnavailable` / `ServerError`: 服务器临时故障 (维度5)
+    ///   - `ForbiddenOrBotBlocked` / `RateLimited`: WAF/限流拦截，网站可能正常
     pub const fn should_auto_delete(&self) -> bool {
-        matches!(self, Self::Invalid | Self::NotFound | Self::Gone)
+        matches!(
+            self,
+            Self::DnsResolutionFailed
+                | Self::ConnectionRefused
+                | Self::NotFound
+                | Self::Gone
+                | Self::Invalid
+        )
     }
 
-    /// 根据 HTTP 状态码与结果分类
+    /// 根据 HTTP 状态码分类
     pub const fn classify_http_code(code: u16) -> Self {
         match code {
             200..=299 => Self::Valid,
@@ -61,34 +300,45 @@ impl ValidationStatus {
             404 => Self::NotFound,
             410 => Self::Gone,
             429 => Self::RateLimited,
+            502..=504 => Self::ServiceUnavailable,
             500..=599 => Self::ServerError,
             _ => Self::Uncertain,
         }
     }
 
-    /// 根据代理和直连结果判定最终状态
+    /// 根据代理和直连结果判定最终状态（五维度）
     pub fn determine(
         proxy_result: Option<&HttpResult>,
         direct_result: Option<&HttpResult>,
     ) -> Self {
+        // ── 维度4：本地网络/代理错误 ── 任意一方为本地错误则存疑保留（不判死链）
+        let proxy_local = proxy_result.is_some_and(|r| r.is_local_network_error);
+        let direct_local = direct_result.is_some_and(|r| r.is_local_network_error);
+        if proxy_local || direct_local {
+            return Self::LocalNetworkError;
+        }
+
+        // ── 成功判断 ── 任一路成功即有效
         let proxy_success = proxy_result.is_some_and(HttpResult::is_success);
         let direct_success = direct_result.is_some_and(HttpResult::is_success);
-
         if proxy_success || direct_success {
             return Self::Valid;
         }
 
+        // ── 维度5：WAF/限流/维护拦截 ── 存疑保留
         let proxy_blocked = proxy_result.is_some_and(HttpResult::is_blocked);
         let direct_blocked = direct_result.is_some_and(HttpResult::is_blocked);
-
         if proxy_blocked || direct_blocked {
             return Self::Uncertain;
         }
 
-        let proxy_failed = proxy_result.is_some_and(HttpResult::is_failure);
-        let direct_failed = direct_result.is_some_and(HttpResult::is_failure);
+        // ── 必须双方都有结果才可能确定死链（单网络失败一律视为 Uncertain）──
+        let (Some(proxy), Some(direct)) = (proxy_result, direct_result) else {
+            return Self::Uncertain;
+        };
 
-        if proxy_failed && direct_failed {
+        // ── 维度1/2/3：任何确认死链类型双路验证失败即认为死链 (Invalid) ──
+        if proxy.is_single_attempt_strong_failure() && direct.is_single_attempt_strong_failure() {
             return Self::Invalid;
         }
 
@@ -96,7 +346,7 @@ impl ValidationStatus {
     }
 }
 
-/// HTTP请求结果
+/// HTTP请求结果（含五维度错误分类标志）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpResult {
     /// HTTP状态码 (None表示连接失败)
@@ -105,8 +355,14 @@ pub struct HttpResult {
     pub error: Option<String>,
     /// 响应延迟(毫秒)
     pub latency_ms: u64,
-    /// 是否超时
+    /// [维度4] 是否超时（本地原因，不判死链）
     pub is_timeout: bool,
+    /// [维度1] DNS 解析失败（域名不存在）→ 确认死链
+    pub is_dns_error: bool,
+    /// [维度2] 服务器主动拒绝连接 ECONNREFUSED → 确认死链
+    pub is_connection_refused: bool,
+    /// [维度4] 本地网络/代理 IO 错误（非服务器原因）→ 存疑保留
+    pub is_local_network_error: bool,
 }
 
 impl HttpResult {
@@ -117,26 +373,74 @@ impl HttpResult {
             error: None,
             latency_ms,
             is_timeout: false,
+            is_dns_error: false,
+            is_connection_refused: false,
+            is_local_network_error: false,
         }
     }
 
-    /// 创建失败结果
-    pub const fn failure(error: String, latency_ms: u64) -> Self {
-        Self {
-            status_code: None,
-            error: Some(error),
-            latency_ms,
-            is_timeout: false,
-        }
-    }
-
-    /// 创建超时结果
+    /// 创建超时结果 [维度4]
     pub fn timeout(latency_ms: u64) -> Self {
         Self {
             status_code: None,
             error: Some("Request timeout".to_string()),
             latency_ms,
             is_timeout: true,
+            is_dns_error: false,
+            is_connection_refused: false,
+            is_local_network_error: false,
+        }
+    }
+
+    /// 创建 DNS 解析失败结果 [维度1]
+    pub const fn dns_error(error: String, latency_ms: u64) -> Self {
+        Self {
+            status_code: None,
+            error: Some(error),
+            latency_ms,
+            is_timeout: false,
+            is_dns_error: true,
+            is_connection_refused: false,
+            is_local_network_error: false,
+        }
+    }
+
+    /// 创建连接拒绝结果 [维度2]
+    pub const fn connection_refused(error: String, latency_ms: u64) -> Self {
+        Self {
+            status_code: None,
+            error: Some(error),
+            latency_ms,
+            is_timeout: false,
+            is_dns_error: false,
+            is_connection_refused: true,
+            is_local_network_error: false,
+        }
+    }
+
+    /// 创建本地网络/代理 IO 错误结果 [维度4]
+    pub const fn local_network_error(error: String, latency_ms: u64) -> Self {
+        Self {
+            status_code: None,
+            error: Some(error),
+            latency_ms,
+            is_timeout: false,
+            is_dns_error: false,
+            is_connection_refused: false,
+            is_local_network_error: true,
+        }
+    }
+
+    /// 创建通用失败结果（未分类）
+    pub const fn failure(error: String, latency_ms: u64) -> Self {
+        Self {
+            status_code: None,
+            error: Some(error),
+            latency_ms,
+            is_timeout: false,
+            is_dns_error: false,
+            is_connection_refused: false,
+            is_local_network_error: false,
         }
     }
 
@@ -148,48 +452,49 @@ impl HttpResult {
         }
     }
 
-    /// 判断是否失败 (仅 404/410 等明确的"不存在"状态码)
-    /// 403/503/429 等可能是 CF 验证、WAF 拦截、限流，不算确定性失败
-    pub fn is_failure(&self) -> bool {
-        if self.is_timeout {
-            return false; // 超时不算确定性失败
+    /// 判断是否是单轮明确资源不存在失败 [维度3]
+    /// 仅 404/410 等明确资源不存在的状态码才算确定性失败
+    /// 注意：DNS错误字符串、连接拒绝、451等一律为临时故障或存疑保留
+    pub const fn is_single_attempt_strong_failure(&self) -> bool {
+        if self.is_timeout
+            || self.is_local_network_error
+            || self.is_dns_error
+            || self.is_connection_refused
+        {
+            return false;
         }
         match self.status_code {
-            Some(code) => {
-                // 只有这些状态码才算"确定性失败"（资源真的不存在）
-                // 404 Not Found - 页面不存在
-                // 410 Gone - 资源已永久删除
-                // 451 Unavailable For Legal Reasons - 法律原因不可用
-                matches!(code, 404 | 410 | 451)
-            }
-            None => {
-                // 连接错误需要检查是否是 DNS 解析失败（域名不存在）
-                if let Some(ref err) = self.error {
-                    let err_lower = err.to_lowercase();
-                    // DNS 解析失败 = 域名不存在 = 确定性失败
-                    // 连接拒绝/重置 = 服务器问题 = 不确定
-                    err_lower.contains("dns")
-                        || err_lower.contains("no such host")
-                        || err_lower.contains("name or service not known")
-                        || err_lower.contains("getaddrinfo")
-                        || err_lower.contains("resolve")
-                } else {
-                    false
-                }
-            }
+            Some(code) => matches!(code, 404 | 410),
+            None => false,
         }
     }
 
-    /// 判断是否是"可能有效但被拦截"的状态码
-    /// 这些状态码通常是 CF 验证、WAF、限流等，浏览器可能可以正常访问
+    /// 保留兼容旧名称（旧 `is_confirmed_dead` 现由单轮检测 `is_single_attempt_strong_failure` 驱动）
+    pub fn is_confirmed_dead(&self) -> bool {
+        self.is_single_attempt_strong_failure()
+    }
+
+    /// 保留兼容旧 `is_failure` 接口
+    pub fn is_failure(&self) -> bool {
+        self.is_single_attempt_strong_failure()
+    }
+
+    /// 判断是否是"存疑保留"状态码 [维度5]
+    /// WAF/限流/CF拦截/服务器维护等，浏览器通常可以正常访问
     pub const fn is_blocked(&self) -> bool {
         match self.status_code {
             Some(code) => {
-                // 403 Forbidden - 可能是 CF 验证、WAF
-                // 429 Too Many Requests - 限流
-                // 503 Service Unavailable - CF 验证页面
+                // 401 需要认证
+                // 403 CF验证/WAF/防火墙
+                // 429 限流
+                // 451 法律方面原因受限，不得直接视为死链，应保护或审核
+                // 500 服务器内部错误
+                // 502/503/504 服务暂时不可用/维护
                 // 520-530 Cloudflare 特定错误
-                matches!(code, 403 | 429 | 503 | 520..=530)
+                matches!(
+                    code,
+                    401 | 403 | 429 | 451 | 500 | 502 | 503 | 504 | 520..=530
+                )
             }
             None => false,
         }
@@ -429,6 +734,25 @@ mod tests {
     }
 
     #[test]
+    fn popular_domains_and_lookalikes_are_not_skipped() {
+        assert_eq!(
+            UrlChecker::should_skip("https://github.com/org/deleted"),
+            None
+        );
+        assert_eq!(
+            UrlChecker::should_skip("https://github.com.evil.example/post"),
+            None
+        );
+    }
+
+    #[test]
+    fn doh_results_cannot_route_the_checker_into_private_networks() {
+        assert!(validate_resolved_ips(&["127.0.0.1".parse().unwrap()], false).is_err());
+        assert!(validate_resolved_ips(&["10.0.0.1".parse().unwrap()], false).is_err());
+        assert!(validate_resolved_ips(&["93.184.216.34".parse().unwrap()], false).is_ok());
+    }
+
+    #[test]
     fn test_check_report_consistency() {
         let results = vec![
             UrlCheckResult::from_results(
@@ -459,19 +783,34 @@ impl UrlChecker {
     /// 创建新的URL检查器
     pub fn new(config: CheckerConfig) -> Result<Self> {
         let timeout = Duration::from_secs(config.timeout_secs);
-        let connect_timeout = Duration::from_secs(10); // 连接超时固定10秒
+        let connect_timeout = Duration::from_secs(10);
 
-        // 创建直连客户端
-        let direct_client = Client::builder()
-            .timeout(timeout)
-            .connect_timeout(connect_timeout)
-            .pool_idle_timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(10)
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .build()?;
+        // 构建智能 DoH DNS 解析器（CN→阿里云, 国际→Cloudflare 1.1.1.1）
+        let doh_resolver = SmartDohResolver::build().ok();
+        if doh_resolver.is_some() {
+            info!("🌐 DNS: 智能 DoH 路由已启用 (CN→阿里云 223.5.5.5 | 国际→Cloudflare 1.1.1.1)");
+        } else {
+            info!("⚠️  DNS: DoH 初始化失败，回退至系统 DNS");
+        }
 
-        // 创建代理客户端 (如果配置了代理)
+        // 创建直连客户端（带 DoH 解析器）
+        let direct_client = {
+            let mut builder = Client::builder()
+                .timeout(timeout)
+                .connect_timeout(connect_timeout)
+                .pool_idle_timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(10)
+                .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+                // The legacy checker is report-only. Stopping at redirects avoids a second,
+                // unvalidated DNS target; the health engine owns safe per-hop following.
+                .redirect(reqwest::redirect::Policy::none());
+            if let Some(ref r) = doh_resolver {
+                builder = builder.dns_resolver(Arc::new(r.clone()));
+            }
+            builder.build()?
+        };
+
+        // 创建代理客户端（如果配置了代理，代理自带 DNS，不注入 DoH）
         let proxy_client = if let Some(ref proxy_url) = config.proxy_url {
             info!("🌐 配置代理: {}", proxy_url);
             let proxy = reqwest::Proxy::all(proxy_url)?;
@@ -485,11 +824,11 @@ impl UrlChecker {
                     .user_agent(
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                     )
-                    .redirect(reqwest::redirect::Policy::limited(5))
+                    .redirect(reqwest::redirect::Policy::none())
                     .build()?,
             )
         } else {
-            debug!("未配置代理，仅使用直连模式");
+            debug!("未配置代理，仅使用直连模式（DoH 已接管 DNS）");
             None
         };
 
@@ -534,32 +873,24 @@ impl UrlChecker {
         None
     }
 
-    /// 执行单个HTTP请求
-    /// 先尝试 HEAD 请求，如果返回 405 则回退到 GET 请求
+    /// 执行单个HTTP请求（带五维度错误分类）
+    /// 先尝试 HEAD，如果返回 405 则回退到 GET
     async fn do_request(client: &Client, url: &str) -> HttpResult {
         let start = std::time::Instant::now();
 
-        // 先尝试 HEAD 请求
         match client.head(url).send().await {
             Ok(response) => {
                 let status = response.status().as_u16();
                 let latency = start.elapsed().as_millis() as u64;
-
-                // 如果 HEAD 返回 405 (Method Not Allowed)，回退到 GET
                 if status == 405 {
                     debug!("HEAD 返回 405，回退到 GET: {}", url);
                     return Self::do_get_request(client, url, start).await;
                 }
-
                 HttpResult::success(status, latency)
             }
             Err(e) => {
                 let latency = start.elapsed().as_millis() as u64;
-                if e.is_timeout() {
-                    HttpResult::timeout(latency)
-                } else {
-                    HttpResult::failure(e.to_string(), latency)
-                }
+                Self::classify_request_error(e, latency)
             }
         }
     }
@@ -573,39 +904,137 @@ impl UrlChecker {
             }
             Err(e) => {
                 let latency = start.elapsed().as_millis() as u64;
-                if e.is_timeout() {
-                    HttpResult::timeout(latency)
-                } else {
-                    HttpResult::failure(e.to_string(), latency)
-                }
+                Self::classify_request_error(e, latency)
             }
         }
     }
 
-    /// 检查单个URL
-    pub async fn check_url(&self, url: &str) -> UrlCheckResult {
-        // 检查是否应该跳过
+    async fn check_url_with_clients(
+        url: &str,
+        proxy_client: Option<&Client>,
+        direct_client: &Client,
+        retry_count: u32,
+        allow_private_ips: bool,
+    ) -> UrlCheckResult {
+        if let SecurityCheckResult::Denied(reason) = validate_url_security(url, allow_private_ips) {
+            return UrlCheckResult::skipped(
+                url.to_string(),
+                &format!("Security blocked: {reason}"),
+            );
+        }
         if let Some(reason) = Self::should_skip(url) {
-            return UrlCheckResult::skipped(url.to_string(), reason);
+            if !(allow_private_ips && reason == "Local address") {
+                return UrlCheckResult::skipped(url.to_string(), reason);
+            }
         }
 
-        // 并行发起代理和直连请求
-        let (proxy_result, direct_result) = if let Some(ref proxy_client) = self.proxy_client {
-            let proxy_fut = Self::do_request(proxy_client, url);
-            let direct_fut = Self::do_request(&self.direct_client, url);
-
-            let (pr, dr) = tokio::join!(proxy_fut, direct_fut);
-            (Some(pr), Some(dr))
-        } else {
-            // 无代理，仅直连
-            let dr = Self::do_request(&self.direct_client, url).await;
-            (None, Some(dr))
+        let request_once = || async {
+            let (proxy_result, direct_result) = if let Some(proxy_client) = proxy_client {
+                let proxy_fut = Self::do_request(proxy_client, url);
+                let direct_fut = Self::do_request(direct_client, url);
+                let (pr, dr) = tokio::join!(proxy_fut, direct_fut);
+                (Some(pr), Some(dr))
+            } else {
+                (None, Some(Self::do_request(direct_client, url).await))
+            };
+            UrlCheckResult::from_results(url.to_string(), proxy_result, direct_result)
         };
 
-        UrlCheckResult::from_results(url.to_string(), proxy_result, direct_result)
+        let mut result = request_once().await;
+        let mut retries_left = retry_count;
+        while retries_left > 0
+            && !matches!(
+                result.status,
+                ValidationStatus::Valid | ValidationStatus::Redirected
+            )
+        {
+            retries_left -= 1;
+            result = request_once().await;
+        }
+        result
     }
 
-    /// 批量检查URL - 使用流式处理，分批执行避免资源耗尽
+    /// 将 reqwest 错误分类为五维度标志位
+    fn classify_request_error(e: reqwest::Error, latency_ms: u64) -> HttpResult {
+        let err_str = e.to_string();
+        let err_lower = err_str.to_lowercase();
+
+        // [维度4] 超时 → 本地原因，存疑保留
+        if e.is_timeout() {
+            return HttpResult::timeout(latency_ms);
+        }
+
+        // [维度1] DNS 解析失败 → 域名不存在，确认死链
+        if err_lower.contains("dns")
+            || err_lower.contains("no such host")
+            || err_lower.contains("name resolution")
+            || err_lower.contains("name or service not known")
+            || err_lower.contains("getaddrinfo")
+            || err_lower.contains("nodename nor servname")
+            || err_lower.contains("failed to lookup")
+            || err_lower.contains("could not resolve host")
+        {
+            return HttpResult::dns_error(err_str, latency_ms);
+        }
+
+        // [维度2] 服务器主动拒绝连接 → 服务已停止，确认死链
+        if err_lower.contains("connection refused")
+            || err_lower.contains("econnrefused")
+            || err_lower.contains("actively refused")
+        {
+            return HttpResult::connection_refused(err_str, latency_ms);
+        }
+
+        // [维度4] 本地网络/代理 IO 错误 → 存疑保留（非服务器问题）
+        // 包括：连接重置、代理错误、TLS握手失败、本地IO错误等
+        if e.is_connect()
+            || e.is_body()
+            || e.is_request()
+            || err_lower.contains("connection reset")
+            || err_lower.contains("econnreset")
+            || err_lower.contains("broken pipe")
+            || err_lower.contains("proxy")
+            || err_lower.contains("tls")
+            || err_lower.contains("ssl")
+            || err_lower.contains("certificate")
+            || err_lower.contains("handshake")
+        {
+            return HttpResult::local_network_error(err_str, latency_ms);
+        }
+
+        // 其他未分类错误
+        HttpResult::failure(err_str, latency_ms)
+    }
+
+    /// 检查单个URL
+    pub async fn check_url(&self, url: &str) -> UrlCheckResult {
+        Self::check_url_with_clients(
+            url,
+            self.proxy_client.as_ref(),
+            &self.direct_client,
+            self.config.retry_count,
+            false,
+        )
+        .await
+    }
+
+    /// 提取 URL 的主域名根地址 (e.g. "<https://www.youtube.com/watch?v=1>" -> "<https://www.youtube.com>")
+    /// 仅验证主层级域名，极大减少网络负载、防止被限流与 WAF 封禁，且免除具体页面内容变更导致的 404 误判
+    pub fn extract_domain_origin(url_str: &str) -> String {
+        if let Ok(parsed) = reqwest::Url::parse(url_str) {
+            if let Some(host) = parsed.host_str() {
+                let scheme = parsed.scheme();
+                let port_str = match parsed.port() {
+                    Some(p) => format!(":{p}"),
+                    None => String::new(),
+                };
+                return format!("{scheme}://{host}{port_str}");
+            }
+        }
+        url_str.to_string()
+    }
+
+    /// 批量检查URL - 采用【主层级域名去重校验】与【慢速防限流模式】，极度轻量且准确
     pub async fn check_batch<F>(
         &self,
         urls: Vec<String>,
@@ -615,37 +1044,158 @@ impl UrlChecker {
         F: Fn(usize, usize, &str),
     {
         use futures::stream::{self, StreamExt};
+        use std::collections::HashMap;
 
-        let total = urls.len();
+        let total_urls = urls.len();
         let concurrency = self.config.concurrency;
 
-        // 使用 buffer_unordered 流式处理，限制并发数
+        // 1. 按照“最主层次域名”去重汇总（例如所有 youtube.com 视频只测 https://www.youtube.com 一次）
+        let mut origin_map: HashMap<String, Vec<String>> = HashMap::new();
+        for url in &urls {
+            let origin = Self::extract_domain_origin(url);
+            origin_map.entry(origin).or_default().push(url.clone());
+        }
+        let unique_origins: Vec<String> = origin_map.keys().cloned().collect();
+        let total_origins = unique_origins.len();
+        let reduction_pct = if total_urls > 0 {
+            (total_urls.saturating_sub(total_origins)) * 100 / total_urls
+        } else {
+            0
+        };
+
+        let mut skipped_origins_count = 0;
+        for origin in &unique_origins {
+            if Self::should_skip(origin).is_some() {
+                skipped_origins_count += 1;
+            }
+        }
+        let to_check_count = total_origins.saturating_sub(skipped_origins_count);
+
+        info!(
+            "🌐 主层级域名去重校验启用: 原始 {} 条书签 -> {} 个独立主层级域名 (缩减 {}%, 其中 {} 个大站白名单豁免，实际仅网络检测 {} 个域名)",
+            total_urls, total_origins, reduction_pct, skipped_origins_count, to_check_count
+        );
+        info!(
+            "🐢 慢速防限流模式: 并发数 {}, 每个主域名附带 300ms~1000ms 防爬抖动延迟",
+            concurrency
+        );
+
+        // 2. 仅对独立的主层级域名进行网络与 DNS 校验
+        let origin_results_vec: Vec<(String, UrlCheckResult)> =
+            stream::iter(unique_origins.into_iter().enumerate())
+                .map(|(i, origin)| {
+                    let proxy_client = self.proxy_client.clone();
+                    let direct_client = self.direct_client.clone();
+                    let retry_count = self.config.retry_count;
+
+                    async move {
+                        let result = if let SecurityCheckResult::Denied(reason) =
+                            validate_url_security(&origin, false)
+                        {
+                            UrlCheckResult::skipped(
+                                origin.clone(),
+                                &format!("Security blocked: {reason}"),
+                            )
+                        } else if let Some(reason) = Self::should_skip(&origin) {
+                            UrlCheckResult::skipped(origin.clone(), reason)
+                        } else {
+                            let jitter_ms = 300 + ((i as u64 * 137) % 700);
+                            tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+                            Self::check_url_with_clients(
+                                &origin,
+                                proxy_client.as_ref(),
+                                &direct_client,
+                                retry_count,
+                                false,
+                            )
+                            .await
+                        };
+                        (i, origin, result)
+                    }
+                })
+                .buffer_unordered(concurrency)
+                .inspect(|(i, origin, _)| {
+                    progress_callback(*i + 1, total_origins, origin);
+                })
+                .map(|(_, origin, result)| (origin, result))
+                .collect()
+                .await;
+
+        let origin_results: HashMap<String, UrlCheckResult> =
+            origin_results_vec.into_iter().collect();
+
+        // 3. 将主域名的有效性结论完整映射回每一条原始书签 URL
+        urls.into_iter()
+            .map(|url| {
+                let origin = Self::extract_domain_origin(&url);
+                if let Some(res) = origin_results.get(&origin) {
+                    let mut mapped = res.clone();
+                    mapped.url = url;
+                    mapped
+                } else {
+                    UrlCheckResult::skipped(url, "未找到主域名检测结论")
+                }
+            })
+            .collect()
+    }
+
+    /// 深度网页内容有效性检测 (Content Validity Check)
+    /// 本功能为独立检测：前提是该网站主域名有效。
+    /// 专门检测全路径 URL（例如具体视频或具体博文），当主站可达但具体网页返回 404/410 时，判定为失效内容并果断清除；
+    /// 反爬、限流、5xx 或网络抖动等情况继续列入‘存疑保留’清单，绝不误删。
+    pub async fn check_batch_content<F>(
+        &self,
+        urls: Vec<String>,
+        progress_callback: F,
+    ) -> Vec<UrlCheckResult>
+    where
+        F: Fn(usize, usize, &str),
+    {
+        use futures::stream::{self, StreamExt};
+
+        let total_urls = urls.len();
+        let concurrency = self.config.concurrency;
+
+        info!(
+            "🎯 深度内容有效性检测启用: 共 {} 条书签将逐项检查完整路径 (前提：网站主域名有效；仅对返回真实 404 Not Found / 410 Gone 的内容判定失效清理)",
+            total_urls
+        );
+        info!(
+            "🐢 慢速防限流模式: 并发数 {}, 每个请求附带 300ms~1000ms 防爬抖动延迟",
+            concurrency
+        );
+
         let results: Vec<UrlCheckResult> = stream::iter(urls.into_iter().enumerate())
             .map(|(i, url)| {
                 let proxy_client = self.proxy_client.clone();
                 let direct_client = self.direct_client.clone();
+                let retry_count = self.config.retry_count;
 
                 async move {
-                    let result = if let Some(reason) = Self::should_skip(&url) {
+                    let result = if let SecurityCheckResult::Denied(reason) =
+                        validate_url_security(&url, false)
+                    {
+                        UrlCheckResult::skipped(url.clone(), &format!("Security blocked: {reason}"))
+                    } else if let Some(reason) = Self::should_skip(&url) {
                         UrlCheckResult::skipped(url.clone(), reason)
                     } else {
-                        let (proxy_result, direct_result) = if let Some(ref pc) = proxy_client {
-                            let proxy_fut = Self::do_request(pc, &url);
-                            let direct_fut = Self::do_request(&direct_client, &url);
-                            let (pr, dr) = tokio::join!(proxy_fut, direct_fut);
-                            (Some(pr), Some(dr))
-                        } else {
-                            let dr = Self::do_request(&direct_client, &url).await;
-                            (None, Some(dr))
-                        };
-                        UrlCheckResult::from_results(url.clone(), proxy_result, direct_result)
+                        let jitter_ms = 300 + ((i as u64 * 137) % 700);
+                        tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+                        Self::check_url_with_clients(
+                            &url,
+                            proxy_client.as_ref(),
+                            &direct_client,
+                            retry_count,
+                            false,
+                        )
+                        .await
                     };
                     (i, url, result)
                 }
             })
             .buffer_unordered(concurrency)
             .inspect(|(i, url, _)| {
-                progress_callback(*i + 1, total, url);
+                progress_callback(*i + 1, total_urls, url);
             })
             .map(|(_, _, result)| result)
             .collect()
@@ -666,6 +1216,55 @@ impl UrlChecker {
 }
 
 #[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn retries_transient_failure_until_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for (status, reason) in [(503, "Service Unavailable"), (200, "OK")] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = socket.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = Client::builder().build().unwrap();
+        let result = UrlChecker::check_url_with_clients(
+            &format!("http://{address}/"),
+            None,
+            &client,
+            1,
+            true,
+        )
+        .await;
+
+        assert_eq!(result.status, ValidationStatus::Valid);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn blocks_non_http_and_private_urls_before_request() {
+        let client = Client::new();
+        for url in [
+            "file:///etc/passwd",
+            "http://127.0.0.1:1",
+            "http://192.168.1.1",
+        ] {
+            let result = UrlChecker::check_url_with_clients(url, None, &client, 1, false).await;
+            assert_eq!(result.status, ValidationStatus::Skipped, "{url}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
@@ -682,12 +1281,11 @@ mod property_tests {
         ]
     }
 
-    // 确定性失败状态码（资源真的不存在）
+    // 确定性失败状态码（资源真的不存在，451为受限保护不可计入）
     fn definite_failure_status_code() -> impl Strategy<Value = u16> {
         prop_oneof![
             Just(404u16), // Not Found
             Just(410u16), // Gone
-            Just(451u16), // Unavailable For Legal Reasons
         ]
     }
 
@@ -769,15 +1367,15 @@ mod property_tests {
         }
 
         #[test]
-        fn prop_dns_error_is_invalid(
+        fn prop_dns_error_is_uncertain(
             latency1 in any_latency(),
             latency2 in any_latency(),
         ) {
-            // 双网络都 DNS 解析失败 -> 应该无效（域名不存在）
+            // 双网络都 DNS 解析失败（字符串形式） -> 应该为不确定（不可判定为确定死链）
             let proxy = HttpResult::failure("dns resolution failed".to_string(), latency1);
             let direct = HttpResult::failure("no such host".to_string(), latency2);
             let status = ValidationStatus::determine(Some(&proxy), Some(&direct));
-            prop_assert_eq!(status, ValidationStatus::Invalid);
+            prop_assert_eq!(status, ValidationStatus::Uncertain);
         }
     }
 

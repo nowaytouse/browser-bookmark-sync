@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - 2026-08-28
+
+### Changed
+
+- Hardened the core workflow to collect every discovered profile into isolated snapshots, preserve per-profile read errors, exclude `.onion` URLs before deduplication, and use byte-exact URL identity.
+- Split site-existence and deep-content probing, with public-suffix-aware site keys, same-day retries, structured DNS evidence, and conservative quarantine-only deletion.
+- Disabled legacy history/sensitive-export/organization/pipeline/GUI entry points from the supported CLI surface; GUI work remains deferred.
+- Added an auditable requirement matrix at `docs/project-requirements-status.md`.
+
 ## [1.4.1] - 2026-07-27
 
 ### Added
