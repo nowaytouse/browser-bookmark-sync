@@ -17,8 +17,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
+mod entry_copy;
 mod records;
 mod table;
+
+use entry_copy::entry_copy;
 
 fn tr(zh: bool, chinese: &'static str, english: &'static str) -> &'static str {
     if zh {
@@ -78,6 +81,8 @@ pub fn start(
     db: Option<PathBuf>,
     source_review: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    entry_copy(false)?;
+    entry_copy(true)?;
     let icon = crate::native_brand::window_icon().map_err(anyhow::Error::msg)?;
     eframe::run_native(
         "Bookmark Cleaner",
@@ -428,6 +433,7 @@ impl ReviewApp {
     }
 
     fn load_demo(&mut self) -> anyhow::Result<()> {
+        let copy = entry_copy(self.zh())?;
         let directory = tempfile::Builder::new()
             .prefix("bookmark-cleaner-demo-")
             .tempdir()?;
@@ -439,7 +445,7 @@ impl ReviewApp {
         let doc = ReviewDocument::load(&input, None, None)?;
         self.accept_document(doc, false);
         self.import_directory = Some(directory);
-        self.message = tr(self.zh(),"这是合成示例，不是你的浏览器数据。可练习分组、选择、撤销和导出；检测尚未运行。","This is synthetic sample data, not your browser data. Try grouping, selection, Undo and export. No checks have run.").into();
+        self.message = copy.sample_loaded.as_ref().into();
         Ok(())
     }
 
@@ -1148,13 +1154,16 @@ impl eframe::App for ReviewApp {
 impl ReviewApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let zh = self.zh();
+        let copy = match entry_copy(zh) {
+            Ok(copy) => copy,
+            Err(error) => {
+                ui.label(error.to_string());
+                return;
+            }
+        };
         ui.horizontal(|ui| {
             app_mark(ui, 36.0);
-            ui.label(
-                RichText::new(tr(zh, "书签清理", "Bookmark Cleaner"))
-                    .size(18.0)
-                    .strong(),
-            );
+            ui.label(RichText::new(copy.title.as_ref()).size(18.0).strong());
             if let Some(doc) = &self.doc {
                 ui.separator();
                 let filename_width =
@@ -1180,7 +1189,7 @@ impl ReviewApp {
                     .add_enabled(
                         self.doc.is_some() && !self.busy,
                         egui::Button::new(
-                            RichText::new(tr(zh, "导出 HTML…", "Export HTML…"))
+                            RichText::new(copy.export_html.as_ref())
                                 .strong()
                                 .color(egui::Color32::WHITE),
                         )
@@ -1192,7 +1201,7 @@ impl ReviewApp {
                     self.choose_export();
                 }
                 if ui
-                    .button(tr(zh, "设置", "Settings"))
+                    .button(copy.settings.as_ref())
                     .on_hover_text("⌘ ,")
                     .clicked()
                 {
@@ -1200,17 +1209,14 @@ impl ReviewApp {
                 }
                 if self.doc.is_some() {
                     ui.add_enabled_ui(!self.busy, |ui| {
-                        ui.menu_button(tr(zh, "导入", "Import"), |ui| {
-                            if ui.button(tr(zh, "HTML 文件…", "HTML file…")).clicked() {
+                        ui.menu_button(copy.import.as_ref(), |ui| {
+                            if ui.button(copy.html_file.as_ref()).clicked() {
                                 ui.close();
                                 if let Some(path) = pick_html() {
                                     self.request_load(path);
                                 }
                             }
-                            if ui
-                                .button(tr(zh, "自动导入浏览器", "Import from browsers"))
-                                .clicked()
-                            {
+                            if ui.button(copy.import_browsers.as_ref()).clicked() {
                                 ui.close();
                                 if self.dirty() {
                                     self.pending_browser_import = true;
@@ -1218,10 +1224,7 @@ impl ReviewApp {
                                     self.import_browsers();
                                 }
                             }
-                            if ui
-                                .button(tr(zh, "打开检测批次…", "Open check batch…"))
-                                .clicked()
-                            {
+                            if ui.button(copy.open_batch.as_ref()).clicked() {
                                 ui.close();
                                 self.open_batch();
                             }
@@ -1233,122 +1236,89 @@ impl ReviewApp {
     }
 
     fn welcome(&mut self, ui: &mut egui::Ui) {
-        let zh = self.zh();
+        let copy = match entry_copy(self.zh()) {
+            Ok(copy) => copy,
+            Err(error) => {
+                ui.label(error.to_string());
+                return;
+            }
+        };
         egui::ScrollArea::vertical()
             .id_salt("welcome-guide")
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.set_max_width(760.0);
                     ui.add_space((ui.available_height() * 0.12).clamp(20.0, 64.0));
-                app_mark(ui, 64.0);
+                    app_mark(ui, 64.0);
                     ui.add_space(14.0);
                     ui.label(
-                        RichText::new(tr(zh, "给收藏夹留一点空间。", "Make room for the links that matter."))
+                        RichText::new(copy.welcome_title.as_ref())
                             .size(28.0)
                             .strong(),
                     );
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new(tr(
-                            zh,
-                            "去重、复核失效链接，然后导出一份新的整合书签。",
-                            "Deduplicate, review dead links, and export a clean copy.",
-                        ))
-                        .size(15.0)
-                        .color(ui.visuals().weak_text_color()),
+                        RichText::new(copy.welcome_description.as_ref())
+                            .size(15.0)
+                            .color(ui.visuals().weak_text_color()),
                     );
                     ui.add_space(24.0);
                     egui::Frame::group(ui.style())
                         .inner_margin(egui::Margin::symmetric(20, 16))
                         .show(ui, |ui| {
-                            ui.with_layout(
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| {
-                                    ui.label(
-                                        RichText::new(tr(
-                                            zh,
-                                            "选择书签来源",
-                                            "Choose a bookmark source",
-                                        ))
-                                        .strong(),
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.label(RichText::new(copy.choose_source.as_ref()).strong());
+                                ui.add_space(12.0);
+                                let action_width = 180.0 + 205.0 + ui.spacing().item_spacing.x;
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.add_space(
+                                        (ui.available_width() - action_width).max(0.0) * 0.5,
                                     );
-                                    ui.add_space(12.0);
-                                    let action_width =
-                                        180.0 + 205.0 + ui.spacing().item_spacing.x;
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.add_space(
-                                            (ui.available_width() - action_width).max(0.0) * 0.5,
-                                        );
-                                        if ui
-                                            .add_enabled(
-                                                !self.busy,
-                                                egui::Button::new(
-                                                    RichText::new(tr(
-                                                        zh,
-                                                        "导入 HTML…",
-                                                        "Import HTML…",
-                                                    ))
+                                    if ui
+                                        .add_enabled(
+                                            !self.busy,
+                                            egui::Button::new(
+                                                RichText::new(copy.import_html.as_ref())
                                                     .strong()
                                                     .color(egui::Color32::WHITE),
-                                                )
-                                                .fill(action_fill(self.preferences.accent))
-                                                .stroke(egui::Stroke::NONE)
-                                                .min_size(egui::vec2(180.0, 42.0)),
                                             )
-                                            .clicked()
-                                        {
-                                            if let Some(path) = pick_html() {
-                                                self.request_load(path);
-                                            }
+                                            .fill(action_fill(self.preferences.accent))
+                                            .stroke(egui::Stroke::NONE)
+                                            .min_size(egui::vec2(180.0, 42.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        if let Some(path) = pick_html() {
+                                            self.request_load(path);
                                         }
-                                        if ui
-                                            .add_enabled(
-                                                !self.busy,
-                                                egui::Button::new(tr(
-                                                    zh,
-                                                    "自动导入浏览器",
-                                                    "Import from browsers",
-                                                ))
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !self.busy,
+                                            egui::Button::new(copy.import_browsers.as_ref())
                                                 .stroke(egui::Stroke::new(
                                                     1.0,
                                                     ui.visuals().hyperlink_color,
                                                 ))
                                                 .min_size(egui::vec2(205.0, 42.0)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.import_browsers();
-                                        }
-                                    });
-                                    ui.add_space(10.0);
-                                    ui.small(tr(
-                                        zh,
-                                        "也可以把 HTML 文件拖到此窗口。",
-                                        "You can also drop an HTML file into this window.",
-                                    ));
-                                },
-                            );
+                                        )
+                                        .clicked()
+                                    {
+                                        self.import_browsers();
+                                    }
+                                });
+                                ui.add_space(10.0);
+                                ui.small(copy.drop_hint.as_ref());
+                            });
                         });
                     ui.add_space(14.0);
-                    ui.small(tr(
-                        zh,
-                        "自动导入会逐项显示浏览器、Profile 和阅读列表的读取结果。",
-                        "Browser import reports the result for each browser, profile and reading list.",
-                    ));
-                    ui.small(tr(
-                        zh,
-                        "清理只影响导出的新文件；未确认失效的链接会保留。",
-                        "Cleaning affects only the exported copy; uncertain links are kept.",
-                    ));
+                    ui.small(copy.source_report_hint.as_ref());
+                    ui.small(copy.export_scope_hint.as_ref());
                     ui.add_space(14.0);
                     ui.horizontal_wrapped(|ui| {
                         if ui
-                            .small_button(tr(zh, "用示例书签试一试", "Try sample bookmarks"))
-                            .on_hover_text(tr(
-                                zh,
-                                "只使用合成数据，不读取浏览器或真实书签。",
-                                "Uses synthetic data only; no browser or real bookmarks are read.",
-                            ))
+                            .small_button(copy.try_sample.as_ref())
+                            .on_hover_text(copy.sample_hint.as_ref())
                             .clicked()
                         {
                             if let Err(error) = self.load_demo() {
@@ -1356,22 +1326,15 @@ impl ReviewApp {
                                 self.message_is_error = true;
                             }
                         }
-                        if ui
-                            .small_button(tr(zh, "打开检测批次…", "Open check batch…"))
-                            .clicked()
-                        {
+                        if ui.small_button(copy.open_batch.as_ref()).clicked() {
                             self.open_batch();
                         }
                     });
                     ui.add_space(10.0);
                     ui.label(
-                        RichText::new(tr(
-                            zh,
-                            "导入  →  去重与复核  →  导出",
-                            "Import  →  Deduplicate & review  →  Export",
-                        ))
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
+                        RichText::new(copy.workflow.as_ref())
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
                     );
                 });
             });

@@ -1,0 +1,20 @@
+{
+  "title": "Bookmark Cleaner",
+  "export_html": "Export HTML…",
+  "settings": "Settings",
+  "import": "Import",
+  "html_file": "HTML file…",
+  "import_browsers": "Import from browsers",
+  "open_batch": "Open check batch…",
+  "welcome_title": "Make room for the links that matter.",
+  "welcome_description": "Deduplicate, review dead links, and export a clean copy.",
+  "choose_source": "Choose a bookmark source",
+  "import_html": "Import HTML…",
+  "drop_hint": "You can also drop an HTML file into this window.",
+  "source_report_hint": "Browser import reports the result for each browser, profile and reading list.",
+  "export_scope_hint": "Cleaning affects only the exported copy; uncertain links are kept.",
+  "try_sample": "Try sample bookmarks",
+  "sample_hint": "Uses synthetic data only; no browser or real bookmarks are read.",
+  "sample_loaded": "This is synthetic sample data, not your browser data. Try grouping, selection, Undo and export. No checks have run.",
+  "workflow": "Import  →  Deduplicate & review  →  Export"
+}

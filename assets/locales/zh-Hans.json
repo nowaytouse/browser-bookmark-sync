@@ -1,0 +1,20 @@
+{
+  "title": "书签清理",
+  "export_html": "导出 HTML…",
+  "settings": "设置",
+  "import": "导入",
+  "html_file": "HTML 文件…",
+  "import_browsers": "自动导入浏览器",
+  "open_batch": "打开检测批次…",
+  "welcome_title": "给收藏夹留一点空间。",
+  "welcome_description": "去重、复核失效链接，然后导出一份新的整合书签。",
+  "choose_source": "选择书签来源",
+  "import_html": "导入 HTML…",
+  "drop_hint": "也可以把 HTML 文件拖到此窗口。",
+  "source_report_hint": "自动导入会逐项显示浏览器、Profile 和阅读列表的读取结果。",
+  "export_scope_hint": "清理只影响导出的新文件；未确认失效的链接会保留。",
+  "try_sample": "用示例书签试一试",
+  "sample_hint": "只使用合成数据，不读取浏览器或真实书签。",
+  "sample_loaded": "这是合成示例，不是你的浏览器数据。可练习分组、选择、撤销和导出；检测尚未运行。",
+  "workflow": "导入  →  去重与复核  →  导出"
+}

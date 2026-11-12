@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] - 2026-08-28
 
+### Added
+
+- Bundled English and Simplified Chinese JSON catalogs for the native welcome screen and toolbar, with a matching Chinese usage guide.
+
 ### Changed
 
 - Hardened the core workflow to collect every discovered profile into isolated snapshots, preserve per-profile read errors, exclude `.onion` URLs before deduplication, and use byte-exact URL identity.

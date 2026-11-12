@@ -1,5 +1,7 @@
 # Browser Bookmark Cleanup (bsync)
 
+[English](README.md) · [简体中文](README.zh-Hans.md)
+
 `bsync` is a macOS, pure-Rust utility for one job: collect bookmarks from every supported browser and profile, make a deterministic clean copy, and identify stale site or page links for review.
 
 It does not synchronize browsers, write browser profiles, upload bookmarks to cloud services, run a web server, export passwords/cookies/history, or call a local AI model. The original browser data remains untouched; import a reviewed HTML copy yourself.
@@ -131,6 +133,10 @@ History is grouped by local calendar date, with the recorded time on each row. A
 - No password, cookie, history, download, or extension export.
 - Quarantine is a review boundary; only a separately approved apply step may remove entries from a generated copy.
 - Original browser/profile data is left in place for manual cleanup after review.
+
+## Maintain the welcome and toolbar translations
+
+The native welcome screen and toolbar read the embedded [English](assets/locales/en.json) and [Simplified Chinese](assets/locales/zh-Hans.json) JSON catalogs. Edit the two values under the same key when changing a label. A new key needs a corresponding field in [the catalog schema](src/native_review/entry_copy.rs) and a value in both catalogs. Run `cargo test --features native-gui entry_catalogs_have_matching_nonempty_labels` to validate the schema and labels. Settings continues to select system, English, or Simplified Chinese.
 
 ## License
 
