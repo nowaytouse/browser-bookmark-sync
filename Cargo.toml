@@ -2,9 +2,11 @@
 name = "browser-bookmark-sync"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.100"
 authors = ["Browser Sync Team"]
 description = "Collect, deduplicate, and health-check browser bookmarks safely"
 default-run = "browser-bookmark-sync"
+autobins = false
 
 [features]
 native-gui = ["dep:eframe", "dep:rfd"]
@@ -16,7 +18,7 @@ clap = { version = "4.6.7", features = ["derive", "cargo"] }
 # Serialization (latest)
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-prost = "0.14.4"
+prost = "0.14.5"
 rusty-leveldb = "4.0.2"
 lz4_flex = "0.14.0"
 
@@ -60,7 +62,7 @@ eframe = { version = "=0.37.0", optional = true, default-features = false, featu
 rfd = { version = "=0.18.0", optional = true }
 
 # SQLite for Firefox-based browsers (latest)
-rusqlite = { version = "0.41.1", features = ["backup", "bundled"] }
+rusqlite = { version = "0.42.0", features = ["backup", "bundled"] }
 
 # HTML parsing for Safari export (latest)
 scraper = "0.29.0"
@@ -78,22 +80,43 @@ cbc = "0.2.1"
 pbkdf2 = "0.13.0"
 sha1 = "0.11.0"
 hickory-resolver = { version = "0.26.3", features = ["https-ring", "tokio", "webpki-roots"] }
-psl = "2.1.250"
+psl = "2.1.252"
 
 [dev-dependencies]
 tempfile = "3.27.0"
 proptest = "1.12.0"
 # Deterministic two-connection snapshot tests; no tracing in release dependencies.
-rusqlite = { version = "0.41.1", features = ["trace"] }
+rusqlite = { version = "0.42.0", features = ["trace"] }
 
 [[test]]
 name = "integration_test"
 path = "src/tests/integration_test.rs"
 
+# Declare shipped binaries so ignored files under src/bin stay local.
+[[bin]]
+name = "browser-bookmark-sync"
+path = "src/main.rs"
+
 [[bin]]
 name = "bookmark-review"
 path = "src/bin/bookmark-review.rs"
 required-features = ["native-gui"]
+
+[[bin]]
+name = "full_process"
+path = "src/bin/full_process.rs"
+
+[[bin]]
+name = "merge_results"
+path = "src/bin/merge_results.rs"
+
+[[bin]]
+name = "sync_now"
+path = "src/bin/sync_now.rs"
+
+[[bin]]
+name = "waterfox_cleanup"
+path = "src/bin/waterfox_cleanup.rs"
 
 [lints.rust]
 unsafe_code = "forbid"

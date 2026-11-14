@@ -159,20 +159,26 @@ fn test_rules_command() {
 #[test]
 fn test_help_commands() {
     // Test main help
-    let (_, stdout, stderr) = run_cli(&["--help"]);
+    let (success, stdout, stderr) = run_cli(&["--help"]);
+    assert!(success, "{stderr}");
     let combined = format!("{stdout}{stderr}");
     assert!(
         combined.contains("export") && combined.contains("validate"),
         "Help should list available commands"
     );
 
-    // Test export help
-    let (_, stdout, stderr) = run_cli(&["export", "--help"]);
-    let combined = format!("{stdout}{stderr}");
-    assert!(
-        combined.contains("bookmarks") || combined.contains("output") || combined.contains("HTML"),
-        "export help should describe export functionality"
-    );
+    for (args, expected_option) in [
+        (&["export", "--help"][..], "--output"),
+        (&["chk", "--help"][..], "--scope"),
+        (&["health", "quarantine", "--help"][..], "--db"),
+    ] {
+        let (success, stdout, stderr) = run_cli(args);
+        assert!(success, "{stderr}");
+        assert!(
+            stdout.contains(expected_option),
+            "missing {expected_option} for {args:?}"
+        );
+    }
 
     println!("✅ help commands work");
 }

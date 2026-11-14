@@ -4,7 +4,6 @@
 **/*.rs.bk
 rustc-ice-*.txt
 *.pdb
-Cargo.lock
 
 # IDE
 .idea/

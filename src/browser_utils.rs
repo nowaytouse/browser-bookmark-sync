@@ -100,41 +100,31 @@ pub fn atomic_write_file(path: &Path, data: &[u8]) -> Result<()> {
     let permissions = fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
-    let temp = parent.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        if let Some(expected) = expected.as_ref() {
-            ensure_file_unchanged(path, expected)?;
-        }
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temp)?;
-        file.write_all(data)?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions)?;
-        }
-        file.sync_all()?;
-        if let Some(expected) = expected.as_ref() {
-            ensure_file_unchanged(path, expected)?;
-        } else {
-            anyhow::ensure!(
-                !path.exists(),
-                "Refusing to overwrite {}: file appeared during write",
-                path.display()
-            );
-        }
-        fs::rename(&temp, path)?;
-        let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
+    if let Some(expected) = expected.as_ref() {
+        ensure_file_unchanged(path, expected)?;
     }
-    result
+    let mut staged = tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+    staged.write_all(data)?;
+    if let Some(permissions) = permissions {
+        staged.as_file().set_permissions(permissions)?;
+    }
+    staged.as_file().sync_all()?;
+    if let Some(expected) = expected.as_ref() {
+        ensure_file_unchanged(path, expected)?;
+        staged.persist(path)?;
+    } else {
+        staged.persist_noclobber(path).with_context(|| {
+            format!(
+                "Refusing to overwrite {}: could not publish a new file",
+                path.display()
+            )
+        })?;
+    }
+    let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
+    Ok(())
 }
 
 /// Safely create a read-only snapshot copy of a browser profile
@@ -344,6 +334,21 @@ mod tests {
 
         assert!(error.to_string().contains("source file changed"));
         assert_eq!(fs::read(path).unwrap(), b"browser-new-version");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_does_not_replace_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Bookmarks");
+        let missing = temp.path().join("missing");
+        symlink(&missing, &path).unwrap();
+
+        assert!(atomic_write_file(&path, b"replacement").is_err());
+        assert_eq!(fs::read_link(&path).unwrap(), missing);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[cfg(unix)]

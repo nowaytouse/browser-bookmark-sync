@@ -329,6 +329,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[command(defer = true)]
 enum Commands {
     /// Inspect and audit installed browsers and profiles without writing HTML
     Inventory {

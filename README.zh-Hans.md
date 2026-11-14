@@ -6,10 +6,12 @@
 
 ## 构建与启动
 
+本地构建和 CI 通过 `rust-toolchain.toml` 跟随 Rust nightly。项目要求 Rust 1.100 或更高版本。
+
 ```sh
 git clone https://github.com/nowaytouse/browser-bookmark-sync.git
 cd browser-bookmark-sync
-cargo build --release
+cargo build --locked --release
 target/release/browser-bookmark-sync inventory
 ```
 

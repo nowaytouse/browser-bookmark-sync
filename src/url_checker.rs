@@ -1748,9 +1748,9 @@ mod delete_tests {
 
         let urls = collect_urls_from_bookmarks(&bookmarks);
         assert_eq!(urls.len(), 3);
-        assert!(urls.contains(&"http://a.com".to_string()));
-        assert!(urls.contains(&"http://b.com".to_string()));
-        assert!(urls.contains(&"http://c.com".to_string()));
+        assert!(urls.iter().any(|url| url == "http://a.com"));
+        assert!(urls.iter().any(|url| url == "http://b.com"));
+        assert!(urls.iter().any(|url| url == "http://c.com"));
     }
 
     #[test]

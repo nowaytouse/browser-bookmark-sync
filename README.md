@@ -20,10 +20,12 @@ Add `--reading-list` to export Safari and Chromium reading lists from isolated s
 
 ## Install
 
+Local builds and CI use rolling Rust nightly through `rust-toolchain.toml`. The package requires Rust 1.100 or newer.
+
 ```bash
 git clone https://github.com/nowaytouse/browser-bookmark-sync.git
 cd browser-bookmark-sync
-cargo build --release
+cargo build --locked --release
 cp target/release/browser-bookmark-sync /usr/local/bin/bsync
 ```
 

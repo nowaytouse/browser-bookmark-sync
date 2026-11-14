@@ -14,6 +14,7 @@ use crate::sync::cancellation::Cancellation;
 use chrono::{DateTime, Utc};
 use eframe::egui::{self, RichText};
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem::DropGuard;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
@@ -66,14 +67,6 @@ enum Event {
     ProxyChecked(NetworkSettings, Result<(), String>),
     EvidenceLoaded(anyhow::Result<(ReviewDocument, bool, PathBuf)>),
     Exported(anyhow::Result<(PathBuf, usize, usize)>),
-}
-
-struct RepaintOnExit(egui::Context);
-
-impl Drop for RepaintOnExit {
-    fn drop(&mut self) {
-        self.0.request_repaint();
-    }
 }
 
 pub fn start(
@@ -533,7 +526,7 @@ impl ReviewApp {
         self.context.request_repaint();
         let context = self.context.clone();
         match std::thread::Builder::new().spawn(move || {
-            let _repaint = RepaintOnExit(context);
+            let _repaint = DropGuard::new(context, |context| context.request_repaint());
             let _ = sender.send(task());
         }) {
             Ok(worker) => self.worker = Some(worker),
@@ -2313,7 +2306,7 @@ impl ReviewApp {
                             self.proxy_test_result = None;
                             self.context.request_repaint();
                             std::thread::spawn(move || {
-                                let _repaint = RepaintOnExit(context);
+                                let _repaint = DropGuard::new(context, |context| context.request_repaint());
                                 let _ = sender.send(Event::ProxyChecked(network, network.check_proxy_connection()));
                             });
                         }
