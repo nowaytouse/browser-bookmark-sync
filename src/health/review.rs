@@ -334,6 +334,91 @@ fn folder_path(anchor: ElementRef<'_>) -> Vec<String> {
     path
 }
 
+pub(crate) struct RememberedResult {
+    pub url: String,
+    verdict: String,
+    at: String,
+    status: i64,
+}
+
+/// Remembered rows belong to this completed scan, but never to its real-request tables.
+pub(crate) fn remembered_results(
+    tx: &rusqlite::Transaction<'_>,
+    scope: &str,
+) -> Result<Vec<RememberedResult>> {
+    let present: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='health_scans')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !present {
+        return Ok(Vec::new());
+    } // Older exports predate invocation membership.
+    let mut query = tx.prepare(
+        "SELECT t.bookmark_id,t.original_url,t.result_json,s.config_hash,s.started_at
+        FROM health_scan_targets t JOIN health_scans s USING(scan_id)
+        WHERE s.scope=?1 AND s.completed=1 AND s.rule_version=?2
+        AND json_extract(t.result_json,'$.observations[0].backend')='green_memory'
+        ORDER BY s.rowid DESC",
+    )?;
+    let mut rows = query.query(rusqlite::params![
+        scope,
+        super::state_machine::CURRENT_HEALTH_RULE_VERSION
+    ])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: Value = serde_json::from_str(row.get_ref(2)?.as_str()?)?;
+        let id = row.get_ref(0)?.as_str()?;
+        let url = row.get_ref(1)?.as_str()?;
+        let obs = &json["observations"][0];
+        let src = &obs["source"];
+        let time = |value: &Value| -> Result<chrono::DateTime<Utc>> {
+            Ok(chrono::DateTime::parse_from_rfc3339(
+                value.as_str().context("Missing green observation time")?,
+            )?
+            .to_utc())
+        };
+        let start = time(&obs["started_at"])?;
+        let end = time(&obs["finished_at"])?;
+        let scanned = chrono::DateTime::parse_from_rfc3339(row.get_ref(4)?.as_str()?)?.to_utc();
+        let status = obs["status_code"]
+            .as_i64()
+            .context("Missing remembered HTTP status")?;
+        let verdict = json["verdict"]
+            .as_str()
+            .context("Missing remembered verdict")?;
+        ensure!(
+            json["bookmark_id"] == id
+                && json["url"] == url
+                && matches!(verdict, "live" | "recovered")
+                && json["observations"]
+                    .as_array()
+                    .is_some_and(|a| a.len() == 1)
+                && obs["actual_request"] == "no"
+                && obs["cache_hit"] == true
+                && obs["request_method"] == "REUSE"
+                && (200..300).contains(&status)
+                && start <= end
+                && end <= scanned
+                && super::state_machine::StateMachine::is_current_evidence(start, scanned)
+                && src["config_hash"] == row.get_ref(3)?.as_str()?
+                && src["rule_version"] == super::state_machine::CURRENT_HEALTH_RULE_VERSION
+                && ["run_id", "check_id"].iter().all(|&key| src[key]
+                    .as_str()
+                    .is_some_and(|s| !s.trim().is_empty())
+                    && src[key] == obs[key]),
+            "Invalid remembered green evidence in batch"
+        );
+        out.push(RememberedResult {
+            url: url.to_owned(),
+            verdict: verdict.to_owned(),
+            at: end.to_rfc3339(),
+            status,
+        });
+    }
+    Ok(out)
+}
+
 fn load_summaries(path: &Path) -> Result<HashMap<String, ReviewSummary>> {
     ensure!(path.is_file(), "health DB must be an existing file");
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -397,6 +482,19 @@ fn load_summaries(path: &Path) -> Result<HashMap<String, ReviewSummary>> {
     }
     drop(rows);
     drop(stmt);
+    for green in remembered_results(&tx, "content")? {
+        summaries.entry(green.url).or_insert_with(|| ReviewSummary {
+            verdict: green.verdict,
+            last_checked_at: Some(green.at.clone()),
+            total_checks: 0,
+            evidence: vec![ReviewEvidence {
+                backend: "green_memory".into(),
+                status_code: Some(green.status),
+                error_kind: None,
+                finished_at: Some(green.at),
+            }],
+        });
+    }
     tx.commit()?;
     Ok(summaries)
 }

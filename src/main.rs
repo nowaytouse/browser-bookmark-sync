@@ -656,6 +656,10 @@ enum Commands {
         #[arg(long, default_value = "./bookmark-health.sqlite")]
         history_db: Option<String>,
 
+        /// Remember recent successful pages across fresh batch databases (local, 24h).
+        #[arg(long, value_name = "FILE")]
+        green_memory: Option<std::path::PathBuf>,
+
         /// Secondary probe backends (comma separated, e.g., curl,lychee,httpx)
         #[arg(long, default_value = "curl")]
         secondary: Option<String>,
@@ -1673,6 +1677,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
             keep_empty,
             slow,
             history_db,
+            green_memory,
             secondary,
             scope,
             trusted_site_skip_list,
@@ -1872,6 +1877,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
                         safe_concurrency,
                         slow,
                         history_db.as_deref(),
+                        green_memory.as_deref(),
                         secondary_backends(secondary.as_deref()),
                         scoped_export_dir(export_dir.as_deref(), ProbeScope::Site)?,
                         dns_policy_config.clone(),
@@ -1961,6 +1967,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
                         probe_scope: scope,
                         dns_policy: dns_policy_config.clone(),
                     })
+                    .and_then(|engine| engine.with_green_memory(green_memory.as_deref()))
                     .map_err(anyhow::Error::msg)?
                 };
 
@@ -2743,6 +2750,7 @@ async fn run_health_stage<F>(
     concurrency: usize,
     slow: bool,
     history_db: Option<&str>,
+    green_memory: Option<&std::path::Path>,
     secondary: Vec<String>,
     output_dir: Option<std::path::PathBuf>,
     dns_policy: DnsPolicy,
@@ -2770,6 +2778,7 @@ where
         max_attempts: 3,
         retry_interval_secs: 5,
     })
+    .and_then(|engine| engine.with_green_memory(green_memory))
     .map_err(anyhow::Error::msg)?;
     let (_, results) = engine
         .run_probes_with_results(targets, progress)

@@ -215,10 +215,23 @@ pub(super) fn row(
     );
     let mut health_rect = cells[2];
     health_rect.min.x += 16.0;
+    let remembered = item
+        .evidence
+        .first()
+        .is_some_and(|e| e.backend == "green_memory");
+    let label = if remembered && tone == HealthTone::Good {
+        tr(zh, "可访问 · 上次结果", "Reachable · prior check")
+    } else {
+        health_label(zh, verdict)
+    };
     cell_ui(ui, health_rect, 2)
-        .add_sized(health_rect.size(), egui::Label::new(health_label(zh, verdict)).halign(egui::Align::Min).truncate())
+        .add_sized(health_rect.size(), egui::Label::new(label).halign(egui::Align::Min).truncate())
         .on_hover_ui(|ui| {
             ui.label(health_label(zh, verdict));
+            if remembered {
+                ui.label(tr(zh, "本轮没有再次访问此页面。「上次检查」是实际访问的时间。",
+                    "No new page request this run. Last checked is the original visit time."));
+            }
             ui.label(tr(zh,
                 "健康状态来自已存检查证据，与保留／移除决定相互独立。绿色和红色仅表示 24 小时内的有效证据；失效候选不会自动移除。",
                 "Health comes from stored check evidence, independently of Keep/Remove decisions. Green and red require valid evidence from the last 24 hours; dead candidates are not removed automatically."));

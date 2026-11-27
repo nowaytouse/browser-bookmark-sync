@@ -98,6 +98,17 @@ Automatic AI organization is not part of the current product. If a future releas
 
 ## Native desktop review GUI
 
+**Check again** reuses the last 24 hours of genuine successful HTTP results across
+GUI batches and app restarts. The local green memory keys exact probe URLs by scope:
+a working site root does not clear its pages. Different proxy endpoints, DNS
+policies, rules, or request settings require a new check. Reuse keeps the original
+observation time and is reported as reuse, not a new request or deletion evidence.
+The first run with this version starts cold. The compact memory stores URL hashes
+and success metadata, not bookmark titles or page bodies. Each batch still has
+its own history database. CLI users who want the same behavior across isolated
+batches can pass the same `--green-memory FILE` with a fresh `--history-db` on
+each run; omitting it preserves the existing same-database resume behavior.
+
 On macOS, run `bash packaging/macos/build-app.sh` from the repository to build and maintain **`./Bookmark Cleaner.app`**. This is the single delivery location; later builds replace that app after validation, and refuse replacement while it is running. Build intermediates and temporary packaging files stay under `target/`; no copy is installed into Downloads or Applications. The script uses the already-selected Rust toolchain and locked dependencies, and does not install or upgrade tools. The bundle is locally ad-hoc signed, not notarized.
 
 The workspace uses aligned, vertically scrolling rows for title, health, cleanup decision, URL, folder and last check. A visible horizontal scrollbar keeps columns readable in smaller windows. Health lights also have text labels: green for current reachable evidence, red for current confirmed-dead evidence, amber for uncertainty or evidence requiring a recheck, and gray for untested links. A health light is not a cleanup decision: unchosen entries remain kept, and explicit Keep/Remove changes remain undoable. The supplied Bookmark Bsync 3D logo is embedded locally and reused in the toolbar, welcome screen, About page and macOS app icon.

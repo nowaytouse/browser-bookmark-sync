@@ -657,6 +657,8 @@ impl ReviewApp {
                 Event::ScanStarted(Ok(handle)) => {
                     self.message = tr(self.zh(), "检测已独立启动。可关闭窗口，之后打开批次载入结果。", "Check started independently. You can close this window and reopen the batch to load results.").into();
                     self.scan = Some(handle);
+                    self.scan_verified = false;
+                    self.scan_status = ScanStatus::default();
                     self.refresh_scan();
                 }
                 Event::ScanStarted(Err(error)) => {
@@ -674,12 +676,22 @@ impl ReviewApp {
                         .is_some_and(|old| old.input_hash == doc.input_hash)
                     {
                         doc.coverage = self.doc.as_ref().and_then(|old| old.coverage.clone());
+                        let remembered = doc
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                item.evidence.iter().any(|e| e.backend == "green_memory")
+                            })
+                            .count();
                         self.set_document(doc);
                         self.document_db = Some(db);
                         self.active_db = true;
                         self.scan_verified = verified;
                         self.filter_dirty = true;
                         self.message = if verified { tr(self.zh(), "网络检测覆盖已验收，当前清理决定已保留。", "Network target coverage verified; current decisions were preserved.") } else { tr(self.zh(), "已载入当前证据；全量检测尚未通过验收，未检查及不确定项保留。", "Current evidence loaded. Full check coverage is not verified; untested and uncertain links are retained.") }.into();
+                        if remembered > 0 {
+                            self.message.push_str(&if self.zh() { format!(" {remembered} 条书签沿用近期绿灯，未重复访问页面。") } else { format!(" {remembered} bookmarks used recent green results without another page request.") });
+                        }
                     } else {
                         self.message = tr(
                             self.zh(),
@@ -881,7 +893,7 @@ impl ReviewApp {
     }
 
     fn start_scan(&mut self) {
-        if self.busy || self.scan.is_some() {
+        if self.busy || (self.scan.is_some() && self.scan_status.exit_code.is_none()) {
             return;
         }
         let Some(doc) = self.doc.clone() else {
@@ -1391,16 +1403,16 @@ impl ReviewApp {
                             }
                         });
                     }
-                    if self.scan.is_none()
+                    if (self.scan.is_none() || self.scan_status.exit_code.is_some())
                         && ui
                             .add_enabled(
                                 !self.busy,
-                                egui::Button::new(tr(zh, "开始检测", "Start check")),
+                                egui::Button::new(if self.scan.is_some() { tr(zh, "再查一次", "Check again") } else { tr(zh, "开始检测", "Start check") }),
                             )
                             .on_hover_text(tr(
                                 zh,
-                                "检测在后台运行；未检查的链接仍会保留。",
-                                "Checks run in the background; untested links stay in the export.",
+                                "最近 24 小时在相同设置下确认可访问的页面会跳过；新页面或需要复查的页面才会联网。仅记录在本机。",
+                                "Skip pages verified reachable in the last 24 hours with the same settings. New or uncertain pages are checked. Results stay on this device.",
                             ))
                             .clicked()
                     {

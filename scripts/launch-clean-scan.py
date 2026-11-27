@@ -61,7 +61,7 @@ def paths(batch):
     }
 
 
-def command(files, proxy, timeout=10, dns_policy=None):
+def command(files, proxy, timeout=10, dns_policy=None, remember_green=False):
     result = [
         str(files["binary"]), "--log-file", str(files["log"]), "check",
         "--file", str(files["input"]), "--slow", "--scope", "content",
@@ -73,6 +73,8 @@ def command(files, proxy, timeout=10, dns_policy=None):
         result += ["--proxy", proxy]
     if dns_policy is not None:
         result += ["--dns-policy", str(dns_policy)]
+    if remember_green:
+        result += ["--green-memory", str(files["db"].parent.parent / "green-memory-v1.sqlite")]
     return result
 
 
@@ -184,7 +186,7 @@ def worker(batch):
                 "deadline_at": None, "baseline_actual_requests": 0,
                 "baseline_saved_targets": 0,
                 "submitted_at": request["submitted_at"], "started_at": stamp(),
-                "command": command(files, request["proxy"], request.get("timeout_secs", 10), request.get("dns_policy")),
+                "command": command(files, request["proxy"], request.get("timeout_secs", 10), request.get("dns_policy"), request.get("remember_green", False)),
                 "binary_sha256": request["binary"], "input_sha256": request["input"],
                 "network": {"route": "direct" if request["proxy"] is None else "local_http_proxy",
                             "proxy": request["proxy"], "timeout_secs": request.get("timeout_secs", 10),
@@ -248,7 +250,7 @@ def worker(batch):
     return exit_code
 
 
-def launch(batch, binary_hash, input_hash, proxy, timeout=10, dns_policy=None, dns_policy_hash=None):
+def launch(batch, binary_hash, input_hash, proxy, timeout=10, dns_policy=None, dns_policy_hash=None, remember_green=False):
     if not batch.is_dir() or batch.is_symlink():
         raise RuntimeError("batch must be an existing ordinary directory")
     files = paths(batch)
@@ -258,7 +260,7 @@ def launch(batch, binary_hash, input_hash, proxy, timeout=10, dns_policy=None, d
         raise RuntimeError("batch already used")
     network = network_request(files, proxy, timeout, dns_policy, dns_policy_hash)
     label = label_for(batch)
-    request = {**expected, **network, "label": label, "submitted_at": stamp()}
+    request = {**expected, **network, "label": label, "submitted_at": stamp(), "remember_green": remember_green}
     write_new(files["request"], request)
     subprocess.run(["launchctl", "submit", "-l", label,
                     "-o", str(batch / "supervisor.stdout.log"),
@@ -294,6 +296,7 @@ def main():
     route.add_argument("--proxy", default="http://127.0.0.1:6152")
     route.add_argument("--direct", action="store_true")
     parser.add_argument("--timeout", type=int, default=10)
+    parser.add_argument("--remember-green", action="store_true", help="Reuse only recent successful checks across batches")
     parser.add_argument("--dns-policy", type=Path)
     parser.add_argument("--dns-policy-sha256")
     args = parser.parse_args()
@@ -309,7 +312,7 @@ def main():
                         args.timeout, args.dns_policy, args.dns_policy_sha256)
         else:
             launch(batch, args.binary_sha256, args.input_sha256, proxy,
-                   args.timeout, args.dns_policy, args.dns_policy_sha256)
+                   args.timeout, args.dns_policy, args.dns_policy_sha256, args.remember_green)
         return 0
     except Exception as error:
         print(f"scan launch refused: {error}", file=sys.stderr)

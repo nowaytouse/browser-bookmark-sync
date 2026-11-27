@@ -451,6 +451,7 @@ fn verifier_label(backend: &str, zh: bool) -> &'static str {
     match backend {
         "native_reqwest" => tr(zh, "网页检测", "Page check"),
         "curl" | "curl_cli" => tr(zh, "备用复核", "Secondary verifier"),
+        "green_memory" => tr(zh, "沿用上次绿灯", "Remembered success"),
         "same_day_resume" => tr(zh, "已有结果", "Prior result"),
         "native_dns" | "dnsx" => tr(zh, "域名检查", "Domain check"),
         "rule_policy" => tr(zh, "检测规则", "Check rules"),

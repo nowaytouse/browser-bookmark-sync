@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+mod green_memory;
 mod resume;
 
 #[cfg(test)]
@@ -76,6 +77,7 @@ pub struct HealthEngine {
     // The SQLite connection is intentionally confined to this executor thread;
     // network probes are concurrent but database writes stay serialized.
     db: Option<Rc<HealthDatabase>>,
+    green_memory: Option<green_memory::GreenMemory>,
 }
 
 const fn should_retry(verdict: HealthVerdict) -> bool {
@@ -324,7 +326,29 @@ impl HealthEngine {
             options,
             scheduler,
             db,
+            green_memory: None,
         })
+    }
+
+    /// Share only recent green results between otherwise independent batch databases.
+    pub fn with_green_memory(mut self, path: Option<&std::path::Path>) -> Result<Self, String> {
+        if let Some(path) = path {
+            let db = self
+                .db
+                .as_ref()
+                .ok_or("Green memory requires a fresh batch history database")?;
+            let empty: bool = db.conn.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM health_runs) AND NOT EXISTS(SELECT 1 FROM health_scans)", [], |r| r.get(0)
+            ).map_err(|e| e.to_string())?;
+            if !empty {
+                return Err("Use a fresh --history-db with --green-memory; existing evidence is not overwritten".into());
+            }
+            self.green_memory = Some(
+                green_memory::GreenMemory::open(path)
+                    .map_err(|e| format!("Open local green memory: {e}"))?,
+            );
+        }
+        Ok(self)
     }
 
     /// Continue the same check invocation in a new phase without discarding host
@@ -453,11 +477,24 @@ impl HealthEngine {
             max_attempts,
             "health scan started"
         );
-        let mut resumable = match self.load_same_day_positive_results(&targets, &backend_context) {
-            Ok(results) => results,
-            Err(error) => {
-                tracing::warn!("{error}; probing all targets instead");
-                std::collections::HashMap::new()
+        let memory_stage = self
+            .green_memory
+            .as_ref()
+            .map(|m| m.stage(&backend_context))
+            .transpose()
+            .map_err(|e| format!("Prepare green memory: {e}"))?;
+        let memory_stage = memory_stage.as_ref();
+        let mut resumable = if let Some(memory) = memory_stage {
+            memory
+                .lookup(&targets)
+                .map_err(|e| format!("Read green memory: {e}"))?
+        } else {
+            match self.load_same_day_positive_results(&targets, &backend_context) {
+                Ok(results) => results,
+                Err(error) => {
+                    tracing::warn!("{error}; probing all targets instead");
+                    std::collections::HashMap::new()
+                }
             }
         };
         let mut final_results = Vec::with_capacity(total);
@@ -546,6 +583,13 @@ impl HealthEngine {
                     if let Some(db) = &self.db {
                         db.record_scan_target(&scan_id, &result.0, &result.1, result.2, &result.3)
                             .map_err(|error| format!("DB scan target record failed: {error}"))?;
+                    }
+                    // Persist each completed success before reporting progress, even if
+                    // other targets are interrupted and the batch never finishes.
+                    if let Some(memory) = memory_stage {
+                        memory
+                            .remember(&result)
+                            .map_err(|e| format!("Save green memory: {e}"))?;
                     }
                     let current = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     progress(current, total, &progress_url);

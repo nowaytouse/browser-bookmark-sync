@@ -40,6 +40,7 @@ class LaunchTest(unittest.TestCase):
         files = scan.paths(Path("/batch"))
         direct = scan.command(files, None, 30, files["dns_policy"])
         self.assertNotIn("--proxy", direct)
+        self.assertNotIn("--green-memory", direct)
         self.assertEqual(direct[direct.index("--timeout") + 1], "30")
         self.assertEqual(direct[direct.index("--dns-policy") + 1], "/batch/dns-policy.json")
         self.assertIn("--slow", direct)
@@ -82,7 +83,7 @@ class LaunchTest(unittest.TestCase):
             with patch.object(scan.subprocess, "run"):
                 with contextlib.redirect_stdout(io.StringIO()):
                     scan.launch(batch, scan.digest(files["binary"]), scan.digest(files["input"]),
-                                None, 30, files["dns_policy"], dns_hash)
+                                None, 30, files["dns_policy"], dns_hash, remember_green=True)
             request = scan.json.loads(files["request"].read_text())
             self.assertEqual(request["dns_policy_sha256"], dns_hash)
             with patch.object(scan, "validate_proxy") as proxy, patch.object(scan, "competing_scans", return_value=[]), \
@@ -91,6 +92,8 @@ class LaunchTest(unittest.TestCase):
                 self.assertEqual(scan.worker(batch), 7)
             proxy.assert_not_called()
             executed = popen.call_args.args[0]
+            self.assertEqual(executed[executed.index("--green-memory") + 1], str(batch.parent / "green-memory-v1.sqlite"))
+            self.assertEqual(executed[executed.index("--history-db") + 1], str(files["db"]))
             self.assertEqual(executed[executed.index("--timeout") + 1], "30")
             self.assertNotIn("--proxy", executed)
             manifest = scan.json.loads(files["manifest"].read_text())

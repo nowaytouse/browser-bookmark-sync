@@ -21,17 +21,30 @@ async fn run_batch(
     batch: &str,
     limit: usize,
     expected_partial: bool,
+    independent: bool,
 ) -> Result<Value, Box<dyn Error>> {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_browser-bookmark-sync"));
+    let mut reports = root.join(batch);
+    let mut db = root.join("health.sqlite");
+    let mut input = root.join("input.html");
+    command.current_dir(root).arg("check");
+    if independent {
+        std::fs::create_dir(&reports)?;
+        db = reports.join("bookmark-health.sqlite");
+        std::fs::copy(&input, reports.join("input.html"))?;
+        input = reports.join("input.html");
+        reports = reports.join("health");
+        command.arg("--green-memory").arg(root.join("green.sqlite"));
+    }
     let output = tokio::time::timeout(
         Duration::from_secs(15),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_browser-bookmark-sync"))
-            .current_dir(root)
-            .args(["check", "--file"])
-            .arg(root.join("input.html"))
+        command
+            .arg("--file")
+            .arg(input)
             .arg("--history-db")
-            .arg(root.join("health.sqlite"))
+            .arg(db)
             .arg("--export-dir")
-            .arg(root.join(batch))
+            .arg(&reports)
             .arg("--limit")
             .arg(limit.to_string())
             .args([
@@ -58,7 +71,7 @@ async fn run_batch(
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let directory = root.join(batch).join("content");
+    let directory = reports.join("content");
     let summary = read_json(directory.join("health-summary.json"))?;
     let provenance = read_json(directory.join("health-provenance.json"))?;
     assert_eq!(summary["scan_id"], provenance["scan_id"]);
@@ -70,7 +83,7 @@ async fn run_batch(
         "final_reported_evidence_not_total_traffic"
     );
     assert_eq!(
-        read_json(root.join(batch).join("check-status.json"))?["status"],
+        read_json(reports.join("check-status.json"))?["status"],
         "completed"
     );
     Ok(provenance)
@@ -98,7 +111,7 @@ async fn successive_cli_batches_preserve_sources_and_only_probe_new_targets(
     let initial_input = "<!DOCTYPE NETSCAPE-Bookmark-file-1><DL><p><DT><A HREF=\"http://batch.example.com/one\">one</A></DL><p>";
     std::fs::write(root.path().join("input.html"), initial_input)?;
 
-    let first = run_batch(root.path(), &proxy, "first", 100, false).await?;
+    let first = run_batch(root.path(), &proxy, "first", 100, false, false).await?;
     assert_eq!(first["counts"]["fresh_probe_targets"], 1);
     assert_eq!(first["counts"]["reused_only_targets"], 0);
     assert_eq!(
@@ -113,7 +126,7 @@ async fn successive_cli_batches_preserve_sources_and_only_probe_new_targets(
     assert_eq!(original["source"]["run_id"], original["run_id"]);
     assert_eq!(original["source"]["check_id"], original["check_id"]);
 
-    let second = run_batch(root.path(), &proxy, "second", 1, false).await?;
+    let second = run_batch(root.path(), &proxy, "second", 1, false, false).await?;
     assert_ne!(first["scan_id"], second["scan_id"]);
     assert_eq!(second["counts"]["fresh_probe_targets"], 0);
     assert_eq!(second["counts"]["reused_only_targets"], 1);
@@ -133,7 +146,7 @@ async fn successive_cli_batches_preserve_sources_and_only_probe_new_targets(
     assert_eq!(reused["finished_at"], original["finished_at"]);
 
     std::fs::write(root.path().join("input.html"), "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<DL><p>\n<DT><A HREF=\"http://batch.example.com/one\">one</A>\n<DT><A HREF=\"http://batch.example.com/two\">two</A>\n</DL><p>\n")?;
-    let third = run_batch(root.path(), &proxy, "third", 100, false).await?;
+    let third = run_batch(root.path(), &proxy, "third", 100, false, false).await?;
     assert_ne!(second["scan_id"], third["scan_id"]);
     assert_eq!(third["total_targets"], 2);
     assert_eq!(third["counts"]["fresh_probe_targets"], 1);
@@ -214,7 +227,7 @@ async fn successive_cli_batches_preserve_sources_and_only_probe_new_targets(
         1,
         "recording membership must not manufacture independent checks"
     );
-    let limited = run_batch(root.path(), &proxy, "limited", 1, true).await?;
+    let limited = run_batch(root.path(), &proxy, "limited", 1, true, false).await?;
     assert_eq!(limited["total_targets"], 1);
     assert_eq!(
         requests.lock().await.len(),
@@ -230,5 +243,46 @@ async fn successive_cli_batches_preserve_sources_and_only_probe_new_targets(
     assert_eq!(page[0].scan_id, limited["scan_id"]);
     assert!(page[0].partial);
     assert_eq!(page[0].planned_targets, 1);
+
+    // The GUI deliberately uses a different batch DB every time. Count actual
+    // proxy traffic, including the site root; report "reuse" alone is not proof.
+    requests.lock().await.clear();
+    let cold = run_batch(root.path(), &proxy, "gui-a", 0, false, true).await?;
+    assert_eq!(cold["counts"]["fresh_probe_targets"], 2);
+    assert_eq!(requests.lock().await.len(), 3);
+    let warm = run_batch(root.path(), &proxy, "gui-b", 0, false, true).await?;
+    assert_eq!(warm["counts"]["reused_only_targets"], 2);
+    assert_eq!(
+        requests.lock().await.len(),
+        3,
+        "green site and both green pages must add zero requests"
+    );
+    let warm_dir = root.path().join("gui-b");
+    let site = read_json(warm_dir.join("health/site/health-provenance.json"))?;
+    assert_eq!(site["counts"]["reused_only_targets"], 1);
+    #[cfg(all(feature = "native-gui", target_os = "macos"))]
+    {
+        let sha = std::process::Command::new("/usr/bin/shasum")
+            .args(["-a", "256"])
+            .arg(warm_dir.join("input.html"))
+            .output()?;
+        assert!(sha.status.success());
+        let hash = std::str::from_utf8(&sha.stdout)?
+            .split_whitespace()
+            .next()
+            .ok_or("missing hash")?;
+        std::fs::write(
+            warm_dir.join("run-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({"input_sha256":hash}))?,
+        )?;
+        std::fs::write(
+            warm_dir.join("process-exit.json"),
+            br#"{"process_exit_code":0}"#,
+        )?;
+        browser_bookmark_sync::native_scan::ScanHandle {
+            directory: warm_dir,
+        }
+        .verify_complete()?;
+    }
     Ok(())
 }

@@ -1,5 +1,6 @@
 //! User-started checks reuse the existing independent supervisor.
 
+use crate::health::review::remembered_results;
 use crate::native_preferences::NetworkSettings;
 use anyhow::{ensure, Context, Result};
 use rusqlite::{Connection, OpenFlags};
@@ -104,9 +105,14 @@ impl ScanHandle {
             (false, &plan["targets"]),
             (true, &plan["site_preflight"]["targets"]),
         ] {
-            let observed = query
+            let mut observed = query
                 .query_map([site], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            observed.extend(
+                remembered_results(&tx, if site { "site" } else { "content" })?
+                    .into_iter()
+                    .map(|row| row.url),
+            );
             let targets = targets
                 .as_array()
                 .context("Probe plan target list missing")?;
@@ -222,6 +228,7 @@ pub fn begin(
                 .arg(&launcher)
                 .arg("--batch")
                 .arg(&handle.directory)
+                .arg("--remember-green")
                 .arg("--input-sha256")
                 .arg(&input_hash)
                 .arg("--binary-sha256")

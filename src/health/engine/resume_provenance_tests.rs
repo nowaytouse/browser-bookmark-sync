@@ -35,6 +35,18 @@ async fn local_proxy() -> std::io::Result<LocalProxy> {
                 header.extend_from_slice(&buffer[..length]);
             }
             observed.fetch_add(1, Ordering::SeqCst);
+            if String::from_utf8_lossy(&header)
+                .lines()
+                .next()
+                .is_some_and(|s| s.contains("/memory-protected"))
+            {
+                socket
+                    .write_all(
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await?;
+                continue;
+            }
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 4\r\nConnection: close\r\n\r\nlive")
                 .await?;
@@ -78,6 +90,79 @@ fn engine_for(
         retry_interval_secs: 0,
         ..Default::default()
     })
+}
+
+#[tokio::test]
+async fn green_memory_survives_reopening_without_another_request_or_refreshing_evidence(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let proxy = local_proxy().await?;
+    let dir = tempfile::tempdir()?;
+    let memory = dir.path().join("green.sqlite");
+    let url = "http://93.184.216.34/article?edition=1";
+    let html = dir.path().join("bookmarks.html");
+    std::fs::write(
+        &html,
+        format!(r#"<DL><DT><A HREF="{url}">Article</A></DL>"#),
+    )?;
+    let mut original = None;
+    for n in 0..3 {
+        let db = dir.path().join(format!("batch-{n}.db"));
+        let engine = engine_for(&proxy, db.clone(), dir.path().join(format!("reports-{n}")))?
+            .with_green_memory(Some(&memory))?;
+        // A fresh export may assign a different bookmark ID to exactly the same page.
+        let before = proxy.requests.load(Ordering::SeqCst);
+        let (_, rows) = engine
+            .run_probes_with_results(
+                vec![ProbeTarget::from_url(format!("item-{n}"), url)?],
+                |_, _, _| {},
+            )
+            .await?;
+        let obs = &rows[0].3[0];
+        assert_eq!(rows[0].2, HealthVerdict::Live);
+        if n == 0 {
+            assert!(proxy.requests.load(Ordering::SeqCst) > before);
+            original = Some((obs.check_id.clone(), obs.started_at, obs.finished_at));
+        } else {
+            assert_eq!(before, proxy.requests.load(Ordering::SeqCst));
+            assert_eq!(obs.backend, "green_memory");
+            assert!(obs.cache_hit && obs.actual_request == "no");
+            assert_eq!(
+                Some((obs.check_id.clone(), obs.started_at, obs.finished_at)),
+                original
+            );
+            assert!(HealthDatabase::open(&db)?.get_url_history(url)?.is_empty());
+            let doc = crate::health::review::ReviewDocument::load(&html, Some(&db), None)?;
+            assert_eq!(doc.items[0].verdict, "live");
+            assert_eq!(doc.items[0].total_checks, 0);
+            assert_eq!(doc.items[0].evidence[0].backend, "green_memory");
+        }
+    }
+    // A different path/query is not covered; neither is a protected result.
+    for n in 3..5 {
+        let engine = engine_for(
+            &proxy,
+            dir.path().join(format!("{n}.db")),
+            dir.path().join(format!("r{n}")),
+        )?
+        .with_green_memory(Some(&memory))?;
+        let (_, rows) = engine
+            .run_probes_with_results(
+                vec![
+                    ProbeTarget::from_url("different", "http://93.184.216.34/article?edition=2")?,
+                    ProbeTarget::from_url("protected", "http://93.184.216.34/memory-protected")?,
+                ],
+                |_, _, _| {},
+            )
+            .await?;
+        let find = |id: &str| rows.iter().find(|r| r.0 == id).unwrap();
+        assert_eq!(find("different").3[0].cache_hit, n == 4);
+        assert_eq!(find("protected").2, HealthVerdict::Protected);
+        assert!(find("protected")
+            .3
+            .iter()
+            .any(|o| o.actual_request == "yes" && !o.cache_hit));
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -319,6 +404,65 @@ async fn invalid_or_nonreal_source_attempts_are_reprobed_not_refreshed(
         assert_eq!(source.run_id, observation.run_id, "{case}");
         assert_eq!(source.check_id, observation.check_id, "{case}");
         assert_ne!(source.run_id, context.run_id, "{case}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn green_memory_rechecks_after_settings_change_expiry_or_invalid_evidence(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let memory = temp.path().join("greens.sqlite");
+    let first = local_proxy().await?;
+    let second = local_proxy().await?;
+    let target = ProbeTarget::from_url("same-page", "http://93.184.216.34/memory-policy")?;
+    for i in 0..7 {
+        let proxy = if i == 0 { &first } else { &second };
+        let db = temp.path().join(format!("batch-{i}.sqlite"));
+        if i >= 4 {
+            let conn = rusqlite::Connection::open(&memory)?;
+            let timestamp = match i {
+                4 => (Utc::now() - Duration::hours(25)).to_rfc3339(),
+                5 => (Utc::now() + Duration::hours(25)).to_rfc3339(),
+                _ => "damaged".into(),
+            };
+            assert!(
+                conn.execute(
+                    "UPDATE greens SET evidence=json_set(evidence,'$.started',?1,'$.finished',?1)",
+                    [timestamp]
+                )? > 0
+            );
+        }
+        let engine = HealthEngine::new(HealthEngineOptions {
+            history_db_path: Some(db),
+            proxy_url: Some(proxy.url.clone()),
+            probe_scope: if i == 2 {
+                ProbeScope::Site
+            } else {
+                ProbeScope::Content
+            },
+            dns_policy: if i >= 3 {
+                DnsPolicy {
+                    dns_fallback_on_error: true,
+                    ..Default::default()
+                }
+            } else {
+                DnsPolicy::default()
+            },
+            output_dir: Some(temp.path().join(format!("report-{i}"))),
+            max_attempts: 1,
+            ..Default::default()
+        })?
+        .with_green_memory(Some(&memory))?;
+        let before = proxy.requests.load(Ordering::SeqCst);
+        let (_, results) = engine
+            .run_probes_with_results(vec![target.clone()], |_, _, _| {})
+            .await?;
+        assert!(
+            proxy.requests.load(Ordering::SeqCst) > before,
+            "case {i} unexpectedly skipped"
+        );
+        assert_eq!(results[0].2, HealthVerdict::Live);
     }
     Ok(())
 }
